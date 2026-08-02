@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import {
   Search, Filter, X, AlertTriangle, CheckCircle2, Clock, Radio, Plus,
   Building2, Wallet, TrendingUp, ShieldAlert, RefreshCw, LogOut, Mail,
-  Loader2, Users, Eye, ArrowLeft,
+  Loader2, Users, Eye, ArrowLeft, LogIn, KeyRound,
 } from "lucide-react";
 
 /* ====================================================================== */
@@ -13,8 +13,8 @@ import {
 // 1. Your Supabase connection. Paste your PUBLISHABLE (anon) key below.
 //    The URL is safe here; the anon key is safe in frontend code because
 //    Row Level Security controls what it can actually read/write.
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const SUPABASE_URL = "https://xrekebgnubhjqtpllbcz.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_ic6iwJHLl6R8GHQ6exf7vg_xjBq5hjrE";
 
 // 2. The selling teams shown in the management breakdown toggle.
 //    (Order Delivery / leadership are intentionally excluded here.)
@@ -328,18 +328,22 @@ function SectionCard({ title, children, tone = "primary", right }) {
 
 function LoginScreen() {
   const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const sendLink = async () => {
+  const signIn = async () => {
     setError("");
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setError("Enter a valid email address."); return; }
+    if (!password) { setError("Enter your password."); return; }
     setBusy(true);
-    const { error } = await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.origin } });
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password });
     setBusy(false);
-    if (error) setError(error.message);
-    else setSent(true);
+    if (error) {
+      setError(error.message.includes("Invalid login")
+        ? "Email or password not recognised. If you haven't signed in before, the starting password is Welcome2026."
+        : error.message);
+    }
   };
 
   return (
@@ -353,23 +357,92 @@ function LoginScreen() {
             <div className="text-xs" style={{ color: "var(--ink-faint)" }}>Order tracking · GBP</div>
           </div>
         </div>
-        {sent ? (
-          <div className="text-center py-4">
-            <div className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3" style={{ background: "var(--green-soft)", color: "var(--green)" }}><Mail size={22} /></div>
-            <div className="font-semibold mb-1">Check your inbox</div>
-            <p className="text-sm" style={{ color: "var(--ink-soft)" }}>We sent a sign-in link to <b>{email}</b>. Open it on this device to continue.</p>
-            <button onClick={() => { setSent(false); setEmail(""); }} className="sw-focus text-xs font-semibold mt-4" style={{ color: "var(--primary)" }}>Use a different email</button>
+
+        <label className="sw-label">Work email</label>
+        <input className="sw-input sw-focus" type="email" value={email} placeholder="you@btlocalbusiness.co.uk"
+          onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && signIn()} />
+
+        <label className="sw-label" style={{ marginTop: 12 }}>Password</label>
+        <input className="sw-input sw-focus" type="password" value={password} placeholder="••••••••"
+          onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && signIn()} />
+
+        {error && <div className="sw-err">{error}</div>}
+
+        <button onClick={signIn} disabled={busy} className="sw-focus w-full py-3 rounded-full font-semibold text-sm mt-4 flex items-center justify-center gap-2"
+          style={{ background: "var(--primary)", color: "#fff", opacity: busy ? 0.7 : 1 }}>
+          {busy ? <Loader2 size={15} className="animate-spin" /> : <LogIn size={15} />} Sign in
+        </button>
+
+        <p className="text-xs text-center mt-4" style={{ color: "var(--ink-faint)" }}>
+          First time? Use the password you were given — you'll set your own straight after.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  SET A NEW PASSWORD  (forced on first sign-in, also available anytime)  */
+/* ---------------------------------------------------------------------- */
+
+function ChangePasswordScreen({ forced, onDone, onCancel }) {
+  const [pw1, setPw1] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const save = async () => {
+    setError("");
+    if (pw1.length < 8) { setError("Use at least 8 characters."); return; }
+    if (pw1 !== pw2) { setError("The two passwords don't match."); return; }
+    if (pw1.toLowerCase() === "welcome2026") { setError("Please choose something other than the starting password."); return; }
+    setBusy(true);
+    const { error: pwErr } = await supabase.auth.updateUser({ password: pw1 });
+    if (pwErr) { setBusy(false); setError(pwErr.message); return; }
+    const { data: sess } = await supabase.auth.getSession();
+    if (sess?.session?.user) {
+      await supabase.from("profiles").update({ must_change_password: false }).eq("id", sess.session.user.id);
+    }
+    setBusy(false);
+    onDone();
+  };
+
+  return (
+    <div className="sw-root flex items-center justify-center p-6" style={{ minHeight: "100vh" }}>
+      <style>{STYLE}</style>
+      <div className="sw-rise w-full max-w-sm rounded-2xl p-8" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="flex items-center gap-3 mb-2">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "var(--primary-soft)", color: "var(--primary)" }}><KeyRound size={20} /></div>
+          <div>
+            <div className="sw-display font-bold text-lg leading-tight">{forced ? "Set your password" : "Change password"}</div>
+            <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{forced ? "Pick something only you know" : "Update your sign-in password"}</div>
           </div>
-        ) : (
-          <>
-            <label className="sw-label">Work email</label>
-            <input className="sw-input sw-focus" type="email" value={email} placeholder="you@btlbsw.co.uk" onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && sendLink()} />
-            {error && <div className="sw-err">{error}</div>}
-            <button onClick={sendLink} disabled={busy} className="sw-focus w-full py-3 rounded-full font-semibold text-sm mt-4 flex items-center justify-center gap-2" style={{ background: "var(--primary)", color: "#fff", opacity: busy ? 0.7 : 1 }}>
-              {busy ? <Loader2 size={15} className="animate-spin" /> : <Mail size={15} />} Send sign-in link
-            </button>
-            <p className="text-xs text-center mt-4" style={{ color: "var(--ink-faint)" }}>No password needed — we email you a secure link.</p>
-          </>
+        </div>
+        {forced && (
+          <p className="text-xs mb-4 mt-3 p-3 rounded-lg" style={{ background: "var(--amber-soft)", color: "var(--ink-soft)" }}>
+            You're signed in with the shared starting password. Choose your own now so nobody else can open your account.
+          </p>
+        )}
+
+        <label className="sw-label" style={{ marginTop: 12 }}>New password</label>
+        <input className="sw-input sw-focus" type="password" value={pw1} onChange={(e) => setPw1(e.target.value)} placeholder="At least 8 characters" />
+
+        <label className="sw-label" style={{ marginTop: 12 }}>Confirm password</label>
+        <input className="sw-input sw-focus" type="password" value={pw2} onChange={(e) => setPw2(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && save()} placeholder="Type it again" />
+
+        {error && <div className="sw-err">{error}</div>}
+
+        <button onClick={save} disabled={busy} className="sw-focus w-full py-3 rounded-full font-semibold text-sm mt-4 flex items-center justify-center gap-2"
+          style={{ background: "var(--primary)", color: "#fff", opacity: busy ? 0.7 : 1 }}>
+          {busy ? <Loader2 size={15} className="animate-spin" /> : <KeyRound size={15} />} Save password
+        </button>
+
+        {!forced && (
+          <button onClick={onCancel} className="sw-focus w-full text-xs font-semibold mt-3" style={{ color: "var(--ink-soft)" }}>Cancel</button>
+        )}
+        {forced && (
+          <button onClick={() => supabase.auth.signOut()} className="sw-focus w-full text-xs font-semibold mt-3" style={{ color: "var(--ink-soft)" }}>Sign out instead</button>
         )}
       </div>
     </div>
@@ -1504,6 +1577,7 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(null); // { company, ref } after a successful save
+  const [changingPassword, setChangingPassword] = useState(false);
   // Simple route detection: /tv (path or #tv) shows the TV board.
   const isTVRoute = typeof window !== "undefined" && (window.location.pathname.replace(/\/$/, "").endsWith("/tv") || window.location.hash === "#tv");
 
@@ -1662,6 +1736,15 @@ export default function App() {
   if (!authReady) return <div className="sw-root flex items-center justify-center" style={{ minHeight: "100vh" }}><style>{STYLE}</style><Loader2 className="animate-spin" style={{ color: "var(--primary)" }} /></div>;
   if (!session) return <LoginScreen />;
 
+  // Still on the shared starting password — must set their own before going further.
+  if (profile?.must_change_password) {
+    return <ChangePasswordScreen forced onDone={() => setProfile((p) => ({ ...p, must_change_password: false }))} />;
+  }
+  // Chose "Change password" from the menu
+  if (changingPassword) {
+    return <ChangePasswordScreen forced={false} onDone={() => setChangingPassword(false)} onCancel={() => setChangingPassword(false)} />;
+  }
+
   // TV wall board route — reuses the logged-in session on that device.
   if (isTVRoute) {
     return (
@@ -1695,6 +1778,7 @@ export default function App() {
             )}
             <a href="#tv" onClick={() => { setTimeout(() => window.location.reload(), 0); }} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={{ color: "var(--ink-soft)" }} title="Open the wall board"><Radio size={14} /> TV Mode</a>
           </nav>
+          <button onClick={() => setChangingPassword(true)} title="Change password" className="sw-focus p-2 rounded-lg" style={{ color: "var(--ink-soft)" }}><KeyRound size={16} /></button>
           <button onClick={signOut} title="Sign out" className="sw-focus p-2 rounded-lg" style={{ color: "var(--ink-soft)" }}><LogOut size={16} /></button>
         </div>
       </header>
