@@ -10,11 +10,24 @@ import {
 /*  CONFIG — edit these as your org changes                               */
 /* ====================================================================== */
 
-// 1. Your Supabase connection. Paste your PUBLISHABLE (anon) key below.
-//    The URL is safe here; the anon key is safe in frontend code because
-//    Row Level Security controls what it can actually read/write.
+// 1. Supabase connection — read from environment variables.
+//    Set these in a local `.env` file (for npm run dev) AND in your
+//    Vercel project settings (for the live site):
+//      VITE_SUPABASE_URL=https://xrekebgnubhjqtpllbcz.supabase.co
+//      VITE_SUPABASE_ANON_KEY=your_publishable_key
+//    The anon key is safe in frontend code — Row Level Security is what
+//    actually controls who can read/write what.
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  // Fails loudly in the console rather than a vague "Invalid API key" later
+  console.error(
+    "Supabase config missing. Expected VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY. " +
+    "Locally: check .env exists and restart the dev server. " +
+    "On Vercel: check Settings > Environment Variables, then redeploy."
+  );
+}
 
 // 2. The selling teams shown in the management breakdown toggle.
 //    (Order Delivery / leadership are intentionally excluded here.)
@@ -453,10 +466,11 @@ function ChangePasswordScreen({ forced, onDone, onCancel }) {
 /*  DASHBOARD                                                              */
 /* ---------------------------------------------------------------------- */
 
-function DashboardView({ orders, onOpenOrder, flashId, profile, loading }) {
+function DashboardView({ orders, netsuite, onOpenOrder, flashId, profile, loading }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [agentFilter, setAgentFilter] = useState("All");
+  const [showNGP, setShowNGP] = useState(false);   // NGP deals hidden unless asked for
   const [sortKey, setSortKey] = useState("last_updated");
   const [sortDir, setSortDir] = useState("desc");
   const role = profile?.role || "agent";
@@ -466,6 +480,20 @@ function DashboardView({ orders, onOpenOrder, flashId, profile, loading }) {
   const [scope, setScope] = useState(is2ic ? (profile?.team || "office") : "office");
   const [period, setPeriod] = useState("mtd"); // MTD is the default view
   const canFilterByAgent = isOffice || is2ic;
+
+  // ---- NetSuite cross-reference -------------------------------------
+  // Orders get a document_number once matched (LBCR, then Opp ID, CUG,
+  // company name). That links through to the NetSuite record, which is
+  // where the real status and the NGP/NSOV flags live.
+  const nsByDoc = useMemo(() => {
+    const m = {};
+    (netsuite || []).forEach((n) => { if (n.document_number) m[String(n.document_number)] = n; });
+    return m;
+  }, [netsuite]);
+  const nsFor = useCallback((o) => (o && o.document_number ? nsByDoc[String(o.document_number)] : null), [nsByDoc]);
+  const isNGP = useCallback((o) => { const n = nsFor(o); return !!n && n.count_gp === false; }, [nsFor]);
+  const isNSOV = useCallback((o) => { const n = nsFor(o); return !!n && n.count_sov === false; }, [nsFor]);
+
 
   // Period first, then team scope — so every figure below reflects both.
   const inPeriod = useMemo(() => filterByPeriod(orders, period), [orders, period]);
@@ -487,6 +515,8 @@ function DashboardView({ orders, onOpenOrder, flashId, profile, loading }) {
 
   const filtered = useMemo(() => {
     const f = scoped.filter((o) => {
+      // NGP deals don't count and are noise on the list — hidden unless asked for
+      if (!showNGP && isNGP(o)) return false;
       const q = query.trim().toLowerCase();
       const mq = !q || (o.company_name || "").toLowerCase().includes(q) || (o.opp_id || "").toLowerCase().includes(q) || (o.cug || "").toLowerCase().includes(q);
       const ms = statusFilter === "All"
@@ -509,21 +539,27 @@ function DashboardView({ orders, onOpenOrder, flashId, profile, loading }) {
       return (av - bv) * dir;
     });
     return sorted;
-  }, [scoped, query, statusFilter, agentFilter, sortKey, sortDir]);
+  }, [scoped, query, statusFilter, agentFilter, sortKey, sortDir, showNGP, isNGP]);
 
   const toggleSort = (key) => {
     if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     else { setSortKey(key); setSortDir(key === "company" || key === "agent" || key === "status" ? "asc" : "desc"); }
   };
 
-  const sovTotal = useMemo(() => totalSOV(scoped), [scoped]);
+  // NetSuite decides what actually counts: NGP is out of GP, NSOV is out of SOV.
+  const gpCountable = useMemo(() => scoped.filter((o) => !isNGP(o)), [scoped, isNGP]);
+  const sovCountable = useMemo(() => scoped.filter((o) => !isNSOV(o)), [scoped, isNSOV]);
+
+  const sovTotal = useMemo(() => totalSOV(sovCountable), [sovCountable]);
   const gpTotal = useMemo(() => {
     // Office (whole office) -> single-count office GP.
     // A specific team scope -> that team's docked GP.
-    if (isOffice && scope !== "office") return teamGP(scoped, scope);
-    if (is2ic && profile?.team) return teamGP(scoped, profile.team);
-    return officeGP(scoped);
-  }, [scoped, isOffice, is2ic, scope, profile]);
+    if (isOffice && scope !== "office") return teamGP(gpCountable, scope);
+    if (is2ic && profile?.team) return teamGP(gpCountable, profile.team);
+    return officeGP(gpCountable);
+  }, [gpCountable, isOffice, is2ic, scope, profile]);
+  const ngpCount = useMemo(() => scoped.filter(isNGP).length, [scoped, isNGP]);
+  const nsovCount = useMemo(() => scoped.filter(isNSOV).length, [scoped, isNSOV]);
   const activeOrders = useMemo(() => scoped.filter((o) => o.order_status !== "Closed Won").length, [scoped]);
   const dirtyCount = useMemo(() => scoped.filter((o) => o.dirty_order === "Yes").length, [scoped]);
   const notStattedCount = useMemo(() => scoped.filter(isNotStatted).length, [scoped]);
@@ -588,6 +624,18 @@ function DashboardView({ orders, onOpenOrder, flashId, profile, loading }) {
             {[...STATUS_PIPELINE, "Arbitration Pending"].map((s) => <option key={s}>{s}</option>)}
             <option value="__not_statted">⚠ Not Statted</option>
           </select>
+          {ngpCount > 0 && (
+            <button
+              onClick={() => setShowNGP((v) => !v)}
+              title="NGP orders don't count toward GP — hidden by default"
+              className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold whitespace-nowrap"
+              style={showNGP
+                ? { background: "var(--red)", color: "#fff" }
+                : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}
+            >
+              {showNGP ? "Hide" : "Show"} NGP ({ngpCount})
+            </button>
+          )}
         </div>
       </div>
 
@@ -619,8 +667,10 @@ function DashboardView({ orders, onOpenOrder, flashId, profile, loading }) {
             </thead>
             <tbody>
               {filtered.map((o) => (
-                <tr key={o.id} onClick={() => onOpenOrder(o)} className={`cursor-pointer transition-colors ${flashId === o.id ? "sw-flash" : ""}`} style={{ borderTop: "1px solid var(--border)" }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-alt)")} onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                <tr key={o.id} onClick={() => onOpenOrder(o)} className={`cursor-pointer transition-colors ${flashId === o.id ? "sw-flash" : ""}`}
+                  style={{ borderTop: "1px solid var(--border)", background: isNGP(o) ? "var(--red-soft)" : "transparent" }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-alt)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = isNGP(o) ? "var(--red-soft)" : "transparent")}>
                   <td className="px-4 py-3"><IdChip>{o.opp_id}</IdChip></td>
                   <td className="px-4 py-3">
                     <div className="font-medium">{o.company_name}</div>
@@ -640,7 +690,25 @@ function DashboardView({ orders, onOpenOrder, flashId, profile, loading }) {
                       {o.lead_gen_name ? ` · LG ${o.lead_gen_pct != null ? `${o.lead_gen_pct}%` : "—"} ${fmtGBP(o.lead_gen_share)}` : ""}
                     </div>
                   </td>
-                  <td className="px-4 py-3"><StatusPill status={o.order_status} /></td>
+                  <td className="px-4 py-3">
+                    <StatusPill status={o.order_status} />
+                    {(() => {
+                      const n = nsFor(o);
+                      if (!n) return null;
+                      const ngp = n.count_gp === false;
+                      const nsov = n.count_sov === false;
+                      return (
+                        <div className="text-xs mt-1" style={{ color: ngp ? "var(--red)" : "var(--ink-soft)" }}>
+                          {n.order_status || "—"}
+                          {(ngp || nsov) && (
+                            <span className="ml-1 font-semibold">
+                              {ngp ? "· NGP" : ""}{nsov ? "· NSOV" : ""}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </td>
                   <td className="px-4 py-3 text-xs" style={{ color: "var(--ink-faint)" }}>{fmtDate(o.last_updated)}</td>
                 </tr>
               ))}
@@ -662,7 +730,7 @@ function DashboardView({ orders, onOpenOrder, flashId, profile, loading }) {
 /*  ORDER DETAIL DRAWER                                                    */
 /* ---------------------------------------------------------------------- */
 
-function OrderDrawer({ order, onClose, canEdit, onSave, saving, onRemove }) {
+function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove }) {
   const [editing, setEditing] = useState(false);
   const [sov, setSov] = useState("");
   const [gp, setGp] = useState("");
@@ -695,9 +763,22 @@ function OrderDrawer({ order, onClose, canEdit, onSave, saving, onRemove }) {
     setEditing(false);
   };
 
+  const MATCH_LABEL = {
+    lbcr: "Matched by Lilac ref (exact)",
+    opp_id: "Matched by Opp ID (likely)",
+    cug: "Matched by CUG (likely)",
+    company_name: "Matched by company name (unconfirmed)",
+  };
   const rows = [
     ["Lilac Ref", order.lbcr_ref],
-    ["NetSuite", order.document_number ? `Matched · Doc ${order.document_number}` : isNotStatted(order) ? "Not Statted (12h+)" : "Awaiting match"],
+    ["NetSuite", order.document_number
+      ? `Doc ${order.document_number}${order.match_method ? ` · ${MATCH_LABEL[order.match_method] || order.match_method}` : ""}`
+      : isNotStatted(order) ? "Not Statted (12h+)" : "Awaiting match"],
+    ["NetSuite Status", ns ? ns.order_status : null],
+    ["Counts toward", ns
+      ? [ns.count_gp === false ? null : "GP", ns.count_sov === false ? null : "SOV"].filter(Boolean).join(" + ") || "Neither"
+      : null],
+    ["NetSuite GP", ns && ns.gp_office != null ? fmtGBP(ns.gp_office) : null],
     ["CUG", order.cug], ["Partner", order.partner], ["Partner Role", order.partner_role],
     ["Quantity", order.quantity], ["Admin Agent", order.admin_agent], ["Schedule 5", order.schedule_5],
     ["Document No.", order.document_number], ["Campaign Source", order.campaign_source],
@@ -1318,35 +1399,63 @@ function TVStat({ label, value, accent }) {
   );
 }
 
-function TVBoard({ orders }) {
+function TVBoard({ orders, netsuite }) {
   const countdown = useCountdownTo5pm();
 
-  const isThisWeek = (o) => daysSince(o.submission_date) <= 7;
-  const isToday = (o) => daysSince(o.submission_date) === 0;
-  const weekOrders = orders.filter(isThisWeek);
-  const todayOrders = orders.filter(isToday);
+  // The board runs off NetSuite (the statted, authoritative figures),
+  // not raw Lilac submissions. Column Y on the NetSuite sheet decides
+  // what counts: NGP removes a deal from GP, NSOV removes it from SOV.
+  const ns = netsuite || [];
+  const gpRows = ns.filter((r) => r.count_gp !== false);
+  const sovRows = ns.filter((r) => r.count_sov !== false);
 
-  const officeGpTotal = officeGP(orders);
-  const officeGpWeek = officeGP(weekOrders);
-  const officeGpToday = officeGP(todayOrders);
-  const sovWeek = totalSOV(weekOrders);
+  const nsDate = (r) => (r.order_date ? new Date(r.order_date + "T00:00:00") : null);
+  const daysOldNs = (r) => { const d = nsDate(r); return d ? Math.max(0, Math.floor((Date.now() - d.getTime()) / 86400000)) : 9999; };
+  const thisWeekNs = (r) => daysOldNs(r) <= 7;
+  const todayNs = (r) => daysOldNs(r) === 0;
+
+  const sumGp = (rows) => rows.reduce((s, r) => s + num(r.gp_office), 0);
+  const sumSov = (rows) => rows.reduce((s, r) => s + num(r.contract_value), 0);
+
+  const officeGpTotal = sumGp(gpRows);
+  const officeGpWeek = sumGp(gpRows.filter(thisWeekNs));
+  const officeGpToday = sumGp(gpRows.filter(todayNs));
+  const sovWeek = sumSov(sovRows.filter(thisWeekNs));
+
+  // Team GP: each person's own share, from the NetSuite ledger.
+  // The negative Office Doublecount row is already inside gp_office,
+  // so team totals stay clean without extra correction here.
+  const teamGpFor = (rows, team) => rows.reduce((s, r) => {
+    let v = 0;
+    if (r.closer_team === team) v += num(r.closer_gp);
+    if (r.referrer_team === team) v += num(r.referrer_gp);
+    return s + v;
+  }, 0);
 
   const teamRows = SELLING_TEAMS.map((t) => ({
     team: t,
-    gp: teamGP(orders, t),
-    gpToday: teamGP(todayOrders, t),
-    orders: orders.filter((o) => o.closer_team === t || o.lead_gen_team === t).length,
+    gp: teamGpFor(gpRows, t),
+    gpToday: teamGpFor(gpRows.filter(todayNs), t),
+    orders: gpRows.filter((r) => r.closer_team === t || r.referrer_team === t).length,
   })).sort((a, b) => b.gp - a.gp);
 
-  // Agent leaderboard by GP share (closer + lead gen shares combined)
+  // Agent leaderboard — closer and referrer earnings combined
   const agentMap = {};
-  for (const o of orders) {
-    if (o.closer_name) agentMap[o.closer_name] = (agentMap[o.closer_name] || 0) + num(o.closer_share);
-    if (o.lead_gen_name) agentMap[o.lead_gen_name] = (agentMap[o.lead_gen_name] || 0) + num(o.lead_gen_share);
+  for (const r of gpRows) {
+    if (r.closer_name) agentMap[r.closer_name] = (agentMap[r.closer_name] || 0) + num(r.closer_gp);
+    if (r.referrer_name) agentMap[r.referrer_name] = (agentMap[r.referrer_name] || 0) + num(r.referrer_gp);
   }
-  const leaderboard = Object.entries(agentMap).map(([name, gp]) => ({ name, gp: Number(gp) })).sort((a, b) => b.gp - a.gp).slice(0, 8);
+  const leaderboard = Object.entries(agentMap)
+    .map(([name, gp]) => ({ name, gp: Number(gp) }))
+    .filter((a) => a.gp > 0)
+    .sort((a, b) => b.gp - a.gp).slice(0, 8);
 
-  const statusCounts = STATUS_PIPELINE.map((s) => ({ status: s, n: orders.filter((o) => o.order_status === s).length }));
+  // Pipeline still comes from Lilac submissions — that's where the
+  // Lilac Submitted / Processing / Billed / Closed Won stages live.
+  const statusCounts = STATUS_PIPELINE.map((s) => ({ status: s, n: (orders || []).filter((o) => o.order_status === s).length }));
+
+  const excludedGp = ns.filter((r) => r.count_gp === false).length;
+  const excludedSov = ns.filter((r) => r.count_sov === false).length;
 
   const ACCENTS = ["#4C1D8F", "#205EA6", "#1F7A3D"];
 
@@ -1377,7 +1486,7 @@ function TVBoard({ orders }) {
           the 4 headline numbers each own a column; Team + Leaderboard each
           span 2 of those same 4 columns underneath. */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "0.75rem" }}>
-        <TVStat label="Office GP (Total)" value={fmtGBP(officeGpTotal)} accent="#1F7A3D" />
+        <TVStat label="Office GP (NetSuite)" value={fmtGBP(officeGpTotal)} accent="#1F7A3D" />
         <TVStat label="GP This Week" value={fmtGBP(officeGpWeek)} accent="#4C1D8F" />
         <TVStat label="GP Today" value={fmtGBP(officeGpToday)} accent="#205EA6" />
         <TVStat label="SOV This Week" value={fmtGBP(sovWeek)} accent="#B3660E" />
@@ -1429,6 +1538,11 @@ function TVBoard({ orders }) {
         {["Targets vs Actual", "Quarterly / YTD", "Product Gap"].map((label) => (
           <span key={label} className="text-xs px-2.5 py-1 rounded-full" style={{ background: "var(--surface)", border: "1px dashed var(--border)", color: "var(--ink-faint)" }}>{label}</span>
         ))}
+        {(excludedGp > 0 || excludedSov > 0) && (
+          <span className="text-xs ml-auto" style={{ color: "var(--ink-faint)" }}>
+            Excluded by status: {excludedGp} from GP · {excludedSov} from SOV
+          </span>
+        )}
       </div>
     </div>
   );
@@ -1569,6 +1683,7 @@ export default function App() {
   const [profile, setProfile] = useState(null);
   const [orders, setOrders] = useState([]);
   const [staff, setStaff] = useState([]);
+  const [netsuite, setNetsuite] = useState([]);
   const [allProfiles, setAllProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("dashboard");
@@ -1601,6 +1716,27 @@ export default function App() {
     setStaff(data || []);
   }, []);
   useEffect(() => { if (session?.user) loadStaff(); }, [session, loadStaff]);
+
+  // NetSuite records — what the TV board reports on
+  const loadNetsuite = useCallback(async () => {
+    const PAGE = 1000;
+    let all = [];
+    let from = 0;
+    for (;;) {
+      const { data, error } = await supabase
+        .from("netsuite_orders")
+        .select("*")
+        .order("order_date", { ascending: false })
+        .range(from, from + PAGE - 1);
+      if (error || !data) break;
+      all = all.concat(data);
+      if (data.length < PAGE) break;
+      from += PAGE;
+      if (from > 100000) break;
+    }
+    setNetsuite(all);
+  }, []);
+  useEffect(() => { if (session?.user) loadNetsuite(); }, [session, loadNetsuite]);
 
   // Office users also load every profile, needed for the Admin page's role editor
   const loadAllProfiles = useCallback(async () => {
@@ -1646,9 +1782,9 @@ export default function App() {
       })
       .subscribe();
     // Safety-net refresh every 60s (keeps the wall-mounted TV honest).
-    const poll = setInterval(loadOrders, 60000);
+    const poll = setInterval(() => { loadOrders(); loadNetsuite(); }, 60000);
     return () => { supabase.removeChannel(channel); clearInterval(poll); };
-  }, [session, loadOrders]);
+  }, [session, loadOrders, loadNetsuite]);
 
   const handleNewOrder = useCallback(async (partial) => {
     setSubmitting(true);
@@ -1749,7 +1885,7 @@ export default function App() {
   if (isTVRoute) {
     return (
       <StaffContext.Provider value={staffValue}>
-        <TVBoard orders={orders} />
+        <TVBoard orders={orders} netsuite={netsuite} />
       </StaffContext.Provider>
     );
   }
@@ -1801,12 +1937,12 @@ export default function App() {
             </div>
           </div>
         )}
-        {tab === "dashboard" && <DashboardView orders={orders} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
+        {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuite} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
         {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} />}
         {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} />}
       </main>
 
-      {selected && <OrderDrawer order={selected} onClose={() => setSelected(null)} canEdit={canEditOrder(selected)} onSave={saveOrder} saving={savingEdit} onRemove={removeOrder} />}
+      {selected && <OrderDrawer order={selected} ns={selected.document_number ? netsuite.find((n) => String(n.document_number) === String(selected.document_number)) : null} onClose={() => setSelected(null)} canEdit={canEditOrder(selected)} onSave={saveOrder} saving={savingEdit} onRemove={removeOrder} />}
       {toast && (
         <div className="sw-slide-in fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl flex items-center gap-2 text-sm font-medium text-white" style={{ background: toast.startsWith("Couldn't") ? "var(--red)" : "var(--green)" }}>
           {toast.startsWith("Couldn't") ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />} {toast}
