@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import {
   Search, Filter, X, AlertTriangle, CheckCircle2, Clock, Radio, Plus,
   Building2, Wallet, TrendingUp, ShieldAlert, RefreshCw, LogOut, Mail,
-  Loader2, Users, Eye, ArrowLeft, LogIn, KeyRound,
+  Loader2, Users, Eye, ArrowLeft, LogIn, KeyRound, Palette, MapPin,
 } from "lucide-react";
 
 /* ====================================================================== */
@@ -45,6 +45,25 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const StaffContext = React.createContext({ all: [], sellers: [] });
 const useStaff = () => React.useContext(StaffContext);
 const findStaff = (list, name) => list.find((s) => s.full_name === name) || null;
+
+// Manager-managed status settings (colour + whether it counts toward GP/SOV)
+const StatusCfgContext = React.createContext({});
+const useStatusCfg = () => React.useContext(StatusCfgContext);
+
+/* ---- Postcodes --------------------------------------------------------
+   The "area" is the leading letters of a UK postcode — PL is Plymouth,
+   EX Exeter, TQ Torquay. That's the right grain for a sales heatmap:
+   granular enough to be useful, coarse enough to show a pattern. */
+const UK_POSTCODE_RE = /^\s*([A-Z]{1,2})([0-9][A-Z0-9]?)\s*([0-9][A-Z]{2})?\s*$/i;
+function postcodeArea(pc) {
+  const m = String(pc || "").trim().match(UK_POSTCODE_RE);
+  return m ? m[1].toUpperCase() : null;
+}
+function normalisePostcode(pc) {
+  const s = String(pc || "").trim().toUpperCase().replace(/\s+/g, "");
+  if (!s) return null;
+  return s.length > 3 ? s.slice(0, s.length - 3) + " " + s.slice(-3) : s;
+}
 
 /* ---------------------------------------------------------------------- */
 /*  DESIGN TOKENS                                                          */
@@ -97,26 +116,35 @@ const STATUS_STYLE = {
   "Arbitration Pending": { fg: "var(--gold)", bg: "var(--gold-soft)" },
 };
 
-// NetSuite uses its own wording ("Job Numbered & awaiting completion",
-// "Awaiting Cease", ...) and the list grows, so colour by keyword rather
-// than trying to enumerate every value.
-const TONE_GREEN   = { fg: "var(--green)",   bg: "var(--green-soft)" };
-const TONE_BLUE    = { fg: "var(--blue)",    bg: "var(--blue-soft)" };
-const TONE_AMBER   = { fg: "var(--amber)",   bg: "var(--amber-soft)" };
-const TONE_RED     = { fg: "var(--red)",     bg: "var(--red-soft)" };
-const TONE_PRIMARY = { fg: "var(--primary)", bg: "var(--primary-soft)" };
-const TONE_NEUTRAL = { fg: "var(--ink-soft)", bg: "var(--surface-alt)" };
+const TONE_MAP = {
+  green:   { fg: "var(--green)",   bg: "var(--green-soft)" },
+  blue:    { fg: "var(--blue)",    bg: "var(--blue-soft)" },
+  amber:   { fg: "var(--amber)",   bg: "var(--amber-soft)" },
+  red:     { fg: "var(--red)",     bg: "var(--red-soft)" },
+  primary: { fg: "var(--primary)", bg: "var(--primary-soft)" },
+  gold:    { fg: "var(--gold)",    bg: "var(--gold-soft)" },
+  neutral: { fg: "var(--ink-soft)", bg: "var(--surface-alt)" },
+};
+const TONE_CHOICES = ["green", "blue", "amber", "red", "primary", "gold", "neutral"];
 
-function statusTone(status, ngp) {
-  if (ngp) return TONE_RED;                       // doesn't count — always red
-  if (STATUS_STYLE[status]) return STATUS_STYLE[status];
+// Best guess when a status hasn't been configured yet — this is also what
+// seeds the colour a manager then sees and can override.
+function guessTone(status) {
   const s = String(status || "").toLowerCase();
-  if (!s) return TONE_NEUTRAL;
-  if (/(cease|cancel|reject|lost|fail|void|declin)/.test(s)) return TONE_RED;
-  if (/(complete|completed|billed|closed won|live|provided|dispatched|delivered)/.test(s)) return TONE_GREEN;
-  if (/(awaiting|pending|hold|queue|delay)/.test(s)) return TONE_AMBER;
-  if (/(job number|progress|processing|accepted|submitted|placed|build)/.test(s)) return TONE_BLUE;
-  return TONE_PRIMARY;
+  if (!s) return "neutral";
+  if (/(cease|cancel|reject|lost|fail|void|declin)/.test(s)) return "red";
+  if (/(complete|billed|closed won|live|provided|dispatch|deliver)/.test(s)) return "green";
+  if (/(awaiting|pending|hold|queue|delay)/.test(s)) return "amber";
+  if (/(job number|progress|processing|accepted|submitted|placed|build)/.test(s)) return "blue";
+  return "primary";
+}
+
+// statusCfg is the manager-managed map: { [status]: {tone, count_gp, count_sov} }
+function statusTone(status, ngp, statusCfg) {
+  if (ngp) return TONE_MAP.red;                    // doesn't count — always red
+  const cfg = statusCfg && statusCfg[status];
+  if (cfg && TONE_MAP[cfg.tone]) return TONE_MAP[cfg.tone];
+  return TONE_MAP[guessTone(status)] || TONE_MAP.neutral;
 }
 const ENTITY_TYPES = ["Charity", "Limited", "LLP", "Partnership", "Proprietorship", "Sole Trader", "Other"];
 const DEAL_TYPES = ["Acquisition", "Cross-sell", "Migration", "Upgrade", "Resign", "Modify"];
@@ -219,6 +247,11 @@ const PERIODS = [
   { key: "ytd", label: "YTD" },
   { key: "all", label: "All" },
 ];
+
+function periodLabelFor(key) {
+  const p = PERIODS.find((x) => x.key === key);
+  return p ? p.label : "";
+}
 
 // Start of the current financial year: 1 April of this year if we're in
 // April or later, otherwise 1 April of last year.
@@ -341,7 +374,8 @@ function treemapLayout(items, x, y, w, h, horizontal) {
 }
 
 function StatusPill({ status, ngp }) {
-  const s = statusTone(status, ngp);
+  const statusCfg = useStatusCfg();
+  const s = statusTone(status, ngp, statusCfg);
   return (
     <span style={{ color: s.fg, background: s.bg }} className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold whitespace-nowrap">
       <span style={{ background: s.fg }} className="w-1.5 h-1.5 rounded-full" />
@@ -570,8 +604,21 @@ function DashboardView({ orders, netsuite, onOpenOrder, flashId, profile, loadin
     return m;
   }, [netsuite]);
   const nsFor = useCallback((o) => (o && o.document_number ? nsByDoc[String(o.document_number)] : null), [nsByDoc]);
-  const isNGP = useCallback((o) => { const n = nsFor(o); return !!n && n.count_gp === false; }, [nsFor]);
-  const isNSOV = useCallback((o) => { const n = nsFor(o); return !!n && n.count_sov === false; }, [nsFor]);
+  // The status config is authoritative if a manager has set it; otherwise
+  // fall back to the NGP/NSOV flags that came off the NetSuite sheet.
+  const statusCfg = useStatusCfg();
+  const flagsFor = useCallback((o) => {
+    const n = nsFor(o);
+    if (!n) return { ngp: false, nsov: false, ns: null };
+    const cfg = n.order_status ? statusCfg[n.order_status] : null;
+    return {
+      ns: n,
+      ngp: cfg ? cfg.count_gp === false : n.count_gp === false,
+      nsov: cfg ? cfg.count_sov === false : n.count_sov === false,
+    };
+  }, [nsFor, statusCfg]);
+  const isNGP = useCallback((o) => flagsFor(o).ngp, [flagsFor]);
+  const isNSOV = useCallback((o) => flagsFor(o).nsov, [flagsFor]);
 
 
   // Period first, then team scope — so every figure below reflects both.
@@ -793,9 +840,7 @@ function DashboardView({ orders, netsuite, onOpenOrder, flashId, profile, loadin
                   </td>
                   <td className="px-4 py-3">
                     {(() => {
-                      const n = nsFor(o);
-                      const ngp = !!n && n.count_gp === false;
-                      const nsov = !!n && n.count_sov === false;
+                      const { ns: n, ngp, nsov } = flagsFor(o);
                       // NetSuite is the authority once it's seen the deal —
                       // its status replaces "Lilac Submitted" on the pill.
                       const live = n && n.order_status ? n.order_status : o.order_status;
@@ -1113,6 +1158,7 @@ function LilacForm({ onSubmit, submitting }) {
     onSubmit({
       opp_id: f.oppId,
       lbcr_ref: makeLbcrRef(),   // quote this in NetSuite to link the two
+      postcode: normalisePostcode(f.sitePostcode),
       cug: f.cug || null,
       company_name: f.lEName,
       team: closerTeam,          // primary/closer team for the top-level column
@@ -1245,6 +1291,7 @@ function LilacForm({ onSubmit, submitting }) {
           <Field label="How many Licences?" name="badrLicences" value={f.badrLicences} onChange={set} type="number" required />
           <Field label="What Devices Covered?" name="badrDevices" value={f.badrDevices} onChange={set} required />
         </>)}
+        <Field label="Site Postcode" name="sitePostcode" value={f.sitePostcode} onChange={set} placeholder="e.g. PL1 1AA" />
         <Field label="All Order Details" name="orderDetails" value={f.orderDetails} onChange={set} required colSpan={3} textarea rows={3} />
         {/* Products are read from what you type above — shown here so you can
             check it picked things up correctly before submitting. */}
@@ -1549,9 +1596,19 @@ function TVBoard({ orders, netsuite }) {
   const sumSov = (rows) => rows.reduce((s, r) => s + num(r.contract_value), 0);
 
   const officeGpTotal = sumGp(gpRows);
-  const officeGpWeek = sumGp(gpRows.filter(thisWeekNs));
-  const officeGpToday = sumGp(gpRows.filter(todayNs));
   const sovPeriod = sumSov(sovRows);
+
+  // The second card shows the next level down from whatever's selected,
+  // so "GP This Week" doesn't sit there confusingly when you're on YTD.
+  const SUB = { day: null, wtd: "day", mtd: "wtd", qtd: "mtd", ytd: "qtd", all: "ytd" };
+  const SUB_LABEL = { day: "Today", wtd: "This Week", mtd: "This Month", qtd: "This Quarter", ytd: "This Year" };
+  const subKey = SUB[period];
+  const subFrom = subKey ? periodStart(subKey) : null;
+  const subRows = subFrom
+    ? gpRows.filter((r) => r.order_date && new Date(r.order_date + "T00:00:00").getTime() >= subFrom.getTime())
+    : [];
+  const gpSub = sumGp(subRows);
+  const gpToday = sumGp(gpRows.filter(todayNs));
 
   // Sales by Product Group 2 — bigger box means more GP
   const productBoxes = useMemo(() => {
@@ -1600,6 +1657,25 @@ function TVBoard({ orders, netsuite }) {
   // Lilac Submitted / Processing / Billed / Closed Won stages live.
   const statusCounts = STATUS_PIPELINE.map((s) => ({ status: s, n: (orders || []).filter((o) => o.order_status === s).length }));
 
+  // Where we're selling — by postcode area, from the Lilac submissions
+  const areaBoxes = useMemo(() => {
+    const map = {};
+    (orders || []).forEach((o) => {
+      if (!o.postcode) return;
+      if (periodFrom && o.submission_date && new Date(o.submission_date).getTime() < periodFrom.getTime()) return;
+      const area = postcodeArea(o.postcode);
+      if (!area) return;
+      if (!map[area]) map[area] = { count: 0, gp: 0 };
+      map[area].count += 1;
+      map[area].gp += num(o.gp_office != null ? o.gp_office : o.sales_agent_gp);
+    });
+    return Object.keys(map)
+      .map((area) => ({ area, count: map[area].count, gp: map[area].gp }))
+      .sort((a, b) => b.gp - a.gp);
+  }, [orders, periodFrom]);
+  const areaMaxGp = areaBoxes.length ? areaBoxes[0].gp : 0;
+  const postcodeCoverage = (orders || []).filter((o) => o.postcode).length;
+
   const excludedGp = ns.filter((r) => r.count_gp === false).length;
   const excludedSov = ns.filter((r) => r.count_sov === false).length;
 
@@ -1643,10 +1719,10 @@ function TVBoard({ orders, netsuite }) {
           the 4 headline numbers each own a column; Team + Leaderboard each
           span 2 of those same 4 columns underneath. */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "0.75rem" }}>
-        <TVStat label={`Office GP · ${PERIODS.find((p) => p.key === period)?.label || ""}`} value={fmtGBP(officeGpTotal)} accent="#1F7A3D" />
-        <TVStat label="GP This Week" value={fmtGBP(officeGpWeek)} accent="#4C1D8F" />
-        <TVStat label="GP Today" value={fmtGBP(officeGpToday)} accent="#205EA6" />
-        <TVStat label={`SOV · ${PERIODS.find((p) => p.key === period)?.label || ""}`} value={fmtGBP(sovPeriod)} accent="#B3660E" />
+        <TVStat label={`Office GP · ${periodLabelFor(period)}`} value={fmtGBP(officeGpTotal)} accent="#1F7A3D" />
+        <TVStat label={subKey ? `GP · ${SUB_LABEL[subKey]}` : "GP · Today"} value={fmtGBP(subKey ? gpSub : officeGpTotal)} accent="#4C1D8F" />
+        <TVStat label="GP Today" value={fmtGBP(gpToday)} accent="#205EA6" />
+        <TVStat label={`SOV · ${periodLabelFor(period)}`} value={fmtGBP(sovPeriod)} accent="#B3660E" />
 
         {/* Team vs Team + pipeline — spans columns 1-2 */}
         <div style={{ gridColumn: "span 2", background: "var(--surface)", border: "1px solid var(--border)" }} className="rounded-2xl p-4">
@@ -1689,7 +1765,7 @@ function TVBoard({ orders, netsuite }) {
         </div>
 
         {/* Sales by product group — box size follows GP */}
-        <div style={{ gridColumn: "span 4", background: "var(--surface)", border: "1px solid var(--border)" }} className="rounded-2xl p-4">
+        <div style={{ gridColumn: "span 2", background: "var(--surface)", border: "1px solid var(--border)" }} className="rounded-2xl p-4">
           <div className="flex items-baseline justify-between mb-3">
             <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>SALES BY PRODUCT GROUP — GP</div>
             <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{fmtGBP(productTotal)} total</div>
@@ -1726,6 +1802,45 @@ function TVBoard({ orders, netsuite }) {
             </div>
           )}
         </div>
+
+        {/* Where we're selling — postcode areas, shaded by GP */}
+        <div style={{ gridColumn: "span 2", background: "var(--surface)", border: "1px solid var(--border)" }} className="rounded-2xl p-4">
+          <div className="flex items-baseline justify-between mb-3">
+            <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>WHERE WE'RE SELLING</div>
+            <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+              {areaBoxes.length ? `${areaBoxes.length} postcode areas` : "by postcode area"}
+            </div>
+          </div>
+          {areaBoxes.length === 0 ? (
+            <div className="flex items-center justify-center text-center px-4" style={{ height: 210 }}>
+              <div>
+                <MapPin size={22} style={{ color: "var(--ink-faint)", margin: "0 auto 8px" }} />
+                <div className="text-xs font-semibold" style={{ color: "var(--ink-soft)" }}>No postcodes captured yet</div>
+                <div className="text-xs mt-1" style={{ color: "var(--ink-faint)" }}>
+                  The Lilac form now asks for a site postcode — this fills in as orders come through.
+                  {postcodeCoverage > 0 && ` ${postcodeCoverage} so far.`}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(74px, 1fr))", gap: "0.4rem", height: 210, overflowY: "auto", alignContent: "start" }}>
+              {areaBoxes.map((a) => {
+                const intensity = areaMaxGp > 0 ? a.gp / areaMaxGp : 0;
+                // Deeper purple = more GP from that area
+                const bg = `rgba(76, 29, 143, ${0.12 + intensity * 0.85})`;
+                const light = intensity > 0.45;
+                return (
+                  <div key={a.area} title={`${a.area} — ${fmtGBP(a.gp)} across ${a.count} order${a.count === 1 ? "" : "s"}`}
+                    className="rounded-lg p-2 text-center" style={{ background: bg, color: light ? "#fff" : "var(--ink)" }}>
+                    <div className="sw-display font-bold text-base leading-none">{a.area}</div>
+                    <div className="sw-mono text-xs mt-1" style={{ opacity: 0.9 }}>{fmtGBP(a.gp)}</div>
+                    <div className="text-xs" style={{ opacity: 0.75, fontSize: 10 }}>{a.count} order{a.count === 1 ? "" : "s"}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Phase-2 placeholders — a single slim strip, not dead space */}
@@ -1739,6 +1854,106 @@ function TVBoard({ orders, netsuite }) {
             Excluded by status: {excludedGp} from GP · {excludedSov} from SOV
           </span>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  STATUS SETTINGS — office-only: colours + what counts toward GP / SOV   */
+/* ---------------------------------------------------------------------- */
+
+function StatusConfigRow({ row, onSave }) {
+  const [tone, setTone] = useState(row.tone || "primary");
+  const [countGp, setCountGp] = useState(row.count_gp !== false);
+  const [countSov, setCountSov] = useState(row.count_sov !== false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const dirty = tone !== row.tone || countGp !== (row.count_gp !== false) || countSov !== (row.count_sov !== false);
+  const preview = TONE_MAP[tone] || TONE_MAP.neutral;
+
+  return (
+    <tr style={{ borderTop: "1px solid var(--border)" }}>
+      <td className="px-3 py-2">
+        <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold"
+          style={{ color: countGp ? preview.fg : "var(--red)", background: countGp ? preview.bg : "var(--red-soft)" }}>
+          <span style={{ background: countGp ? preview.fg : "var(--red)" }} className="w-1.5 h-1.5 rounded-full" />
+          {row.status}
+        </span>
+        {row.auto_added && <span className="text-xs ml-2" style={{ color: "var(--ink-faint)" }}>new</span>}
+      </td>
+      <td className="px-3 py-2">
+        <select className="sw-input sw-focus" style={{ width: 110 }} value={tone} onChange={(e) => setTone(e.target.value)}>
+          {TONE_CHOICES.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+      </td>
+      <td className="px-3 py-2 text-center">
+        <input type="checkbox" checked={countGp} onChange={(e) => setCountGp(e.target.checked)} title="Counts toward GP" />
+        <div className="text-xs" style={{ color: countGp ? "var(--ink-faint)" : "var(--red)" }}>{countGp ? "counts" : "NGP"}</div>
+      </td>
+      <td className="px-3 py-2 text-center">
+        <input type="checkbox" checked={countSov} onChange={(e) => setCountSov(e.target.checked)} title="Counts toward SOV" />
+        <div className="text-xs" style={{ color: countSov ? "var(--ink-faint)" : "var(--amber)" }}>{countSov ? "counts" : "NSOV"}</div>
+      </td>
+      <td className="px-3 py-2">
+        <button
+          disabled={!dirty || saving}
+          onClick={async () => {
+            setSaving(true);
+            await onSave(row.status, { tone, count_gp: countGp, count_sov: countSov, auto_added: false });
+            setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 1500);
+          }}
+          className="sw-focus text-xs font-semibold px-2.5 py-1.5 rounded-lg"
+          style={{ background: dirty ? "var(--primary)" : "var(--surface-alt)", color: dirty ? "#fff" : "var(--ink-faint)" }}
+        >{saving ? "..." : "Save"}</button>
+      </td>
+      <td className="px-2 text-center">{saved && <CheckCircle2 size={14} style={{ color: "var(--green)" }} />}</td>
+    </tr>
+  );
+}
+
+function StatusSettingsView({ rows, onSave, newCount }) {
+  const sorted = useMemo(() => {
+    return [...rows].sort((a, b) => {
+      if (!!a.auto_added !== !!b.auto_added) return a.auto_added ? -1 : 1;  // new ones first
+      return String(a.status).localeCompare(String(b.status));
+    });
+  }, [rows]);
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-4">
+        <Palette size={18} style={{ color: "var(--primary)" }} />
+        <h2 className="sw-display text-lg font-bold">Order Statuses</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Office only · applies everywhere immediately</span>
+      </div>
+
+      <p className="text-sm mb-4 p-3 rounded-xl" style={{ background: "var(--primary-soft)", color: "var(--ink-soft)" }}>
+        Statuses arriving from NetSuite are added here automatically with a best-guess colour, marked <b>new</b> until
+        you've checked them. Unticking <b>GP</b> makes a status NGP — those orders drop out of GP totals and are hidden
+        from the dashboard unless someone asks to see them. Unticking <b>SOV</b> makes it NSOV.
+        {newCount > 0 && <> <b>{newCount} new {newCount === 1 ? "status" : "statuses"}</b> to review.</>}
+      </p>
+
+      <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <table className="w-full text-sm">
+          <thead>
+            <tr style={{ background: "var(--surface-alt)" }}>
+              {["Status", "Colour", "Counts to GP", "Counts to SOV", "", ""].map((h, i) => (
+                <th key={i} className="text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((r) => <StatusConfigRow key={r.status} row={r} onSave={onSave} />)}
+            {sorted.length === 0 && (
+              <tr><td colSpan={6} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                No statuses yet — they'll appear as NetSuite data syncs in.
+              </td></tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -1880,6 +2095,7 @@ export default function App() {
   const [orders, setOrders] = useState([]);
   const [staff, setStaff] = useState([]);
   const [netsuite, setNetsuite] = useState([]);
+  const [statusRows, setStatusRows] = useState([]);
   const [allProfiles, setAllProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("dashboard");
@@ -1933,6 +2149,51 @@ export default function App() {
     setNetsuite(all);
   }, []);
   useEffect(() => { if (session?.user) loadNetsuite(); }, [session, loadNetsuite]);
+
+  // Status settings — colours and what counts toward GP/SOV
+  const loadStatusCfg = useCallback(async () => {
+    const { data } = await supabase.from("status_config").select("*");
+    setStatusRows(data || []);
+    return data || [];
+  }, []);
+  useEffect(() => { if (session?.user) loadStatusCfg(); }, [session, loadStatusCfg]);
+
+  // Any NetSuite status we haven't seen before gets added automatically
+  // (office only — RLS won't let anyone else write). Managers then review
+  // the ones marked "new" in Status Settings.
+  useEffect(() => {
+    if (profile?.role !== "office" || !netsuite.length) return;
+    const known = new Set(statusRows.map((r) => r.status));
+    const missing = [];
+    const seen = new Set();
+    netsuite.forEach((n) => {
+      const s = n.order_status && String(n.order_status).trim();
+      if (!s || known.has(s) || seen.has(s)) return;
+      seen.add(s);
+      missing.push({
+        status: s,
+        tone: guessTone(s),
+        count_gp: n.count_gp !== false,
+        count_sov: n.count_sov !== false,
+        auto_added: true,
+      });
+    });
+    if (!missing.length) return;
+    supabase.from("status_config").insert(missing).then(() => loadStatusCfg());
+  }, [netsuite, statusRows, profile, loadStatusCfg]);
+
+  const saveStatusCfg = useCallback(async (status, patch) => {
+    const { error } = await supabase.from("status_config").update(patch).eq("status", status);
+    if (error) { setToast(`Couldn't save: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    loadStatusCfg();
+  }, [loadStatusCfg]);
+
+  const statusCfgMap = useMemo(() => {
+    const m = {};
+    statusRows.forEach((r) => { m[r.status] = r; });
+    return m;
+  }, [statusRows]);
+  const newStatusCount = useMemo(() => statusRows.filter((r) => r.auto_added).length, [statusRows]);
 
   // Office users also load every profile, needed for the Admin page's role editor
   const loadAllProfiles = useCallback(async () => {
@@ -2080,13 +2341,16 @@ export default function App() {
   // TV wall board route — reuses the logged-in session on that device.
   if (isTVRoute) {
     return (
-      <StaffContext.Provider value={staffValue}>
-        <TVBoard orders={orders} netsuite={netsuite} />
-      </StaffContext.Provider>
+      <StatusCfgContext.Provider value={statusCfgMap}>
+        <StaffContext.Provider value={staffValue}>
+          <TVBoard orders={orders} netsuite={netsuite} />
+        </StaffContext.Provider>
+      </StatusCfgContext.Provider>
     );
   }
 
   return (
+    <StatusCfgContext.Provider value={statusCfgMap}>
     <StaffContext.Provider value={staffValue}>
     <div className="sw-root">
       <style>{STYLE}</style>
@@ -2107,6 +2371,14 @@ export default function App() {
             <button onClick={() => setTab("new")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "new" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}><Plus size={14} /> New Submission</button>
             {profile?.role === "office" && (
               <button onClick={() => setTab("admin")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "admin" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}><Users size={14} /> Admin</button>
+            )}
+            {profile?.role === "office" && (
+              <button onClick={() => setTab("statuses")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "statuses" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}>
+                <Palette size={14} /> Statuses
+                {newStatusCount > 0 && (
+                  <span className="rounded-full px-1.5 text-xs font-bold" style={{ background: "var(--amber)", color: "#fff" }}>{newStatusCount}</span>
+                )}
+              </button>
             )}
             <a href="#tv" onClick={() => { setTimeout(() => window.location.reload(), 0); }} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={{ color: "var(--ink-soft)" }} title="Open the wall board"><Radio size={14} /> TV Mode</a>
           </nav>
@@ -2136,6 +2408,7 @@ export default function App() {
         {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuite} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
         {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} />}
         {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} />}
+        {tab === "statuses" && profile?.role === "office" && <StatusSettingsView rows={statusRows} onSave={saveStatusCfg} newCount={newStatusCount} />}
       </main>
 
       {selected && <OrderDrawer order={selected} ns={selected.document_number ? netsuite.find((n) => String(n.document_number) === String(selected.document_number)) : null} onClose={() => setSelected(null)} canEdit={canEditOrder(selected)} onSave={saveOrder} saving={savingEdit} onRemove={removeOrder} />}
@@ -2146,5 +2419,6 @@ export default function App() {
       )}
     </div>
     </StaffContext.Provider>
+    </StatusCfgContext.Provider>
   );
 }
