@@ -53,9 +53,9 @@ const findStaff = (list, name) => list.find((s) => s.full_name === name) || null
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 .sw-root {
-  --bg:#F4F3FA; --surface:#FFF; --surface-alt:#FAF9FE; --border:#E3E0F0;
-  --ink:#1D1A2E; --ink-soft:#6E6884; --ink-faint:#9C97B3;
-  --primary:#4C1D8F; --primary-soft:#EEE7FB;
+  --bg:#EFEBF9; --surface:#FDFCFF; --surface-alt:#F5F1FC; --border:#DCD4EF;
+  --ink:#1D1A2E; --ink-soft:#665F80; --ink-faint:#948DAE;
+  --primary:#4C1D8F; --primary-soft:#EAE1FA;
   --gold:#96700A; --gold-soft:#FBF3DE; --green:#1F7A3D; --green-soft:#E4F5E9;
   --amber:#B3660E; --amber-soft:#FBEDDA; --blue:#205EA6; --blue-soft:#E4EDF9;
   --red:#C0392B; --red-soft:#FBE7E4;
@@ -193,6 +193,7 @@ const PERIODS = [
   { key: "day", label: "Today" },
   { key: "wtd", label: "WTD" },
   { key: "mtd", label: "MTD" },
+  { key: "qtd", label: "QTD" },
   { key: "ytd", label: "YTD" },
   { key: "all", label: "All" },
 ];
@@ -202,6 +203,15 @@ const PERIODS = [
 function fyStart(now = new Date()) {
   const y = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
   return new Date(y, 3, 1, 0, 0, 0, 0);
+}
+// Financial quarters run Apr-Jun, Jul-Sep, Oct-Dec, Jan-Mar.
+function fqStart(now = new Date()) {
+  const m = now.getMonth();                       // 0-11
+  const fyMonth = (m - 3 + 12) % 12;              // months since April
+  const qIndex = Math.floor(fyMonth / 3);         // 0-3
+  const startMonth = (3 + qIndex * 3) % 12;
+  const year = startMonth > m ? now.getFullYear() - 1 : now.getFullYear();
+  return new Date(year, startMonth, 1, 0, 0, 0, 0);
 }
 // Monday as the first day of the working week.
 function weekStart(now = new Date()) {
@@ -216,6 +226,7 @@ function periodStart(period, now = new Date()) {
     case "day": { const d = new Date(now); d.setHours(0, 0, 0, 0); return d; }
     case "wtd": return weekStart(now);
     case "mtd": return new Date(now.getFullYear(), now.getMonth(), 1);
+    case "qtd": return fqStart(now);
     case "ytd": return fyStart(now);
     default: return null; // 'all'
   }
@@ -261,8 +272,53 @@ function rowGPForViewer(o, viewerScope) {
   return v;
 }
 
-function StatusPill({ status }) {
-  const s = STATUS_STYLE[status] || { fg: "var(--ink-soft)", bg: "var(--surface-alt)" };
+/* ---- Brand logo -------------------------------------------------------
+   Save the BT Local Business image as `public/logo.jpg` in your project.
+   If it isn't there this quietly falls back to the lettermark, so a
+   missing file never breaks the page. */
+function Logo({ height = 34 }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <div className="rounded-xl flex items-center justify-center sw-display font-bold text-white"
+        style={{ background: "var(--primary)", width: height, height }}>S</div>
+    );
+  }
+  return <img src="/logo.jpg" alt="BT Local Business — Coastel Communications"
+    style={{ height, width: "auto", display: "block" }} onError={() => setFailed(true)} />;
+}
+
+/* ---- Treemap ----------------------------------------------------------
+   Splits the space in two at roughly half the total value, alternating
+   direction each time. Bigger sellers get bigger boxes. */
+const PRODUCT_SHADES = ["#3B1370", "#4C1D8F", "#5E2CA8", "#7040BE", "#8659CE", "#9C74DC", "#B18FE6", "#C4AAEE"];
+
+function treemapLayout(items, x, y, w, h, horizontal) {
+  if (!items.length) return [];
+  if (items.length === 1) return [{ ...items[0], x, y, w, h }];
+  const total = items.reduce((s, i) => s + i.value, 0);
+  if (total <= 0) return [];
+  let acc = 0, splitIdx = 1;
+  for (let i = 0; i < items.length; i++) {
+    if (acc + items[i].value > total / 2 && i > 0) { splitIdx = i; break; }
+    acc += items[i].value;
+    splitIdx = i + 1;
+  }
+  const a = items.slice(0, splitIdx), b = items.slice(splitIdx);
+  if (!b.length) return a.map((it) => ({ ...it, x, y, w, h }));
+  const aTotal = a.reduce((s, i) => s + i.value, 0);
+  const ratio = aTotal / total;
+  if (horizontal) {
+    const wa = w * ratio;
+    return treemapLayout(a, x, y, wa, h, !horizontal)
+      .concat(treemapLayout(b, x + wa, y, w - wa, h, !horizontal));
+  }
+  const ha = h * ratio;
+  return treemapLayout(a, x, y, w, ha, !horizontal)
+    .concat(treemapLayout(b, x, y + ha, w, h - ha, !horizontal));
+}
+
+function StatusPill({ status }) {  const s = STATUS_STYLE[status] || { fg: "var(--ink-soft)", bg: "var(--surface-alt)" };
   return (
     <span style={{ color: s.fg, background: s.bg }} className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold whitespace-nowrap">
       <span style={{ background: s.fg }} className="w-1.5 h-1.5 rounded-full" />
@@ -364,7 +420,7 @@ function LoginScreen() {
       <style>{STYLE}</style>
       <div className="sw-rise w-full max-w-sm rounded-2xl p-8" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="flex items-center gap-3 mb-6">
-          <div className="w-10 h-10 rounded-xl flex items-center justify-center sw-display font-bold text-white" style={{ background: "var(--primary)" }}>S</div>
+          <Logo height={36} />
           <div>
             <div className="sw-display font-bold text-lg leading-tight">SchThrive WebOS</div>
             <div className="text-xs" style={{ color: "var(--ink-faint)" }}>Order tracking · GBP</div>
@@ -1401,11 +1457,20 @@ function TVStat({ label, value, accent }) {
 
 function TVBoard({ orders, netsuite }) {
   const countdown = useCountdownTo5pm();
+  const [period, setPeriod] = useState("mtd");
 
   // The board runs off NetSuite (the statted, authoritative figures),
   // not raw Lilac submissions. Column Y on the NetSuite sheet decides
   // what counts: NGP removes a deal from GP, NSOV removes it from SOV.
-  const ns = netsuite || [];
+  const allNs = netsuite || [];
+  const periodFrom = periodStart(period);
+  const inPeriod = useMemo(() => {
+    if (!periodFrom) return allNs;
+    const t = periodFrom.getTime();
+    return allNs.filter((r) => r.order_date && new Date(r.order_date + "T00:00:00").getTime() >= t);
+  }, [allNs, periodFrom]);
+
+  const ns = inPeriod;
   const gpRows = ns.filter((r) => r.count_gp !== false);
   const sovRows = ns.filter((r) => r.count_sov !== false);
 
@@ -1420,7 +1485,22 @@ function TVBoard({ orders, netsuite }) {
   const officeGpTotal = sumGp(gpRows);
   const officeGpWeek = sumGp(gpRows.filter(thisWeekNs));
   const officeGpToday = sumGp(gpRows.filter(todayNs));
-  const sovWeek = sumSov(sovRows.filter(thisWeekNs));
+  const sovPeriod = sumSov(sovRows);
+
+  // Sales by Product Group 2 — bigger box means more GP
+  const productBoxes = useMemo(() => {
+    const map = {};
+    gpRows.forEach((r) => {
+      const key = (r.product_group_2 || "Unspecified").trim() || "Unspecified";
+      map[key] = (map[key] || 0) + num(r.gp_office);
+    });
+    const items = Object.entries(map)
+      .map(([name, value]) => ({ name, value: Number(value) }))
+      .filter((i) => i.value > 0)
+      .sort((a, b) => b.value - a.value);
+    return treemapLayout(items, 0, 0, 100, 100, true);
+  }, [gpRows]);
+  const productTotal = productBoxes.reduce((s, b) => s + b.value, 0);
 
   // Team GP: each person's own share, from the NetSuite ledger.
   // The negative Office Doublecount row is already inside gp_office,
@@ -1448,7 +1528,7 @@ function TVBoard({ orders, netsuite }) {
   const leaderboard = Object.entries(agentMap)
     .map(([name, gp]) => ({ name, gp: Number(gp) }))
     .filter((a) => a.gp > 0)
-    .sort((a, b) => b.gp - a.gp).slice(0, 8);
+    .sort((a, b) => b.gp - a.gp).slice(0, 12);
 
   // Pipeline still comes from Lilac submissions — that's where the
   // Lilac Submitted / Processing / Billed / Closed Won stages live.
@@ -1462,20 +1542,31 @@ function TVBoard({ orders, netsuite }) {
   return (
     <div className="sw-root p-4" style={{ minHeight: "100vh" }}>
       <style>{STYLE}</style>
-      {/* Slim single-row header: back link, brand, countdown — no dead space */}
-      <div className="flex items-center justify-between mb-3 px-1">
+      {/* Slim single-row header: back link, logo, period toggle, countdown */}
+      <div className="flex items-center justify-between mb-3 px-1 gap-3 flex-wrap">
         <div className="flex items-center gap-3">
           <a href="/" className="sw-focus flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-full" style={{ color: "var(--ink-soft)", background: "var(--surface)", border: "1px solid var(--border)" }}>
             <ArrowLeft size={13} /> Dashboard
           </a>
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center sw-display font-bold text-white text-sm" style={{ background: "var(--primary)" }}>S</div>
-            <div>
-              <div className="sw-display font-bold text-base leading-none">SchThrive Stats</div>
-              <div className="text-xs flex items-center gap-1" style={{ color: "var(--ink-faint)" }}><Radio size={9} className="sw-live-dot" style={{ color: "var(--green)" }} /> Live · GBP</div>
-            </div>
+          <Logo height={30} />
+          <div>
+            <div className="sw-display font-bold text-base leading-none">SchThrive Stats</div>
+            <div className="text-xs flex items-center gap-1" style={{ color: "var(--ink-faint)" }}><Radio size={9} className="sw-live-dot" style={{ color: "var(--green)" }} /> Live · GBP</div>
           </div>
         </div>
+
+        <div className="flex items-center gap-1.5">
+          {PERIODS.filter((p) => p.key !== "all").map((p) => (
+            <button key={p.key} onClick={() => setPeriod(p.key)}
+              className="sw-focus px-3 py-1.5 rounded-full text-xs font-bold"
+              style={period === p.key
+                ? { background: "var(--primary)", color: "#fff" }
+                : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+
         <div className="flex items-center gap-2 rounded-xl px-4 py-1.5" style={{ background: countdown.done ? "var(--surface)" : "var(--primary)", border: "1px solid var(--border)" }}>
           <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: countdown.done ? "var(--ink-soft)" : "rgba(255,255,255,0.75)" }}>To 5pm</span>
           <span className="sw-mono font-bold text-xl" style={{ color: countdown.done ? "var(--ink)" : "#fff" }}>{countdown.text}</span>
@@ -1486,10 +1577,10 @@ function TVBoard({ orders, netsuite }) {
           the 4 headline numbers each own a column; Team + Leaderboard each
           span 2 of those same 4 columns underneath. */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "0.75rem" }}>
-        <TVStat label="Office GP (NetSuite)" value={fmtGBP(officeGpTotal)} accent="#1F7A3D" />
+        <TVStat label={`Office GP · ${PERIODS.find((p) => p.key === period)?.label || ""}`} value={fmtGBP(officeGpTotal)} accent="#1F7A3D" />
         <TVStat label="GP This Week" value={fmtGBP(officeGpWeek)} accent="#4C1D8F" />
         <TVStat label="GP Today" value={fmtGBP(officeGpToday)} accent="#205EA6" />
-        <TVStat label="SOV This Week" value={fmtGBP(sovWeek)} accent="#B3660E" />
+        <TVStat label={`SOV · ${PERIODS.find((p) => p.key === period)?.label || ""}`} value={fmtGBP(sovPeriod)} accent="#B3660E" />
 
         {/* Team vs Team + pipeline — spans columns 1-2 */}
         <div style={{ gridColumn: "span 2", background: "var(--surface)", border: "1px solid var(--border)" }} className="rounded-2xl p-4">
@@ -1514,21 +1605,60 @@ function TVBoard({ orders, netsuite }) {
           </div>
         </div>
 
-        {/* Agent leaderboard — spans columns 3-4 */}
+        {/* Agent leaderboard — spans columns 3-4, two columns of names inside */}
         <div style={{ gridColumn: "span 2", background: "var(--surface)", border: "1px solid var(--border)" }} className="rounded-2xl p-4">
           <div className="sw-display font-bold text-sm mb-3" style={{ color: "var(--ink-soft)" }}>AGENT LEADERBOARD</div>
-          <div className="flex flex-col gap-1.5">
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "0.5rem" }}>
             {leaderboard.map((a, i) => (
               <div key={a.name} className="flex items-center justify-between px-2.5 py-1.5 rounded-lg" style={{ background: i === 0 ? "var(--primary-soft)" : "var(--surface-alt)" }}>
-                <div className="flex items-center gap-2">
-                  <span className="sw-mono text-xs font-bold" style={{ color: "var(--ink-faint)", width: 16 }}>{i + 1}</span>
-                  <span className="font-medium text-xs">{a.name}</span>
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="sw-mono text-xs font-bold shrink-0" style={{ color: "var(--ink-faint)", width: 16 }}>{i + 1}</span>
+                  <span className="font-medium text-xs truncate">{a.name}</span>
                 </div>
-                <span className="sw-mono font-bold text-xs" style={{ color: "var(--green)" }}>{fmtGBP(a.gp)}</span>
+                <span className="sw-mono font-bold text-xs shrink-0 ml-1" style={{ color: "var(--green)" }}>{fmtGBP(a.gp)}</span>
               </div>
             ))}
-            {leaderboard.length === 0 && <div className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>No deals yet.</div>}
+            {leaderboard.length === 0 && <div className="text-xs text-center py-6" style={{ color: "var(--ink-faint)", gridColumn: "span 2" }}>No deals yet.</div>}
           </div>
+        </div>
+
+        {/* Sales by product group — box size follows GP */}
+        <div style={{ gridColumn: "span 4", background: "var(--surface)", border: "1px solid var(--border)" }} className="rounded-2xl p-4">
+          <div className="flex items-baseline justify-between mb-3">
+            <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>SALES BY PRODUCT GROUP — GP</div>
+            <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{fmtGBP(productTotal)} total</div>
+          </div>
+          {productBoxes.length === 0 ? (
+            <div className="text-xs text-center py-10" style={{ color: "var(--ink-faint)" }}>No product data for this period.</div>
+          ) : (
+            <div style={{ position: "relative", width: "100%", height: 210 }}>
+              {productBoxes.map((b, i) => {
+                const pct = productTotal > 0 ? (b.value / productTotal) * 100 : 0;
+                const shade = PRODUCT_SHADES[i % PRODUCT_SHADES.length];
+                const roomy = b.w > 14 && b.h > 18;
+                return (
+                  <div key={b.name}
+                    title={`${b.name} — ${fmtGBP(b.value)} (${pct.toFixed(1)}%)`}
+                    style={{
+                      position: "absolute",
+                      left: b.x + "%", top: b.y + "%", width: b.w + "%", height: b.h + "%",
+                      padding: 3, boxSizing: "border-box",
+                    }}>
+                    <div className="rounded-lg h-full w-full flex flex-col justify-center px-2 overflow-hidden"
+                      style={{ background: shade, color: "#fff" }}>
+                      <div className="font-semibold leading-tight truncate" style={{ fontSize: roomy ? 12 : 10 }}>{b.name}</div>
+                      {roomy && (
+                        <>
+                          <div className="sw-mono font-bold leading-tight" style={{ fontSize: b.w > 25 ? 18 : 13 }}>{fmtGBP(b.value)}</div>
+                          <div style={{ fontSize: 10, opacity: 0.85 }}>{pct.toFixed(1)}%</div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
 
@@ -1896,7 +2026,7 @@ export default function App() {
       <style>{STYLE}</style>
       <header className="sticky top-0 z-30 px-6 py-4 flex items-center justify-between" style={{ background: "var(--surface)", borderBottom: "1px solid var(--border)" }}>
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center sw-display font-bold text-white" style={{ background: "var(--primary)" }}>S</div>
+          <Logo height={34} />
           <div>
             <div className="sw-display font-bold leading-tight">SchThrive WebOS</div>
             <div className="text-xs flex items-center gap-1.5" style={{ color: "var(--ink-faint)" }}>
