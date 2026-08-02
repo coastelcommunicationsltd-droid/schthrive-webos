@@ -13,8 +13,8 @@ import {
 // 1. Your Supabase connection. Paste your PUBLISHABLE (anon) key below.
 //    The URL is safe here; the anon key is safe in frontend code because
 //    Row Level Security controls what it can actually read/write.
-const SUPABASE_URL = "https://xrekebgnubhjqtpllbcz.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_ic6iwJHLl6R8GHQ6exf7vg_xjBq5hjrE";
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 // 2. The selling teams shown in the management breakdown toggle.
 //    (Order Delivery / leadership are intentionally excluded here.)
