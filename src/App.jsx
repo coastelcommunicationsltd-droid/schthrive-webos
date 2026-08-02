@@ -96,6 +96,28 @@ const STATUS_STYLE = {
   "Closed Won": { fg: "var(--green)", bg: "var(--green-soft)" },
   "Arbitration Pending": { fg: "var(--gold)", bg: "var(--gold-soft)" },
 };
+
+// NetSuite uses its own wording ("Job Numbered & awaiting completion",
+// "Awaiting Cease", ...) and the list grows, so colour by keyword rather
+// than trying to enumerate every value.
+const TONE_GREEN   = { fg: "var(--green)",   bg: "var(--green-soft)" };
+const TONE_BLUE    = { fg: "var(--blue)",    bg: "var(--blue-soft)" };
+const TONE_AMBER   = { fg: "var(--amber)",   bg: "var(--amber-soft)" };
+const TONE_RED     = { fg: "var(--red)",     bg: "var(--red-soft)" };
+const TONE_PRIMARY = { fg: "var(--primary)", bg: "var(--primary-soft)" };
+const TONE_NEUTRAL = { fg: "var(--ink-soft)", bg: "var(--surface-alt)" };
+
+function statusTone(status, ngp) {
+  if (ngp) return TONE_RED;                       // doesn't count — always red
+  if (STATUS_STYLE[status]) return STATUS_STYLE[status];
+  const s = String(status || "").toLowerCase();
+  if (!s) return TONE_NEUTRAL;
+  if (/(cease|cancel|reject|lost|fail|void|declin)/.test(s)) return TONE_RED;
+  if (/(complete|completed|billed|closed won|live|provided|dispatched|delivered)/.test(s)) return TONE_GREEN;
+  if (/(awaiting|pending|hold|queue|delay)/.test(s)) return TONE_AMBER;
+  if (/(job number|progress|processing|accepted|submitted|placed|build)/.test(s)) return TONE_BLUE;
+  return TONE_PRIMARY;
+}
 const ENTITY_TYPES = ["Charity", "Limited", "LLP", "Partnership", "Proprietorship", "Sole Trader", "Other"];
 const DEAL_TYPES = ["Acquisition", "Cross-sell", "Migration", "Upgrade", "Resign", "Modify"];
 const ARB_REASONS = ["CV Call plan", "Incremental Commission", "Transaction Change", "Mobile"];
@@ -318,7 +340,8 @@ function treemapLayout(items, x, y, w, h, horizontal) {
     .concat(treemapLayout(b, x, y + ha, w, h - ha, !horizontal));
 }
 
-function StatusPill({ status }) {  const s = STATUS_STYLE[status] || { fg: "var(--ink-soft)", bg: "var(--surface-alt)" };
+function StatusPill({ status, ngp }) {
+  const s = statusTone(status, ngp);
   return (
     <span style={{ color: s.fg, background: s.bg }} className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold whitespace-nowrap">
       <span style={{ background: s.fg }} className="w-1.5 h-1.5 rounded-full" />
@@ -575,8 +598,10 @@ function DashboardView({ orders, netsuite, onOpenOrder, flashId, profile, loadin
       if (!showNGP && isNGP(o)) return false;
       const q = query.trim().toLowerCase();
       const mq = !q || (o.company_name || "").toLowerCase().includes(q) || (o.opp_id || "").toLowerCase().includes(q) || (o.cug || "").toLowerCase().includes(q);
+      const nRec = nsFor(o);
+      const liveStatus = nRec && nRec.order_status ? nRec.order_status : o.order_status;
       const ms = statusFilter === "All"
-        || (statusFilter === "__not_statted" ? isNotStatted(o) : o.order_status === statusFilter);
+        || (statusFilter === "__not_statted" ? isNotStatted(o) : liveStatus === statusFilter);
       const ma = agentFilter === "All" || o.closer_name === agentFilter || o.lead_gen_name === agentFilter;
       return mq && ms && ma;
     });
@@ -588,14 +613,30 @@ function DashboardView({ orders, netsuite, onOpenOrder, flashId, profile, loadin
         case "agent": av = a.closer_name || ""; bv = b.closer_name || ""; break;
         case "sov": av = num(a.contract_value); bv = num(b.contract_value); break;
         case "gp": av = num(a.gp_office != null ? a.gp_office : a.sales_agent_gp); bv = num(b.gp_office != null ? b.gp_office : b.sales_agent_gp); break;
-        case "status": av = a.order_status || ""; bv = b.order_status || ""; break;
+        case "status": {
+          const na = nsFor(a), nb = nsFor(b);
+          av = (na && na.order_status) || a.order_status || "";
+          bv = (nb && nb.order_status) || b.order_status || "";
+          break;
+        }
         default: av = a.last_updated || ""; bv = b.last_updated || "";
       }
       if (typeof av === "string") return av.localeCompare(bv) * dir;
       return (av - bv) * dir;
     });
     return sorted;
-  }, [scoped, query, statusFilter, agentFilter, sortKey, sortDir, showNGP, isNGP]);
+  }, [scoped, query, statusFilter, agentFilter, sortKey, sortDir, showNGP, isNGP, nsFor]);
+
+  // Statuses actually present — Lilac stages plus whatever NetSuite reports
+  const statusOptions = useMemo(() => {
+    const set = new Set(STATUS_PIPELINE);
+    set.add("Arbitration Pending");
+    scoped.forEach((o) => {
+      const n = nsFor(o);
+      if (n && n.order_status) set.add(n.order_status);
+    });
+    return Array.from(set).sort();
+  }, [scoped, nsFor]);
 
   const toggleSort = (key) => {
     if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -616,7 +657,11 @@ function DashboardView({ orders, netsuite, onOpenOrder, flashId, profile, loadin
   }, [gpCountable, isOffice, is2ic, scope, profile]);
   const ngpCount = useMemo(() => scoped.filter(isNGP).length, [scoped, isNGP]);
   const nsovCount = useMemo(() => scoped.filter(isNSOV).length, [scoped, isNSOV]);
-  const activeOrders = useMemo(() => scoped.filter((o) => o.order_status !== "Closed Won").length, [scoped]);
+  const activeOrders = useMemo(() => scoped.filter((o) => {
+    const n = nsFor(o);
+    const live = (n && n.order_status) || o.order_status || "";
+    return !/(closed won|complete|billed|cease|cancel)/i.test(live);
+  }).length, [scoped, nsFor]);
   const dirtyCount = useMemo(() => scoped.filter((o) => o.dirty_order === "Yes").length, [scoped]);
   const notStattedCount = useMemo(() => scoped.filter(isNotStatted).length, [scoped]);
   const gpLabel = isOffice && scope !== "office" ? `GP · ${scope}` : is2ic && profile?.team ? `GP · ${profile.team}` : "GP · Office";
@@ -677,7 +722,7 @@ function DashboardView({ orders, netsuite, onOpenOrder, flashId, profile, loadin
           )}
           <select className="sw-input sw-focus" style={{ width: 190 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
             <option>All</option>
-            {[...STATUS_PIPELINE, "Arbitration Pending"].map((s) => <option key={s}>{s}</option>)}
+            {statusOptions.map((s) => <option key={s}>{s}</option>)}
             <option value="__not_statted">⚠ Not Statted</option>
           </select>
           {ngpCount > 0 && (
@@ -747,21 +792,34 @@ function DashboardView({ orders, netsuite, onOpenOrder, flashId, profile, loadin
                     </div>
                   </td>
                   <td className="px-4 py-3">
-                    <StatusPill status={o.order_status} />
                     {(() => {
                       const n = nsFor(o);
-                      if (!n) return null;
-                      const ngp = n.count_gp === false;
-                      const nsov = n.count_sov === false;
+                      const ngp = !!n && n.count_gp === false;
+                      const nsov = !!n && n.count_sov === false;
+                      // NetSuite is the authority once it's seen the deal —
+                      // its status replaces "Lilac Submitted" on the pill.
+                      const live = n && n.order_status ? n.order_status : o.order_status;
                       return (
-                        <div className="text-xs mt-1" style={{ color: ngp ? "var(--red)" : "var(--ink-soft)" }}>
-                          {n.order_status || "—"}
-                          {(ngp || nsov) && (
-                            <span className="ml-1 font-semibold">
-                              {ngp ? "· NGP" : ""}{nsov ? "· NSOV" : ""}
-                            </span>
-                          )}
-                        </div>
+                        <>
+                          <StatusPill status={live} ngp={ngp} />
+                          <div className="text-xs mt-1" style={{ color: "var(--ink-faint)" }}>
+                            {n ? (
+                              <>
+                                {(ngp || nsov) && (
+                                  <span className="font-semibold" style={{ color: ngp ? "var(--red)" : "var(--amber)" }}>
+                                    {ngp ? "NGP" : ""}{ngp && nsov ? " · " : ""}{nsov ? "NSOV" : ""}
+                                    {" · "}
+                                  </span>
+                                )}
+                                <span>via {o.order_status}</span>
+                              </>
+                            ) : isNotStatted(o) ? (
+                              <span style={{ color: "var(--amber)" }}>Not Statted</span>
+                            ) : (
+                              <span>Awaiting NetSuite</span>
+                            )}
+                          </div>
+                        </>
                       );
                     })()}
                   </td>
@@ -850,7 +908,15 @@ function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove }) 
         <button onClick={onClose} className="sw-focus absolute top-5 right-5 p-1.5 rounded-lg" style={{ color: "var(--ink-soft)" }}><X size={18} /></button>
         <div className="mb-1"><IdChip>{order.opp_id}</IdChip></div>
         <h2 className="sw-display text-xl font-bold mt-2 mb-1">{order.company_name}</h2>
-        <div className="mb-4"><StatusPill status={order.order_status} /></div>
+        <div className="mb-4">
+          <StatusPill
+            status={ns && ns.order_status ? ns.order_status : order.order_status}
+            ngp={!!ns && ns.count_gp === false}
+          />
+          {ns && (
+            <span className="text-xs ml-2" style={{ color: "var(--ink-faint)" }}>via {order.order_status}</span>
+          )}
+        </div>
 
         {/* Deal value + GP — editable by office / 2ic / closer */}
         <div className="rounded-xl mb-5 p-4" style={{ background: "var(--surface-alt)" }}>
