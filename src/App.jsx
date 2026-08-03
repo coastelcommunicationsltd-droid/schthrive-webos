@@ -658,6 +658,83 @@ function ClusteredColumns({ groups, height = 190, money = true }) {
   );
 }
 
+/* Actual as a column, forecast as a marker across it. Reads as "did we hit
+   it" at a glance, which side-by-side bars don't. */
+function TargetBars({ groups, height = 210, money = true }) {
+  const [hover, setHover] = useState(null);
+  const max = Math.max(1, ...groups.flatMap((g) => [g.actual, g.target]));
+  const fmt = (v) => (money ? fmtGBP(v) : (v || 0).toLocaleString("en-GB"));
+
+  if (!groups.length) {
+    return <div className="text-xs text-center py-12" style={{ color: "var(--ink-faint)" }}>Nothing to compare yet.</div>;
+  }
+
+  return (
+    <div>
+      <div className="flex items-end gap-1.5" style={{ height }}>
+        {groups.map((g, i) => {
+          const hit = g.target > 0 && g.actual >= g.target;
+          const pct = g.target > 0 ? (g.actual / g.target) * 100 : null;
+          const colour = g.target <= 0 ? "var(--blue)" : hit ? "var(--green)" : (pct || 0) >= 75 ? "var(--amber)" : "var(--red)";
+          return (
+            <div key={g.label} className="flex-1 flex flex-col justify-end" style={{ height: "100%", position: "relative" }}
+              onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}>
+
+              {/* value sits above the column */}
+              <div className="text-center sw-mono" style={{ fontSize: 10, fontWeight: 700, color: colour, marginBottom: 2, opacity: hover === null || hover === i ? 1 : 0.45 }}>
+                {fmt(g.actual)}
+              </div>
+
+              <div style={{ position: "relative", height: "100%" }}>
+                {/* actual */}
+                <div style={{
+                  position: "absolute", bottom: 0, left: "16%", right: "16%",
+                  height: `${Math.max(1, (g.actual / max) * 100)}%`,
+                  background: colour, borderRadius: "3px 3px 0 0",
+                  opacity: hover === null || hover === i ? 1 : 0.4, transition: "opacity .15s",
+                }} />
+                {/* forecast marker */}
+                {g.target > 0 && (
+                  <div style={{
+                    position: "absolute", bottom: `${(g.target / max) * 100}%`, left: "6%", right: "6%",
+                    height: 0, borderTop: "2px dashed var(--ink)",
+                    opacity: hover === null || hover === i ? 0.85 : 0.3,
+                  }} />
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="flex gap-1.5 mt-1">
+        {groups.map((g, i) => (
+          <span key={g.label} className="flex-1 text-center" style={{ fontSize: 10, color: hover === i ? "var(--ink)" : "var(--ink-faint)", fontWeight: hover === i ? 700 : 400 }}>{g.label}</span>
+        ))}
+      </div>
+
+      <div className="flex items-center justify-between gap-2 mt-2 flex-wrap">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="flex items-center gap-1.5 text-xs" style={{ color: "var(--ink-soft)" }}>
+            <span style={{ width: 9, height: 9, borderRadius: 2, background: "var(--green)", display: "inline-block" }} /> Statted
+          </span>
+          <span className="flex items-center gap-1.5 text-xs" style={{ color: "var(--ink-soft)" }}>
+            <span style={{ width: 12, height: 0, borderTop: "2px dashed var(--ink)", display: "inline-block" }} /> Forecast
+          </span>
+        </div>
+        {hover !== null && groups[hover].target > 0 && (
+          <span className="text-xs sw-mono" style={{ color: "var(--ink-soft)" }}>
+            {fmt(groups[hover].actual)} of {fmt(groups[hover].target)}
+            <b style={{ marginLeft: 6, color: groups[hover].actual >= groups[hover].target ? "var(--green)" : "var(--red)" }}>
+              {groups[hover].actual >= groups[hover].target ? "+" : ""}{fmt(groups[hover].actual - groups[hover].target)}
+            </b>
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // A percentage with a short explanation — used for cancellation / rejection.
 function RateCard({ label, pct, count, of, colour, hint }) {
   return (
@@ -854,7 +931,7 @@ function ChangePasswordScreen({ forced, onDone, onCancel }) {
 /*  DASHBOARD                                                              */
 /* ---------------------------------------------------------------------- */
 
-function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrder, flashId, profile, loading }) {
+function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrder, flashId, profile, loading, onNewOrder }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [agentFilter, setAgentFilter] = useState("All");
@@ -1334,6 +1411,11 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         <HealthItem label="Dirty" value={dirtyCount} colour={dirtyCount > 0 ? "var(--red)" : "var(--ink-faint)"} hint="Flagged for review" />
         {ngpCount > 0 && <HealthItem label="NGP" value={ngpCount} colour="var(--red)" hint="Excluded from GP" />}
         {nsovCount > 0 && <HealthItem label="NSOV" value={nsovCount} colour="var(--amber)" hint="Excluded from SOV" />}
+        <button onClick={onNewOrder}
+          className="sw-focus ml-auto px-3.5 py-1.5 rounded-full text-xs font-semibold text-white flex items-center gap-1.5"
+          style={{ background: "var(--primary)" }}>
+          <Plus size={13} /> Submit a Lilac Box
+        </button>
       </div>
 
       {/* One condensed filter bar: view, period, team, search, agent, status, product */}
@@ -1515,16 +1597,16 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       <div style={{ position: "sticky", top: 12, maxHeight: "calc(100vh - 24px)", overflowY: "auto" }} className="flex flex-col gap-3 pr-0.5">
         <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <div className="flex items-baseline justify-between mb-3">
-            <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>GP — LAST SIX MONTHS</div>
+            <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>STATTED vs FORECAST</div>
             <span className="text-xs" style={{ color: analytics.accuracy >= 90 ? "var(--green)" : analytics.accuracy >= 70 ? "var(--amber)" : "var(--red)" }}>
               {analytics.accuracy.toFixed(0)}% of forecast
             </span>
           </div>
-          <LineChart series={[
-            { name: "Forecast", colour: "#9C74DC", points: analytics.months.map((m, i) => ({ label: m, value: analytics.forecastGp[i] })) },
-            { name: "Claimed", colour: "#4C1D8F", points: analytics.months.map((m, i) => ({ label: m, value: analytics.claimedGp[i] })) },
-            { name: "Statted", colour: "#1F7A3D", points: analytics.months.map((m, i) => ({ label: m, value: analytics.stattedGp[i] })) },
-          ]} />
+          <TargetBars groups={analytics.months.map((m, i) => ({
+            label: m,
+            actual: analytics.stattedGp[i],
+            target: analytics.forecastGp[i],
+          }))} />
         </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
@@ -2803,6 +2885,7 @@ function ReportCharts({ treemapItems, treemapTitle, productSelected, onProductSe
 function SalesBreakdownView({ netsuite }) {
   const [grain, setGrain] = useState("month");   // 'month' | 'week'
   const [showAcq, setShowAcq] = useState(false);
+  const [sbOpen, setSbOpen] = useState({});      // which rows are opened up
   const [team, setTeam] = useState("All");
   const [agent, setAgent] = useState("All");
   const [product, setProduct] = useState(null);  // set by clicking a chart
@@ -2940,6 +3023,33 @@ function SalesBreakdownView({ netsuite }) {
     return rows;
   }, [rowsFiltered, columns, keyOf, statusCfg]);
 
+  // Per-team figures, shown when a team row is opened
+  const teamBreakdown = useMemo(() => {
+    const blank = () => {
+      const o = {};
+      columns.forEach((c) => { o[c.key] = 0; });
+      return o;
+    };
+    const teams = {};
+    rowsFiltered.forEach((r) => {
+      if (!r.order_date) return;
+      const k = keyOf(new Date(r.order_date + "T00:00:00"));
+      const t = r.closer_team || "Unassigned";
+      if (!teams[t]) teams[t] = { team: t, gp: blank(), sov: blank(), cloud: blank(), conn: blank(), mobile: blank() };
+      if (!(k in teams[t].gp)) return;
+      const sov = counts(r, "sov") ? num(r.contract_value) : 0;
+      const gp = counts(r, "gp") ? num(r.gp_office) : 0;
+      const b = bucketOf(r);
+      teams[t].gp[k] += gp;
+      teams[t].sov[k] += sov;
+      if (b === "cloud" || b === "dv4b") teams[t].cloud[k] += sov;
+      if (b === "broadband" || b === "btnet" || b === "security") teams[t].conn[k] += sov;
+      if (b === "mobile") teams[t].mobile[k] += sov;
+    });
+    return Object.keys(teams).map((k) => teams[k])
+      .sort((a, b) => columns.reduce((s, c) => s + b.gp[c.key], 0) - columns.reduce((s, c) => s + a.gp[c.key], 0));
+  }, [rowsFiltered, columns, keyOf, bucketOf, statusCfg]);
+
   const rowTotal = (r) => columns.reduce((s, c) => s + (r[c.key] || 0), 0);
   const rowAvg = (r) => {
     const active = columns.filter((c) => (r[c.key] || 0) !== 0).length;
@@ -2957,9 +3067,21 @@ function SalesBreakdownView({ netsuite }) {
   const campaignPct = pctRow(data.campaignGp, data.totalGp);
   const acqCampaignPct = pctRow(data.acqCampaignGp, data.campaignGp);
 
-  const MetricRow = ({ label, row, money = true, bold, tone, indent, pct }) => (
+  const MetricRow = ({ label, row, money = true, bold, tone, indent, indent2, pct, isOpen, onToggle }) => (
     <tr style={{ borderTop: "1px solid var(--border)" }}>
-      <ReportLabel bold={bold} tone={tone} indent={indent}>{label}</ReportLabel>
+      <td className="px-3 py-1.5 whitespace-nowrap"
+        style={{
+          fontSize: 12, fontWeight: bold ? 700 : 600, color: tone || "var(--ink-soft)",
+          paddingLeft: indent2 ? 44 : indent ? 26 : 12,
+          position: "sticky", left: 0, background: "var(--surface)",
+        }}>
+        {onToggle ? (
+          <button onClick={onToggle} className="sw-focus flex items-center gap-1.5 text-left">
+            <ChevronDown size={12} style={{ color: "var(--ink-faint)", transform: isOpen ? "rotate(0)" : "rotate(-90deg)", transition: "transform .15s" }} />
+            <span>{label}</span>
+          </button>
+        ) : label}
+      </td>
       {pct ? (
         <>
           <td className="px-2 py-1.5 sw-mono" style={{ fontSize: 12, textAlign: "center", background: "var(--primary-soft)", borderLeft: "1px solid var(--border)", fontWeight: 700 }}>
@@ -3028,21 +3150,56 @@ function SalesBreakdownView({ netsuite }) {
               </tr>
             </thead>
             <tbody>
-              <MetricRow label="Cloud SOV" row={data.cloudSov} />
-              <MetricRow label="Connectivity SOV" row={data.connSov} />
-              <MetricRow label="BT Net SOV" row={data.btnetSov} indent />
-              <MetricRow label="Broadband SOV" row={data.bbSov} indent />
-              <MetricRow label="Mobile SOV" row={data.mobileSov} />
-              <MetricRow label="Other SOV" row={data.otherSov} />
-              <MetricRow label="DV4B SOV" row={data.dv4bSov} />
-              <MetricRow label="Resign SOV" row={data.resignSov} />
-              <MetricRow label="Resign Units" row={data.resignUnits} money={false} indent />
-              <MetricRow label="Non Resign SOV" row={data.nonResignSov} />
-              <MetricRow label="Non Resign Units" row={data.nonResignUnits} money={false} indent />
-              <MetricRow label="Total SOV" row={data.totalSov} bold tone="var(--primary)" />
+              {/* Totals lead; the detail sits behind them */}
               <MetricRow label="Total GP" row={data.totalGp} bold tone="var(--green)" />
-              <MetricRow label="Campaign GP" row={data.campaignGp} />
-              <MetricRow label="Campaign GP %" row={campaignPct} pct indent />
+              <MetricRow label="Total SOV" row={data.totalSov} bold tone="var(--primary)"
+                isOpen={!!sbOpen.products} onToggle={() => setSbOpen((o) => ({ ...o, products: !o.products }))} />
+              {sbOpen.products && (
+                <>
+                  <MetricRow label="Cloud SOV" row={data.cloudSov} indent />
+                  <MetricRow label="DV4B SOV" row={data.dv4bSov} indent2 />
+                  <MetricRow label="Connectivity SOV" row={data.connSov} indent />
+                  <MetricRow label="BT Net SOV" row={data.btnetSov} indent2 />
+                  <MetricRow label="Broadband SOV" row={data.bbSov} indent2 />
+                  <MetricRow label="Mobile SOV" row={data.mobileSov} indent />
+                  <MetricRow label="Other SOV" row={data.otherSov} indent />
+                </>
+              )}
+
+              <MetricRow label="Resign SOV" row={data.resignSov}
+                isOpen={!!sbOpen.resign} onToggle={() => setSbOpen((o) => ({ ...o, resign: !o.resign }))} />
+              {sbOpen.resign && (
+                <>
+                  <MetricRow label="Resign Units" row={data.resignUnits} money={false} indent />
+                  <MetricRow label="Non Resign SOV" row={data.nonResignSov} indent />
+                  <MetricRow label="Non Resign Units" row={data.nonResignUnits} money={false} indent2 />
+                </>
+              )}
+
+              <MetricRow label="Campaign GP" row={data.campaignGp}
+                isOpen={!!sbOpen.campaign} onToggle={() => setSbOpen((o) => ({ ...o, campaign: !o.campaign }))} />
+              {sbOpen.campaign && <MetricRow label="Campaign GP %" row={campaignPct} pct indent />}
+
+              {/* By team, opened on demand */}
+              {teamBreakdown.length > 0 && (
+                <tr style={{ background: "var(--surface-alt)", borderTop: "2px solid var(--border)" }}>
+                  <td colSpan={3 + columns.length} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "var(--primary)" }}>By team</td>
+                </tr>
+              )}
+              {teamBreakdown.map((t) => (
+                <React.Fragment key={t.team}>
+                  <MetricRow label={t.team} row={t.gp} bold
+                    isOpen={!!sbOpen[`team_${t.team}`]} onToggle={() => setSbOpen((o) => ({ ...o, [`team_${t.team}`]: !o[`team_${t.team}`] }))} />
+                  {sbOpen[`team_${t.team}`] && (
+                    <>
+                      <MetricRow label="Total SOV" row={t.sov} indent tone="var(--primary)" />
+                      <MetricRow label="Cloud SOV" row={t.cloud} indent2 />
+                      <MetricRow label="Connectivity SOV" row={t.conn} indent2 />
+                      <MetricRow label="Mobile SOV" row={t.mobile} indent2 />
+                    </>
+                  )}
+                </React.Fragment>
+              ))}
 
               {showAcq && (
                 <>
@@ -6568,7 +6725,7 @@ export default function App() {
             </div>
           </div>
         )}
-        {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuite} forecasts={forecasts} staff={staff} payPlans={payPlans} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
+        {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuite} forecasts={forecasts} staff={staff} payPlans={payPlans} onNewOrder={() => setTab("new")} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
         {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} />}
         {tab === "daybyday" && <DayByDayView orders={orders} />}
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuite} />}
