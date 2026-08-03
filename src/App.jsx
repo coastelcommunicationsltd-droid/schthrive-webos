@@ -543,7 +543,7 @@ function KPICard({ icon: Icon, label, value, sub, accent, target, rawValue }) {
 }
 
 /* Headline figure. Carries a target when the viewer has a pay plan. */
-function HeroCard({ label, value, note, accent, target, fullTarget, rawValue }) {
+function HeroCard({ label, value, note, accent, target, fullTarget, rawValue, acq }) {
   // Colour reflects pace (are you where you should be today); the number
   // and bar reflect the whole target, so day 1 doesn't read as 1200%.
   const tone = target ? paceTone(rawValue, target) : null;
@@ -551,8 +551,16 @@ function HeroCard({ label, value, note, accent, target, fullTarget, rawValue }) 
   const pct = denom ? Math.round((rawValue / denom) * 100) : 0;
   const pacePct = denom && target ? Math.min(100, (target / denom) * 100) : 0;
   return (
-    <div className="sw-rise rounded-xl p-4 flex flex-col justify-between"
-      style={{ background: "var(--surface)", border: "1px solid var(--border)", minHeight: 112 }}>
+    <div className="sw-rise rounded-xl flex" style={{ background: "var(--surface)", border: "1px solid var(--border)", minHeight: 112 }}>
+    {acq && (
+      <div className="flex flex-col justify-center px-3 py-4 shrink-0"
+        style={{ width: "33%", borderRight: "1px solid var(--border)", background: "var(--surface-alt)" }}>
+        <div className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em", fontSize: 10 }}>ACQ</div>
+        <div className="sw-display truncate" style={{ fontSize: 19, fontWeight: 600, letterSpacing: "-0.02em", marginTop: 2 }}>{acq.value}</div>
+        <div className="text-xs mt-0.5" style={{ color: "var(--ink-faint)" }}>{acq.pct.toFixed(0)}% of total</div>
+      </div>
+    )}
+    <div className="p-4 flex flex-col justify-between flex-1 min-w-0">
       <div className="flex items-start justify-between gap-2">
         <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{label}</span>
         {tone && (
@@ -577,6 +585,22 @@ function HeroCard({ label, value, note, accent, target, fullTarget, rawValue }) 
       ) : (
         <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{note}</div>
       )}
+    </div>
+    </div>
+  );
+}
+
+/* Slim campaign figure tucked under a headline card. Full view only —
+   it's context, not a headline in its own right. */
+function CampaignBar({ label, value, pct }) {
+  if (!value) return null;
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 mt-1 rounded-lg"
+      style={{ background: "var(--surface-alt)", border: "1px solid var(--border)" }}>
+      <span style={{ fontSize: 11 }}>🎯</span>
+      <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{label}</span>
+      <span className="sw-mono ml-auto" style={{ fontSize: 12, fontWeight: 600 }}>{fmtGBP(value)}</span>
+      <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{pct.toFixed(0)}%</span>
     </div>
   );
 }
@@ -1017,6 +1041,9 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
   const [focusFilter, setFocusFilter] = useState("All");   // All | aged | attention
   const [sideCard, setSideCard] = useState("plan");        // which summary card is showing
   const [topView, setTopView] = useState(true);            // headline figures only
+  const [showAcq, setShowAcq] = useState(false);           // split the headline cards
+  const [campaignOnly, setCampaignOnly] = useState(false); // campaign-sourced deals only
+  const [acqOnly, setAcqOnly] = useState(false);           // acquisitions only
   const [sortKey, setSortKey] = useState("last_updated");
   const [sortDir, setSortDir] = useState("desc");
   const role = profile?.role || "agent";
@@ -1126,6 +1153,9 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
           date: n.order_date,
           ageDays: n.order_date ? Math.floor((Date.now() - new Date(n.order_date + "T00:00:00").getTime()) / 86400000) : null,
           needsAction: !!(n.order_status && statusCfg[n.order_status]?.needs_attention),
+          campaign: !!(n.campaign_source && String(n.campaign_source).trim() && !/lilac box/i.test(String(n.campaign_source))),
+          campaignName: n.campaign_source || null,
+          isAcq: /acquisition/i.test(String(n.class_name || "")),
           ngp: n.count_gp === false, nsov: n.count_sov === false,
           raw: n,
         }));
@@ -1149,6 +1179,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
           date: f.forecast_date || f.forecast_week,
           matched: !!f.matched_at,
           actual_gp: num(f.actual_gp),
+          campaign: false, campaignName: null, isAcq: false,
           ngp: false, nsov: false,
           raw: f,
         }));
@@ -1174,6 +1205,12 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         notStatted: isNotStatted(o),
         ageDays: o.submission_date ? Math.floor((Date.now() - new Date(o.submission_date).getTime()) / 86400000) : null,
         needsAction: !!(n && n.order_status && statusCfg[n.order_status]?.needs_attention),
+        campaign: (() => {
+          const s = o.campaign_source || (n || {}).campaign_source;
+          return !!(s && String(s).trim() && !/lilac box/i.test(String(s)));
+        })(),
+        campaignName: o.campaign_source || (n || {}).campaign_source || null,
+        isAcq: /acquisition/i.test(String(o.deal_type || "")) || !!(n && /acquisition/i.test(String(n.class_name || ""))),
         ngp, nsov,
         raw: o,
       };
@@ -1214,7 +1251,9 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         || String(r.product || "").toLowerCase().includes(productFilter.toLowerCase());
       const mf = focusFilter === "All"
         || (focusFilter === "aged" ? (r.ageDays != null && r.ageDays >= 90) : !!r.needsAction);
-      return mq && ms && ma && mp && mf;
+      const mc = !campaignOnly || !!r.campaign;
+      const macq = !acqOnly || !!r.isAcq;
+      return mq && ms && ma && mp && mf && mc && macq;
     });
     const dir = sortDir === "asc" ? 1 : -1;
     return [...f].sort((a, b) => {
@@ -1230,7 +1269,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       if (typeof av === "string") return av.localeCompare(bv) * dir;
       return (av - bv) * dir;
     });
-  }, [viewRows, query, statusFilter, agentFilter, productFilter, focusFilter, sortKey, sortDir, ngpMode]);
+  }, [viewRows, query, statusFilter, agentFilter, productFilter, focusFilter, sortKey, sortDir, ngpMode, campaignOnly, acqOnly]);
 
   // Statuses actually present — Lilac stages plus whatever NetSuite reports
   const statusOptions = useMemo(() => {
@@ -1381,6 +1420,36 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
     });
     return totals;
   }, [netsuite, period, statusCfg, isOffice, is2ic, scope, profile, agentFilter, productFilter]);
+
+  // ---- Campaign and acquisition splits --------------------------------
+  // Campaign = the deal came from a named campaign source.
+  // ACQ = new business rather than a renewal or upgrade.
+  const isCampaignRow = useCallback((o) => {
+    const src = o.campaign_source || (nsFor(o) || {}).campaign_source;
+    return !!(src && String(src).trim() && !/lilac box/i.test(String(src)));
+  }, [nsFor]);
+
+  const isAcqRow = useCallback((o) => {
+    if (/acquisition/i.test(String(o.deal_type || ""))) return true;
+    const n = nsFor(o);
+    return !!(n && /acquisition/i.test(String(n.class_name || "")));
+  }, [nsFor]);
+
+  const splits = useMemo(() => {
+    let campaignGp = 0, campaignSov = 0, acqGp = 0, acqSov = 0, totalGp = 0;
+    gpCountable.forEach((o) => {
+      const gp = num(o.gp_office != null ? o.gp_office : o.sales_agent_gp);
+      const sov = num(o.contract_value);
+      totalGp += gp;
+      if (isCampaignRow(o)) { campaignGp += gp; campaignSov += sov; }
+      if (isAcqRow(o)) { acqGp += gp; acqSov += sov; }
+    });
+    return {
+      campaignGp, campaignSov, acqGp, acqSov,
+      acqPct: totalGp ? (acqGp / totalGp) * 100 : 0,
+      campaignPct: totalGp ? (campaignGp / totalGp) * 100 : 0,
+    };
+  }, [gpCountable, isCampaignRow, isAcqRow]);
 
   // ---- Ranked agents: claimed against each person's own target --------
   // Replaces the agent dropdown — the ranking is the selector.
@@ -1587,7 +1656,15 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
   return (
     <div>
       {/* Top view strips it back to the two numbers that matter most */}
-      <div className="flex items-center justify-end mb-2">
+      <div className="flex items-center justify-end gap-2 mb-2">
+        <button onClick={() => setShowAcq((v) => !v)}
+          title="Show acquisition alongside the headline figures"
+          className="sw-focus px-2.5 py-1 rounded-lg text-xs"
+          style={showAcq
+            ? { background: "var(--primary)", color: "#fff", fontWeight: 600 }
+            : { background: "var(--surface)", color: "var(--ink-faint)", border: "1px solid var(--border)" }}>
+          ACQ split
+        </button>
         <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
           {[[false, "Full"], [true, "Top view"]].map(([v, lbl]) => (
             <button key={String(v)} onClick={() => setTopView(v)}
@@ -1606,15 +1683,26 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }} className="mb-3">
           {[
             { label: gpLabel, value: fmtGBP(gpTotal), target: targets.gp, fullTarget: targets.full.gp, raw: gpTotal,
+              acq: { value: fmtGBP(splits.acqGp), pct: splits.acqPct },
               note: gpWorking.dc > 0 ? `${fmtGBP(gpWorking.claimed)} claimed − ${fmtGBP(gpWorking.dc)} DC` : "Single-counted GP" },
             { label: "SOV", value: fmtGBP(sovTotal), target: null, raw: 0,
+              acq: { value: fmtGBP(splits.acqSov), pct: sovTotal ? (splits.acqSov / sovTotal) * 100 : 0 },
               note: `${productScoped.length} order${productScoped.length === 1 ? "" : "s"} · ${periodLabelFor(period)}` },
           ].map((c) => {
             const tone = c.target ? paceTone(c.raw, c.target) : null;
             const denom = c.fullTarget || c.target;
             const pct = denom ? Math.round((c.raw / denom) * 100) : 0;
             return (
-              <div key={c.label} className="rounded-xl px-6 py-7" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div key={c.label} className="rounded-xl flex" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              {showAcq && c.acq && (
+                <div className="flex flex-col justify-center px-4 py-7 shrink-0"
+                  style={{ width: "33%", borderRight: "1px solid var(--border)", background: "var(--surface-alt)" }}>
+                  <div className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.05em" }}>ACQ</div>
+                  <div className="sw-display truncate" style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.025em", marginTop: 6 }}>{c.acq.value}</div>
+                  <div className="text-xs mt-1" style={{ color: "var(--ink-faint)" }}>{c.acq.pct.toFixed(0)}% of total</div>
+                </div>
+              )}
+              <div className="px-6 py-7 flex-1 min-w-0">
                 <div className="flex items-baseline justify-between">
                   <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.05em" }}>{c.label}</span>
                   {tone && <span className="text-xs font-semibold" style={{ color: tone.fg }}>{pct}% of pace</span>}
@@ -1629,6 +1717,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                 )}
                 <div className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>{c.note}</div>
               </div>
+              </div>
             );
           })}
         </div>
@@ -1636,12 +1725,20 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       /* Headline row */
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) minmax(0,1.1fr) minmax(260px,1.15fr)", gap: "0.75rem" }} className="mb-3">
 
-        <HeroCard label={gpLabel} value={fmtGBP(gpTotal)} accent="#1F7A3D"
-          target={targets.gp} fullTarget={targets.full.gp} rawValue={gpTotal}
-          note={gpWorking.dc > 0 ? `${fmtGBP(gpWorking.claimed)} claimed − ${fmtGBP(gpWorking.dc)} DC` : "Single-counted"} />
+        <div>
+          <HeroCard label={gpLabel} value={fmtGBP(gpTotal)} accent="#1F7A3D"
+            target={targets.gp} fullTarget={targets.full.gp} rawValue={gpTotal}
+            acq={showAcq ? { value: fmtGBP(splits.acqGp), pct: splits.acqPct } : null}
+            note={gpWorking.dc > 0 ? `${fmtGBP(gpWorking.claimed)} claimed − ${fmtGBP(gpWorking.dc)} DC` : "Single-counted"} />
+          <CampaignBar label="Campaign GP" value={splits.campaignGp} pct={splits.campaignPct} />
+        </div>
 
-        <HeroCard label="SOV" value={fmtGBP(sovTotal)} accent="#4C1D8F"
-          note={`${productScoped.length} order${productScoped.length === 1 ? "" : "s"}`} />
+        <div>
+          <HeroCard label="SOV" value={fmtGBP(sovTotal)} accent="#4C1D8F"
+            acq={showAcq ? { value: fmtGBP(splits.acqSov), pct: sovTotal ? (splits.acqSov / sovTotal) * 100 : 0 } : null}
+            note={`${productScoped.length} order${productScoped.length === 1 ? "" : "s"}`} />
+          <CampaignBar label="Campaign SOV" value={splits.campaignSov} pct={sovTotal ? (splits.campaignSov / sovTotal) * 100 : 0} />
+        </div>
 
         <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <div className="flex items-baseline justify-between mb-2.5">
@@ -1884,40 +1981,58 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
           {dataView === "claimed" && <option value="__not_statted">⚠ Not Statted</option>}
         </select>
 
-        {attentionCount > 0 && (
+        {/* Exceptions — everything that narrows the list to a problem set */}
+        <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+          {[
+            ["hide", "Hide NGP", null, "NGP orders don't count toward GP"],
+            ["show", "Show NGP", null, "Include NGP orders in the list"],
+            ["only", "Only NGP", ngpCount, "Just the NGP orders"],
+          ].map(([k, lbl, n, hint]) => (
+            <button key={k} onClick={() => { setNgpMode(k); setFocusFilter("All"); }} title={hint}
+              className="sw-focus px-2.5 py-2 text-xs whitespace-nowrap"
+              style={ngpMode === k && focusFilter === "All"
+                ? { background: k === "only" ? "var(--red)" : "var(--surface-alt)", color: k === "only" ? "#fff" : "var(--ink)", fontWeight: 600 }
+                : { background: "transparent", color: "var(--ink-faint)" }}>
+              {lbl}{n ? ` (${n})` : ""}
+            </button>
+          ))}
+          <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
           <button onClick={() => setFocusFilter(focusFilter === "attention" ? "All" : "attention")}
-            title="Orders sitting at a status that needs the agent to act"
-            className="sw-focus px-2.5 py-2 rounded-lg text-xs whitespace-nowrap"
+            title="Orders at a status that needs the agent to act"
+            className="sw-focus px-2.5 py-2 text-xs whitespace-nowrap"
             style={focusFilter === "attention"
               ? { background: "var(--amber)", color: "#fff", fontWeight: 600 }
-              : { background: "var(--surface)", color: "var(--amber)", border: "1px solid var(--border)" }}>
-            Needs action ({attentionCount})
+              : { background: "transparent", color: attentionCount ? "var(--amber)" : "var(--ink-faint)" }}>
+            Needs action{attentionCount ? ` (${attentionCount})` : ""}
           </button>
-        )}
-        {agedCount > 0 && (
           <button onClick={() => setFocusFilter(focusFilter === "aged" ? "All" : "aged")}
             title="Submitted more than 90 days ago"
-            className="sw-focus px-2.5 py-2 rounded-lg text-xs whitespace-nowrap"
+            className="sw-focus px-2.5 py-2 text-xs whitespace-nowrap"
             style={focusFilter === "aged"
               ? { background: "var(--red)", color: "#fff", fontWeight: 600 }
-              : { background: "var(--surface)", color: "var(--red)", border: "1px solid var(--border)" }}>
-            90+ days ({agedCount})
+              : { background: "transparent", color: agedCount ? "var(--red)" : "var(--ink-faint)" }}>
+            90+ days{agedCount ? ` (${agedCount})` : ""}
           </button>
-        )}
-        {ngpCount > 0 && (
-          <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}
-            title="NGP orders don't count toward GP">
-            {[["hide", "Hide NGP"], ["show", "Show"], ["only", `Only (${ngpCount})`]].map(([k, lbl]) => (
-              <button key={k} onClick={() => setNgpMode(k)}
-                className="sw-focus px-2.5 py-2 text-xs whitespace-nowrap"
-                style={ngpMode === k
-                  ? { background: k === "only" ? "var(--red)" : "var(--surface-alt)", color: k === "only" ? "#fff" : "var(--ink)", fontWeight: 600 }
-                  : { background: "transparent", color: "var(--ink-faint)" }}>
-                {lbl}
-              </button>
-            ))}
-          </div>
-        )}
+        </div>
+
+        {/* Campaign and acquisition slices */}
+        <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+          <button onClick={() => setCampaignOnly((v) => !v)} title="Only deals from a named campaign"
+            className="sw-focus px-2.5 py-2 text-xs whitespace-nowrap"
+            style={campaignOnly
+              ? { background: "var(--primary)", color: "#fff", fontWeight: 600 }
+              : { background: "transparent", color: "var(--ink-faint)" }}>
+            🎯 Campaign
+          </button>
+          <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
+          <button onClick={() => setAcqOnly((v) => !v)} title="Only acquisitions — new business"
+            className="sw-focus px-2.5 py-2 text-xs whitespace-nowrap"
+            style={acqOnly
+              ? { background: "var(--primary)", color: "#fff", fontWeight: 600 }
+              : { background: "transparent", color: "var(--ink-faint)" }}>
+            ACQ
+          </button>
+        </div>
       </div>
 
       <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
@@ -1964,7 +2079,10 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
 
                   {/* 1: company, with flags kept inline so the row stays short */}
                   <td className="px-3 py-2" style={{ overflow: "hidden" }}>
-                    <div className="font-medium text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>{r.company_name}</div>
+                    <div className="font-medium text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>
+                      {r.campaign && <span title={`Campaign: ${r.campaignName}`} style={{ marginRight: 4 }}>🎯</span>}
+                      {r.company_name}
+                    </div>
                     {(r.dirty || r.notStatted || r.nsov || r.needsAction || (r.ageDays != null && r.ageDays >= 90) || (r.kind === "forecast" && r.matched)) && (
                       <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                         {r.dirty && <span className="text-xs font-semibold" style={{ color: "var(--red)", fontSize: 10 }}>DIRTY</span>}
