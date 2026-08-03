@@ -1748,6 +1748,33 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
             </p>
           </div>
         )}
+        {/* Top deals */}
+        <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="sw-display font-bold text-sm mb-3" style={{ color: "var(--ink-soft)" }}>TOP 5 DEALS — THIS PERIOD</div>
+          {analytics.top.length === 0 ? (
+            <div className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>No deals in this period yet.</div>
+          ) : (
+            <div className="flex flex-col gap-1.5">
+              {analytics.top.map((d, i) => {
+                const max = analytics.top[0].gp || 1;
+                return (
+                  <div key={i} className="flex items-center gap-3">
+                    <span className="sw-mono text-xs font-bold shrink-0" style={{ color: "var(--ink-faint)", width: 14 }}>{i + 1}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="text-xs font-semibold truncate">{d.company}</span>
+                        <span className="sw-mono text-xs font-bold shrink-0" style={{ color: "var(--green)" }}>{fmtGBP(d.gp)}</span>
+                      </div>
+                      <div className="rounded-full mt-1" style={{ height: 4, background: "var(--surface-alt)" }}>
+                        <div className="rounded-full" style={{ width: `${(d.gp / max) * 100}%`, height: "100%", background: PRODUCT_SHADES[i % PRODUCT_SHADES.length] }} />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
         <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <div className="flex items-baseline justify-between mb-3">
             <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>STATTED vs FORECAST</div>
@@ -1783,34 +1810,6 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         </div>
       </div>
 
-      {/* Top deals */}
-      <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-        <div className="sw-display font-bold text-sm mb-3" style={{ color: "var(--ink-soft)" }}>TOP 5 DEALS — THIS PERIOD</div>
-        {analytics.top.length === 0 ? (
-          <div className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>No deals in this period yet.</div>
-        ) : (
-          <div className="flex flex-col gap-1.5">
-            {analytics.top.map((d, i) => {
-              const max = analytics.top[0].gp || 1;
-              return (
-                <div key={i} className="flex items-center gap-3">
-                  <span className="sw-mono text-xs font-bold shrink-0" style={{ color: "var(--ink-faint)", width: 14 }}>{i + 1}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-baseline justify-between gap-2">
-                      <span className="text-xs font-semibold truncate">{d.company}</span>
-                      <span className="sw-mono text-xs font-bold shrink-0" style={{ color: "var(--green)" }}>{fmtGBP(d.gp)}</span>
-                    </div>
-                    <div className="rounded-full mt-1" style={{ height: 4, background: "var(--surface-alt)" }}>
-                      <div className="rounded-full" style={{ width: `${(d.gp / max) * 100}%`, height: "100%", background: PRODUCT_SHADES[i % PRODUCT_SHADES.length] }} />
-                    </div>
-                  </div>
-                  <span className="text-xs shrink-0 truncate" style={{ color: "var(--ink-faint)", width: 120 }}>{d.agent}</span>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
       </div>
       </div>
     </div>
@@ -4091,12 +4090,13 @@ function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSave
 
 const ROLE_OPTIONS = ["office", "2ic", "agent"];
 
-function StaffRow({ s, profileForStaff, onSaveStaff, onSaveProfile, onResetPassword, plans }) {
+function StaffRow({ s, profileForStaff, onSaveStaff, onSaveProfile, onResetPassword, onSetActive, plans }) {
   const [edit, setEdit] = useState({
     full_name: s.full_name || "", uin: s.uin || "", email: s.email || "",
     manager_name: s.manager_name || "", manager_email: s.manager_email || "",
     team: s.team || "", sells: !!s.sells,
     pay_plan_id: s.pay_plan_id || "",
+    alt_name: s.alt_name || "",
   });
   const [roleEdit, setRoleEdit] = useState(profileForStaff?.role || "");
   const [teamEdit, setTeamEdit] = useState(profileForStaff?.team || s.team || "");
@@ -4113,8 +4113,16 @@ function StaffRow({ s, profileForStaff, onSaveStaff, onSaveProfile, onResetPassw
   const flash = () => { setSaved(true); setTimeout(() => setSaved(false), 1500); };
 
   return (
-    <tr style={{ borderTop: "1px solid var(--border)" }}>
-      <td className="px-3 py-2"><input className="sw-input sw-focus" style={{ minWidth: 130 }} value={edit.full_name} onChange={(e) => setEdit((p) => ({ ...p, full_name: e.target.value }))} /></td>
+    <tr style={{ borderTop: "1px solid var(--border)", opacity: s.active === false ? 0.55 : 1 }}>
+      <td className="px-3 py-2">
+        <input className="sw-input sw-focus" style={{ minWidth: 130 }} value={edit.full_name} onChange={(e) => setEdit((p) => ({ ...p, full_name: e.target.value }))} />
+        {s.active === false && <div className="text-xs mt-0.5" style={{ color: "var(--ink-faint)", fontSize: 10 }}>Ex employee</div>}
+      </td>
+      <td className="px-3 py-2">
+        <input className="sw-input sw-focus" style={{ minWidth: 120 }} value={edit.alt_name}
+          onChange={(e) => setEdit((p) => ({ ...p, alt_name: e.target.value }))}
+          placeholder="if NetSuite differs" title="A second spelling of this person's name, as NetSuite writes it" />
+      </td>
       <td className="px-3 py-2"><input className="sw-input sw-focus" style={{ width: 90 }} value={edit.uin} onChange={(e) => setEdit((p) => ({ ...p, uin: e.target.value }))} placeholder="—" /></td>
       <td className="px-3 py-2"><input className="sw-input sw-focus" style={{ minWidth: 170 }} value={edit.email} onChange={(e) => setEdit((p) => ({ ...p, email: e.target.value }))} /></td>
       <td className="px-3 py-2"><input className="sw-input sw-focus" style={{ minWidth: 110 }} value={edit.team} onChange={(e) => setEdit((p) => ({ ...p, team: e.target.value }))} list="team-suggestions" /></td>
@@ -4182,29 +4190,53 @@ function StaffRow({ s, profileForStaff, onSaveStaff, onSaveProfile, onResetPassw
           )
         )}
       </td>
+      <td className="px-3 py-2">
+        <button onClick={() => onSetActive(s.id, s.active === false, s.full_name)}
+          className="sw-focus text-xs font-semibold px-2.5 py-1.5 rounded-lg whitespace-nowrap"
+          style={s.active === false
+            ? { background: "var(--green-soft)", color: "var(--green)", border: "1px solid var(--green)" }
+            : { background: "var(--surface-alt)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}
+          title={s.active === false ? "Bring back — you'll need to set a password after" : "Mark as a leaver and lock their login"}>
+          {s.active === false ? "Reinstate" : "Mark leaver"}
+        </button>
+      </td>
       <td className="px-2 text-center">{saved && <CheckCircle2 size={14} style={{ color: "var(--green)" }} />}</td>
     </tr>
   );
 }
 
 function AddStaffRow({ onAdd }) {
-  const [f, setF] = useState({ full_name: "", uin: "", email: "", manager_name: "", manager_email: "", team: "", sells: true });
+  const blank = { full_name: "", alt_name: "", uin: "", email: "", manager_name: "", manager_email: "", team: "", sells: true, active: true };
+  const [f, setF] = useState(blank);
   const [saving, setSaving] = useState(false);
   const canAdd = f.full_name.trim().length > 0;
   return (
     <tr style={{ borderTop: "2px solid var(--border)", background: "var(--surface-alt)" }}>
       <td className="px-3 py-2"><input className="sw-input sw-focus" placeholder="Full name" value={f.full_name} onChange={(e) => setF((p) => ({ ...p, full_name: e.target.value }))} /></td>
+      <td className="px-3 py-2"><input className="sw-input sw-focus" style={{ width: 120 }} placeholder="Also known as" value={f.alt_name} onChange={(e) => setF((p) => ({ ...p, alt_name: e.target.value }))} /></td>
       <td className="px-3 py-2"><input className="sw-input sw-focus" style={{ width: 90 }} placeholder="UIN" value={f.uin} onChange={(e) => setF((p) => ({ ...p, uin: e.target.value }))} /></td>
       <td className="px-3 py-2"><input className="sw-input sw-focus" placeholder="Email" value={f.email} onChange={(e) => setF((p) => ({ ...p, email: e.target.value }))} /></td>
       <td className="px-3 py-2"><input className="sw-input sw-focus" placeholder="Team" value={f.team} onChange={(e) => setF((p) => ({ ...p, team: e.target.value }))} list="team-suggestions" /></td>
       <td className="px-3 py-2 text-center"><input type="checkbox" checked={f.sells} onChange={(e) => setF((p) => ({ ...p, sells: e.target.checked }))} /></td>
-      <td className="px-3 py-2" colSpan={6}>
-        <button
-          disabled={!canAdd || saving}
-          onClick={async () => { setSaving(true); await onAdd(f); setF({ full_name: "", uin: "", email: "", manager_name: "", manager_email: "", team: "", sells: true }); setSaving(false); }}
-          className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
-          style={{ background: canAdd ? "var(--primary)" : "var(--surface)", color: canAdd ? "#fff" : "var(--ink-faint)", border: "1px solid var(--border)" }}
-        ><Plus size={12} /> {saving ? "Adding..." : "Add Staff"}</button>
+      <td className="px-3 py-2" colSpan={7}>
+        <div className="flex items-center gap-3 flex-wrap">
+          <label className="flex items-center gap-1.5 text-xs cursor-pointer" style={{ color: f.active ? "var(--ink-soft)" : "var(--amber)" }}
+            title="An ex employee still counts toward historical team figures but can't sign in">
+            <input type="checkbox" checked={!f.active} onChange={(e) => setF((p) => ({ ...p, active: !e.target.checked }))} />
+            Ex employee
+          </label>
+          <button
+            disabled={!canAdd || saving}
+            onClick={async () => { setSaving(true); await onAdd(f); setF(blank); setSaving(false); }}
+            className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
+            style={{ background: canAdd ? "var(--primary)" : "var(--surface)", color: canAdd ? "#fff" : "var(--ink-faint)", border: "1px solid var(--border)" }}
+          ><Plus size={12} /> {saving ? "Adding..." : "Add Staff"}</button>
+          {!f.active && (
+            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+              Name and team are enough — no email needed.
+            </span>
+          )}
+        </div>
       </td>
     </tr>
   );
@@ -4350,7 +4382,7 @@ function AdminIssues({ staff, netsuite, aliases, onAddAlias, onDeleteAlias, plan
   );
 }
 
-function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, onResetPassword, plans,
+function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, onResetPassword, onSetActive, plans,
                     netsuite, aliases, onAddAlias, onDeleteAlias }) {
   const teamOptions = useMemo(() => Array.from(new Set(staff.map((s) => s.team).filter(Boolean))), [staff]);
   const profileByUserId = useMemo(() => {
@@ -4375,14 +4407,14 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
           <table className="w-full text-sm">
             <thead>
               <tr style={{ background: "var(--surface-alt)" }}>
-                {["Name", "UIN", "Email", "Team", "Sells", "Pay Plan", "", "Role", "", "Password", ""].map((h, i) => (
+                {["Name", "Also known as", "UIN", "Email", "Team", "Sells", "Pay Plan", "", "Role", "", "Password", "Status", ""].map((h, i) => (
                   <th key={i} className="text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {staff.map((s) => (
-                <StaffRow key={s.id} s={s} profileForStaff={s.user_id ? profileByUserId[s.user_id] : null} onSaveStaff={onSaveStaff} onSaveProfile={onSaveProfile} onResetPassword={onResetPassword} plans={plans} />
+                <StaffRow key={s.id} s={s} profileForStaff={s.user_id ? profileByUserId[s.user_id] : null} onSaveStaff={onSaveStaff} onSaveProfile={onSaveProfile} onResetPassword={onResetPassword} onSetActive={onSetActive} plans={plans} />
               ))}
               <AddStaffRow onAdd={onAddStaff} />
             </tbody>
@@ -6663,6 +6695,18 @@ export default function App() {
       .then(({ data }) => setProfile(data || { id: session.user.id, role: "agent", full_name: session.user.email }));
   }, [session]);
 
+  // Someone marked as a leaver shouldn't be able to keep using a live
+  // session. Their password is scrambled server-side too; this closes the
+  // door on anyone already signed in.
+  useEffect(() => {
+    if (!session?.user || !staff.length) return;
+    const me = staff.find((s) => s.user_id === session.user.id);
+    if (me && me.active === false) {
+      setToast("This account is no longer active.");
+      setTimeout(() => supabase.auth.signOut(), 1500);
+    }
+  }, [staff, session]);
+
   // Load the staff list (for dropdowns) once signed in
   const loadStaff = useCallback(async () => {
     const { data } = await supabase.from("staff").select("*").order("full_name");
@@ -6715,9 +6759,14 @@ export default function App() {
 
   const aliasMap = useMemo(() => {
     const m = {};
+    // A second name on the staff record is the simplest fix for one person
+    // with one odd spelling; the alias table handles anything more.
+    staff.forEach((s) => {
+      if (s.alt_name && s.full_name) m[String(s.alt_name).trim().toLowerCase()] = s.full_name;
+    });
     aliases.forEach((a) => { if (a.alias) m[a.alias.trim().toLowerCase()] = a.staff_full_name; });
     return m;
-  }, [aliases]);
+  }, [aliases, staff]);
 
   const saveAlias = useCallback(async (id, patch) => {
     const { error } = await supabase.from("staff_aliases").update(patch).eq("id", id);
@@ -7005,12 +7054,35 @@ export default function App() {
     return true;
   }, []);
 
+  // Mark someone a leaver (or bring them back). The database function also
+  // locks their login, so it isn't just a UI flag.
+  const setStaffActive = useCallback(async (staffId, makeActive, name) => {
+    const { data, error } = await supabase.rpc("admin_set_staff_active", {
+      staff_id: staffId, make_active: makeActive,
+    });
+    if (error || !data?.ok) {
+      setToast(`Couldn't update: ${error?.message || data?.error || "unknown error"}`);
+      setTimeout(() => setToast(""), 5000);
+      return;
+    }
+    setToast(makeActive
+      ? `${name} reinstated — set them a password to let them back in`
+      : `${name} marked as a leaver and signed out`);
+    setTimeout(() => setToast(""), 4000);
+    loadStaff();
+  }, [loadStaff]);
+
   const saveProfileRole = useCallback(async (profileId, patch) => {    const { error } = await supabase.from("profiles").update(patch).eq("id", profileId);
     if (error) { setToast(`Couldn't update role: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
     loadAllProfiles();
   }, [loadAllProfiles]);
 
-  const staffValue = useMemo(() => ({ all: staff, sellers: staff.filter((s) => s.sells) }), [staff]);
+  const staffValue = useMemo(() => ({
+    all: staff,
+    // Leavers stay in `all` for historical lookups but drop off the
+    // Closer / Lead Gen pickers so nobody can be assigned new work.
+    sellers: staff.filter((s) => s.sells && s.active !== false),
+  }), [staff]);
 
   // Apply the alias map once, here, so every view sees corrected names
   // rather than each having to remember to resolve them.
@@ -7083,7 +7155,7 @@ export default function App() {
         {tab === "landscapes" && <LandscapesView profile={profile} staff={staff} />}
         {tab === "quote" && <QuoteBuilderView profile={profile} staff={staff} />}
         {tab === "coach" && <SalesCoachView />}
-        {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onResetPassword={resetPassword} plans={payPlans}
+        {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onResetPassword={resetPassword} onSetActive={setStaffActive} plans={payPlans}
           netsuite={netsuiteResolved} aliases={aliases} onAddAlias={addAlias} onDeleteAlias={deleteAlias} />}
         {tab === "statuses" && profile?.role === "office" && <SettingsView statusRows={statusRows} onSaveStatus={saveStatusCfg} newCount={newStatusCount} plans={payPlans} staff={staff} onSavePlan={savePayPlan} onAddPlan={addPayPlan} onDeletePlan={deletePayPlan}
           coachScenarios={coachScenarios} coachSettings={coachSettings}
