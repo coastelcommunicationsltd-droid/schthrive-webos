@@ -3831,19 +3831,68 @@ function ForecastView({ netsuite, profile, staff }) {
   }, [weekRows]);
 
   // ---- Accuracy: forecast vs what NetSuite actually shows -------------
+  // Two different questions, both worth answering:
+  //   * did the forecasts land?          -> matched lines
+  //   * what actually statted that week? -> all NetSuite in the week
   const accuracy = useMemo(() => {
+    const weekStartD = new Date(week);
+    const weekEndD = new Date(week);
+    weekEndD.setDate(weekEndD.getDate() + 6);
+    const inWeek = (dstr) => {
+      if (!dstr) return false;
+      const d = new Date(dstr + "T00:00:00");
+      return d >= weekStartD && d <= weekEndD;
+    };
+
     const matched = weekRows.filter((r) => r.matched_at);
+    // Only count as "landed this week" if NetSuite statted it in the week
+    const landedThisWeek = matched.filter((r) => inWeek(r.matched_order_date));
+
     const forecastGp = weekRows.reduce((s, r) => s + num(r.gp), 0);
-    const actualGp = matched.reduce((s, r) => s + num(r.actual_gp), 0);
     const forecastSov = weekRows.reduce((s, r) => s + num(r.sov), 0);
-    const actualSov = matched.reduce((s, r) => s + num(r.actual_sov), 0);
+    const matchedGp = matched.reduce((s, r) => s + num(r.actual_gp), 0);
+    const matchedSov = matched.reduce((s, r) => s + num(r.actual_sov), 0);
+
+    // Everything NetSuite statted in this week, forecast or not
+    let stattedGp = 0, stattedSov = 0, stattedCount = 0;
+    (netsuite || []).forEach((n) => {
+      if (!inWeek(n.order_date)) return;
+      if (teamFilter !== "All" && n.closer_team !== teamFilter && n.referrer_team !== teamFilter) return;
+      if (agentFilter !== "All" && n.closer_name !== agentFilter && n.referrer_name !== agentFilter) return;
+      stattedCount += 1;
+      if (n.count_gp !== false) stattedGp += num(n.gp_office);
+      if (n.count_sov !== false) stattedSov += num(n.contract_value);
+    });
+
     return {
       lines: weekRows.length,
-      landed: matched.length,
-      hitRate: weekRows.length ? (matched.length / weekRows.length) * 100 : 0,
-      forecastGp, actualGp, forecastSov, actualSov,
-      gpVariance: actualGp - forecastGp,
+      landed: landedThisWeek.length,
+      matchedAny: matched.length,
+      hitRate: weekRows.length ? (landedThisWeek.length / weekRows.length) * 100 : 0,
+      forecastGp, forecastSov, matchedGp, matchedSov,
+      stattedGp, stattedSov, stattedCount,
+      gpVariance: stattedGp - forecastGp,
+      claimedWonUnmatched: weekRows.filter((r) => r.status === "Won" && !r.matched_at).length,
     };
+  }, [weekRows, netsuite, week, teamFilter, agentFilter]);
+
+  // ---- Chart data ----------------------------------------------------
+  const pillarChartItems = useMemo(() => {
+    const m = {};
+    weekRows.forEach((r) => {
+      const g = groupForPillar(r.pillar);
+      m[g] = (m[g] || 0) + num(r.gp);
+    });
+    return Object.keys(m).map((name) => ({ name, value: m[name] }));
+  }, [weekRows]);
+
+  const agentChartItems = useMemo(() => {
+    const m = {};
+    weekRows.forEach((r) => {
+      if (!r.agent_name) return;
+      m[r.agent_name] = (m[r.agent_name] || 0) + num(r.gp);
+    });
+    return Object.keys(m).map((name) => ({ name, value: m[name] }));
   }, [weekRows]);
 
   const addForecast = async () => {
@@ -4014,25 +4063,37 @@ function ForecastView({ netsuite, profile, staff }) {
           <div className="text-xs" style={{ color: "var(--ink-soft)" }}>DC {fmtGBP(summary.dc)}</div>
         </div>
         <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Landed</div>
+          <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Statted this week</div>
+          <div className="sw-display font-bold text-xl" style={{ color: "var(--green)" }}>{fmtGBP(accuracy.stattedGp)}</div>
+          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{accuracy.stattedCount} NetSuite orders</div>
+        </div>
+        <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast vs actual</div>
+          <div className="sw-display font-bold text-xl" style={{ color: accuracy.gpVariance >= 0 ? "var(--green)" : "var(--red)" }}>
+            {accuracy.gpVariance >= 0 ? "+" : ""}{fmtGBP(accuracy.gpVariance)}
+          </div>
+          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>statted minus forecast</div>
+        </div>
+        <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecasts landed</div>
           <div className="sw-display font-bold text-xl" style={{ color: accuracy.hitRate >= 70 ? "var(--green)" : accuracy.hitRate >= 40 ? "var(--amber)" : "var(--red)" }}>
             {accuracy.landed}/{accuracy.lines}
           </div>
-          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{accuracy.hitRate.toFixed(0)}% hit rate</div>
-        </div>
-        <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Actual GP</div>
-          <div className="sw-display font-bold text-xl">{fmtGBP(accuracy.actualGp)}</div>
-          <div className="text-xs" style={{ color: accuracy.gpVariance >= 0 ? "var(--green)" : "var(--red)" }}>
-            {accuracy.gpVariance >= 0 ? "+" : ""}{fmtGBP(accuracy.gpVariance)} vs forecast
-          </div>
-        </div>
-        <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast SOV</div>
-          <div className="sw-display font-bold text-xl">{fmtGBP(accuracy.forecastSov)}</div>
-          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>actual {fmtGBP(accuracy.actualSov)}</div>
+          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{accuracy.hitRate.toFixed(0)}% seen in NetSuite</div>
         </div>
       </div>
+
+      {/* Won on paper, nothing behind it in NetSuite */}
+      {accuracy.claimedWonUnmatched > 0 && (
+        <div className="rounded-xl p-3 mb-4 flex items-center gap-2" style={{ background: "var(--amber-soft)", border: "1px solid var(--amber)" }}>
+          <AlertTriangle size={15} style={{ color: "var(--amber)" }} className="shrink-0" />
+          <div className="text-xs" style={{ color: "var(--ink-soft)" }}>
+            <b>{accuracy.claimedWonUnmatched} forecast{accuracy.claimedWonUnmatched === 1 ? " is" : "s are"} marked Won but {accuracy.claimedWonUnmatched === 1 ? "hasn't" : "haven't"} been found in NetSuite.</b>{" "}
+            Either they haven't statted yet, or the business name and Opp ID don't line up with the NetSuite record.
+            Check them in the All forecasts view — the "vs NetSuite" column shows what was found.
+          </div>
+        </div>
+      )}
 
       {/* View + filters */}
       <div className="flex items-center gap-2 mb-3 flex-wrap">
@@ -4147,6 +4208,12 @@ function ForecastView({ netsuite, profile, staff }) {
             A "lead passed in" counts any forecast line where a Lead Gen is named — so the person who
             sourced it gets credit alongside the closer.
           </p>
+
+          <ReportCharts
+            treemapItems={pillarChartItems} treemapTitle="FORECAST GP BY PILLAR"
+            productSelected={null} onProductSelect={() => {}}
+            barItems={agentChartItems} barTitle="FORECAST GP BY AGENT"
+            agentSelected={agentFilter} onAgentSelect={setAgentFilter} />
         </>
       )}
 
@@ -4189,14 +4256,23 @@ function ForecastView({ netsuite, profile, staff }) {
                         {r.matched_at ? (
                           <div>
                             <div className="text-xs font-semibold" style={{ color: "var(--green)" }}>
-                              Landed · {fmtGBP(r.actual_gp)}
+                              {fmtGBP(r.actual_gp)} · Doc {r.matched_document_number}
                             </div>
+                            <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                              {r.matched_order_date ? fmtDate(r.matched_order_date) : ""}
+                              {r.match_method === "business_name" ? " · by name" : " · by Opp ID"}
+                            </div>
+                            {r.matched_company && r.matched_company.toUpperCase() !== String(r.business_name || "").toUpperCase() && (
+                              <div className="text-xs" style={{ color: "var(--amber)" }}>NS: {r.matched_company}</div>
+                            )}
                             <div className="text-xs" style={{ color: Math.abs(gpDiff || 0) < 1 ? "var(--ink-faint)" : (gpDiff || 0) < 0 ? "var(--red)" : "var(--amber)" }}>
                               {Math.abs(gpDiff || 0) < 1 ? "matches forecast" : `${(gpDiff || 0) > 0 ? "+" : ""}${fmtGBP(gpDiff || 0)} vs forecast`}
                             </div>
                           </div>
                         ) : (
-                          <span className="text-xs" style={{ color: "var(--ink-faint)" }}>not seen yet</span>
+                          <span className="text-xs" style={{ color: r.status === "Won" ? "var(--amber)" : "var(--ink-faint)" }}>
+                            {r.status === "Won" ? "Won, but not found in NetSuite" : "not seen yet"}
+                          </span>
                         )}
                       </td>
                     </tr>
