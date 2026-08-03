@@ -82,14 +82,14 @@ blunder     = serious: arguing, lying, unprompted price, insulting, losing the c
 
 Be honest. Coaching that flatters is useless. Do not hand out "brilliant" for mere competence.
 
-Output ONLY a JSON object. No markdown, no code fences, no explanation before or after:
+Output ONLY a JSON object. No markdown, no code fences, no explanation before or after. Never use a double-quote character inside any value — use single quotes if you need to quote something:
 {"customer":"what the customer says next","score":"good","note":"one short sentence on why, addressed to the agent as 'you'"}`;
 
 const SUMMARY_SYSTEM = `You are a sales coach reviewing a completed practice call by a UK B2B telecoms agent.
 
 Be specific and honest. Reference actual things they said. Vague praise helps nobody.
 
-Output ONLY a JSON object. No markdown, no code fences, no explanation before or after:
+Output ONLY a JSON object. No markdown, no code fences, no explanation before or after. Never use a double-quote character inside any value — use single quotes if you need to quote something:
 {"grade":"A","headline":"one sentence overall verdict","strengths":["specific thing they did well"],"improvements":["specific thing to change, with what to say instead"],"moment":"the turning point of the call and why it mattered"}
 
 grade must be A, B, C or D. Give two or three items in each list.`;
@@ -133,14 +133,21 @@ Deno.serve(async (req: Request) => {
     if (raw.error) return json({ error: raw.error }, raw.status || 502);
 
     const parsed = extractJson(raw.text || "");
-    if (parsed) return json(parsed, 200);
+    if (parsed && parsed.customer) return json(parsed, 200);
+    if (parsed && (parsed.grade || parsed.headline)) return json(parsed, 200);
 
-    // Open models occasionally wander off the JSON format. Rather than
-    // failing the call, fall back to using the text as the reply.
+    // Open models frequently produce almost-valid JSON — a stray unescaped
+    // quote inside the dialogue is enough to fail strict parsing. Pull the
+    // fields out directly with regex rather than requiring the whole
+    // object to be perfectly formed.
+    const loose = extractLoose(raw.text || "", mode);
+    if (loose) return json(loose, 200);
+
+    // Genuine last resort — still better than silence.
     return json(
       mode === "summary"
         ? { grade: "C", headline: "Summary couldn't be parsed", strengths: [], improvements: [], moment: (raw.text || "").slice(0, 400) }
-        : { customer: firstSentences(raw.text || "") || "Sorry, say that again?", score: "good", note: "" },
+        : { customer: firstSentences(raw.text || "") || "Sorry, could you say that again?", score: "good", note: "" },
       200
     );
   } catch (err) {
@@ -184,7 +191,31 @@ async function callCloudflare(system: string, user: string): Promise<any> {
       : String(detail);
     return { error: friendly, status: 502 };
   }
-  return { text: String(data.result?.response ?? "") };
+  return { text: extractCfText(data.result) };
+}
+
+// Cloudflare's response shape varies by model. Usually result.response is
+// a plain string, but some models nest it, or return an OpenAI-style
+// content array. Blindly doing String(result.response) on an object gives
+// the literal text "[object Object]" — this checks the actual shape
+// instead, so the roleplay never breaks like that again.
+function extractCfText(result: any): string {
+  if (!result) return "";
+  const r = result.response;
+  if (typeof r === "string") return r;
+  if (r && typeof r === "object") {
+    if (typeof r.response === "string") return r.response;
+    if (typeof r.content === "string") return r.content;
+    if (typeof r.text === "string") return r.text;
+    if (Array.isArray(r)) {
+      return r.map((b: any) => (typeof b === "string" ? b : b?.text || "")).join("");
+    }
+  }
+  if (Array.isArray(result.output)) {
+    return result.output.map((b: any) => b?.content || b?.text || "").join("");
+  }
+  // Last resort: readable JSON rather than a useless "[object Object]".
+  return JSON.stringify(result);
 }
 
 async function callAnthropic(system: string, user: string): Promise<any> {
@@ -234,6 +265,42 @@ function extractJson(text: string): any | null {
 function firstSentences(text: string, n = 2) {
   const clean = String(text).replace(/```(?:json)?/gi, "").replace(/[{}"]/g, " ").trim();
   return clean.split(/(?<=[.!?])\s+/).slice(0, n).join(" ").slice(0, 280);
+}
+
+// Pulls "customer"/"score"/"note" (or "grade"/"headline"/etc) straight out
+// of near-JSON text with regex, tolerant of a broken quote or trailing
+// comma elsewhere in the object that would fail a strict JSON.parse.
+function extractLoose(text: string, mode: string): any | null {
+  const t = String(text).replace(/```(?:json)?/gi, "");
+  const field = (name: string): string | null => {
+    // Matches "name": "value" — value may run to the next ", "key": pattern
+    // or the end, and tolerates an unescaped quote inside by being greedy
+    // up to the LAST quote before the next known key or closing brace.
+    const m = t.match(new RegExp(`"${name}"\\s*:\\s*"([\\s\\S]*?)"\\s*(?:,\\s*"(?:customer|score|note|grade|headline|strengths|improvements|moment)"|\\})`, "i"));
+    return m ? m[1].replace(/\\"/g, '"').replace(/\\n/g, " ").trim() : null;
+  };
+
+  if (mode === "summary") {
+    const grade = field("grade");
+    const headline = field("headline");
+    if (!grade && !headline) return null;
+    return {
+      grade: (grade || "C").toUpperCase().slice(0, 1),
+      headline: headline || "Call reviewed.",
+      strengths: [], improvements: [],
+      moment: field("moment") || "",
+    };
+  }
+
+  const customer = field("customer");
+  if (!customer) return null;
+  const scoreRaw = (field("score") || "good").toLowerCase();
+  const validScores = ["brilliant", "excellent", "good", "inaccuracy", "mistake", "blunder"];
+  return {
+    customer,
+    score: validScores.includes(scoreRaw) ? scoreRaw : "good",
+    note: field("note") || "",
+  };
 }
 
 function json(payload: unknown, status: number) {
