@@ -1978,7 +1978,7 @@ function ReportCell({ value, money = true, bold, tone, highlight }) {
         color: empty ? "var(--ink-faint)" : (tone || "var(--ink)"),
         borderLeft: "1px solid var(--border)",
         background: highlight ? "var(--primary-soft)" : undefined,
-        textAlign: highlight ? "center" : "right",
+        textAlign: "center",
       }}>
       {money ? fmtGBP(value) : (value || 0).toLocaleString("en-GB")}
     </td>
@@ -2344,7 +2344,7 @@ function SalesBreakdownView({ netsuite }) {
                 <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Avg</th>
                 <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Total</th>
                 {columns.map((c) => (
-                  <th key={c.key} className="px-2 py-2 text-right text-xs font-bold" style={{ color: "#fff" }}>{c.label}</th>
+                  <th key={c.key} className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff" }}>{c.label}</th>
                 ))}
               </tr>
             </thead>
@@ -2548,7 +2548,7 @@ function DayByDayView({ orders }) {
                 <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "#fff", position: "sticky", left: 0, background: "var(--primary)" }}>Metric</th>
                 <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Month Total</th>
                 {DAY_NAMES.map((d) => (
-                  <th key={d} className="px-2 py-2 text-right text-xs font-bold" style={{ color: "#fff" }}>{d.slice(0, 3)}</th>
+                  <th key={d} className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff" }}>{d.slice(0, 3)}</th>
                 ))}
                 <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Week Total</th>
               </tr>
@@ -2692,7 +2692,7 @@ function StatusSettingsView({ rows, onSave, newCount }) {
 
 const ROLE_OPTIONS = ["office", "2ic", "agent"];
 
-function StaffRow({ s, profileForStaff, onSaveStaff, onSaveProfile }) {
+function StaffRow({ s, profileForStaff, onSaveStaff, onSaveProfile, onResetPassword }) {
   const [edit, setEdit] = useState({
     full_name: s.full_name || "", uin: s.uin || "", email: s.email || "",
     manager_name: s.manager_name || "", manager_email: s.manager_email || "",
@@ -2703,6 +2703,9 @@ function StaffRow({ s, profileForStaff, onSaveStaff, onSaveProfile }) {
   const [savingStaff, setSavingStaff] = useState(false);
   const [savingRole, setSavingRole] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [newPw, setNewPw] = useState("");
+  const [savingPw, setSavingPw] = useState(false);
 
   const staffDirty = Object.keys(edit).some((k) => String(edit[k]) !== String(s[k] ?? (k === "sells" ? true : "")));
   const roleDirty = profileForStaff && (roleEdit !== profileForStaff.role || teamEdit !== (profileForStaff.team || ""));
@@ -2741,6 +2744,35 @@ function StaffRow({ s, profileForStaff, onSaveStaff, onSaveProfile }) {
           >{savingRole ? "..." : "Save Role"}</button>
         )}
       </td>
+      <td className="px-3 py-2">
+        {s.email && (
+          resetting ? (
+            <div className="flex items-center gap-1">
+              <input className="sw-input sw-focus" style={{ width: 130 }} type="text" placeholder="New password"
+                value={newPw} onChange={(e) => setNewPw(e.target.value)} autoFocus />
+              <button
+                disabled={newPw.length < 8 || savingPw}
+                onClick={async () => {
+                  setSavingPw(true);
+                  const ok = await onResetPassword(s.email, newPw);
+                  setSavingPw(false);
+                  if (ok) { setResetting(false); setNewPw(""); flash(); }
+                }}
+                className="sw-focus text-xs font-semibold px-2 py-1.5 rounded-lg"
+                style={{ background: newPw.length >= 8 ? "var(--primary)" : "var(--surface-alt)", color: newPw.length >= 8 ? "#fff" : "var(--ink-faint)" }}
+              >{savingPw ? "..." : "Set"}</button>
+              <button onClick={() => { setResetting(false); setNewPw(""); }} className="sw-focus text-xs px-1.5 py-1.5 rounded-lg" style={{ color: "var(--ink-soft)" }}>✕</button>
+            </div>
+          ) : (
+            <button onClick={() => { setResetting(true); setNewPw("Welcome2026"); }}
+              className="sw-focus text-xs font-semibold px-2.5 py-1.5 rounded-lg"
+              style={{ background: "var(--surface-alt)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}
+              title="Set a new password for this person">
+              <KeyRound size={11} style={{ display: "inline", marginRight: 3 }} /> Password
+            </button>
+          )
+        )}
+      </td>
       <td className="px-2 text-center">{saved && <CheckCircle2 size={14} style={{ color: "var(--green)" }} />}</td>
     </tr>
   );
@@ -2757,7 +2789,7 @@ function AddStaffRow({ onAdd }) {
       <td className="px-3 py-2"><input className="sw-input sw-focus" placeholder="Email" value={f.email} onChange={(e) => setF((p) => ({ ...p, email: e.target.value }))} /></td>
       <td className="px-3 py-2"><input className="sw-input sw-focus" placeholder="Team" value={f.team} onChange={(e) => setF((p) => ({ ...p, team: e.target.value }))} list="team-suggestions" /></td>
       <td className="px-3 py-2 text-center"><input type="checkbox" checked={f.sells} onChange={(e) => setF((p) => ({ ...p, sells: e.target.checked }))} /></td>
-      <td className="px-3 py-2" colSpan={3}>
+      <td className="px-3 py-2" colSpan={5}>
         <button
           disabled={!canAdd || saving}
           onClick={async () => { setSaving(true); await onAdd(f); setF({ full_name: "", uin: "", email: "", manager_name: "", manager_email: "", team: "", sells: true }); setSaving(false); }}
@@ -2769,7 +2801,7 @@ function AddStaffRow({ onAdd }) {
   );
 }
 
-function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile }) {
+function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, onResetPassword }) {
   const teamOptions = useMemo(() => Array.from(new Set(staff.map((s) => s.team).filter(Boolean))), [staff]);
   const profileByUserId = useMemo(() => {
     const m = {};
@@ -2790,14 +2822,14 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile }) 
           <table className="w-full text-sm">
             <thead>
               <tr style={{ background: "var(--surface-alt)" }}>
-                {["Name", "UIN", "Email", "Team", "Sells", "", "Role", "", ""].map((h, i) => (
+                {["Name", "UIN", "Email", "Team", "Sells", "", "Role", "", "Password", ""].map((h, i) => (
                   <th key={i} className="text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {staff.map((s) => (
-                <StaffRow key={s.id} s={s} profileForStaff={s.user_id ? profileByUserId[s.user_id] : null} onSaveStaff={onSaveStaff} onSaveProfile={onSaveProfile} />
+                <StaffRow key={s.id} s={s} profileForStaff={s.user_id ? profileByUserId[s.user_id] : null} onSaveStaff={onSaveStaff} onSaveProfile={onSaveProfile} onResetPassword={onResetPassword} />
               ))}
               <AddStaffRow onAdd={onAddStaff} />
             </tbody>
@@ -2856,8 +2888,16 @@ export default function App() {
   }, []);
   useEffect(() => { if (session?.user) loadStaff(); }, [session, loadStaff]);
 
-  // NetSuite records — what the TV board reports on
+  // NetSuite records — what the TV board reports on.
+  // On the TV route we go through tv_netsuite(), which returns the whole
+  // office regardless of who's logged in — a wall display shouldn't shrink
+  // to one person's deals just because an agent signed in on it.
   const loadNetsuite = useCallback(async () => {
+    if (isTVRoute) {
+      const { data } = await supabase.rpc("tv_netsuite");
+      setNetsuite(data || []);
+      return;
+    }
     const PAGE = 1000;
     let all = [];
     let from = 0;
@@ -2874,7 +2914,7 @@ export default function App() {
       if (from > 100000) break;
     }
     setNetsuite(all);
-  }, []);
+  }, [isTVRoute]);
   useEffect(() => { if (session?.user) loadNetsuite(); }, [session, loadNetsuite]);
 
   // Status settings — colours and what counts toward GP/SOV
@@ -2931,6 +2971,13 @@ export default function App() {
 
   // Load orders + subscribe to realtime changes
   const loadOrders = useCallback(async () => {
+    // The TV board shows the whole office whoever is signed in on it.
+    if (isTVRoute) {
+      const { data } = await supabase.rpc("tv_orders");
+      setOrders(data || []);
+      setLoading(false);
+      return;
+    }
     // Supabase caps a single request at 1000 rows, so page through until
     // we've got everything — otherwise every total silently under-reports.
     const PAGE = 1000;
@@ -2951,7 +2998,7 @@ export default function App() {
     }
     setOrders(all);
     setLoading(false);
-  }, []);
+  }, [isTVRoute]);
 
   useEffect(() => {
     if (!session?.user) return;
@@ -3045,8 +3092,24 @@ export default function App() {
     loadStaff();
   }, [loadStaff]);
 
-  const saveProfileRole = useCallback(async (profileId, patch) => {
-    const { error } = await supabase.from("profiles").update(patch).eq("id", profileId);
+  // Set someone's password. The database function checks we're office
+  // before doing anything, so nothing sensitive lives in the browser.
+  const resetPassword = useCallback(async (email, newPassword) => {
+    const { data, error } = await supabase.rpc("admin_set_password", {
+      target_email: email,
+      new_password: newPassword,
+    });
+    if (error || !data?.ok) {
+      setToast(`Couldn't set password: ${error?.message || data?.error || "unknown error"}`);
+      setTimeout(() => setToast(""), 5000);
+      return false;
+    }
+    setToast(`Password set for ${email} — they'll choose their own at next sign-in`);
+    setTimeout(() => setToast(""), 4000);
+    return true;
+  }, []);
+
+  const saveProfileRole = useCallback(async (profileId, patch) => {    const { error } = await supabase.from("profiles").update(patch).eq("id", profileId);
     if (error) { setToast(`Couldn't update role: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
     loadAllProfiles();
   }, [loadAllProfiles]);
@@ -3138,7 +3201,7 @@ export default function App() {
         {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} />}
         {tab === "daybyday" && <DayByDayView orders={orders} />}
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuite} />}
-        {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} />}
+        {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onResetPassword={resetPassword} />}
         {tab === "statuses" && profile?.role === "office" && <StatusSettingsView rows={statusRows} onSave={saveStatusCfg} newCount={newStatusCount} />}
       </main>
 
