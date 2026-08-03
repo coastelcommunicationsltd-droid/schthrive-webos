@@ -1968,15 +1968,17 @@ function weekNumber(d) {
   return 1 + Math.round((t - firstThursday) / (7 * 86400000));
 }
 
-function ReportCell({ value, money = true, bold, tone }) {
+function ReportCell({ value, money = true, bold, tone, highlight }) {
   const empty = value === 0 || value == null;
   return (
-    <td className="px-2 py-1.5 text-right sw-mono whitespace-nowrap"
+    <td className="px-2 py-1.5 sw-mono whitespace-nowrap"
       style={{
         fontSize: 12,
         fontWeight: bold ? 700 : 500,
         color: empty ? "var(--ink-faint)" : (tone || "var(--ink)"),
         borderLeft: "1px solid var(--border)",
+        background: highlight ? "var(--primary-soft)" : undefined,
+        textAlign: highlight ? "center" : "right",
       }}>
       {money ? fmtGBP(value) : (value || 0).toLocaleString("en-GB")}
     </td>
@@ -2000,13 +2002,174 @@ function ReportLabel({ children, indent, bold, tone }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  SHARED REPORT CONTROLS & CHARTS                                        */
+/* ---------------------------------------------------------------------- */
+
+// Team + agent filters, shared by both report pages.
+function ReportFilters({ team, setTeam, agent, setAgent, agentOptions, right }) {
+  return (
+    <div className="flex items-center gap-2 flex-wrap mb-4">
+      <span className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5" style={{ color: "var(--ink-soft)" }}>
+        <Filter size={13} /> Filter
+      </span>
+      <button onClick={() => setTeam("All")} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold"
+        style={team === "All" ? { background: "var(--primary)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>
+        All teams
+      </button>
+      {SELLING_TEAMS.map((t) => (
+        <button key={t} onClick={() => setTeam(t)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold"
+          style={team === t ? { background: "var(--primary)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>
+          {t}
+        </button>
+      ))}
+      <select className="sw-input sw-focus" style={{ width: 190 }} value={agent} onChange={(e) => setAgent(e.target.value)}>
+        <option value="All">All agents</option>
+        {agentOptions.map((a) => <option key={a} value={a}>{a}</option>)}
+      </select>
+      {right}
+    </div>
+  );
+}
+
+// Treemap of products — click a box to focus everything on that product.
+function ProductTreemap({ items, selected, onSelect, height = 220 }) {
+  const boxes = useMemo(() => treemapLayout(
+    items.filter((i) => i.value > 0).sort((a, b) => b.value - a.value), 0, 0, 100, 100, true
+  ), [items]);
+  const total = boxes.reduce((s, b) => s + b.value, 0);
+  if (!boxes.length) {
+    return <div className="text-xs text-center py-12" style={{ color: "var(--ink-faint)" }}>No product data for this selection.</div>;
+  }
+  return (
+    <div style={{ position: "relative", width: "100%", height }}>
+      {boxes.map((b, i) => {
+        const pct = total > 0 ? (b.value / total) * 100 : 0;
+        const isSel = selected === b.name;
+        const dimmed = selected && !isSel;
+        const roomy = b.w > 14 && b.h > 18;
+        return (
+          <div key={b.name} onClick={() => onSelect(isSel ? null : b.name)}
+            title={`${b.name} — ${fmtGBP(b.value)} (${pct.toFixed(1)}%)`}
+            style={{ position: "absolute", left: b.x + "%", top: b.y + "%", width: b.w + "%", height: b.h + "%", padding: 3, boxSizing: "border-box", cursor: "pointer" }}>
+            <div className="rounded-lg h-full w-full flex flex-col justify-center px-2 overflow-hidden"
+              style={{
+                background: PRODUCT_SHADES[i % PRODUCT_SHADES.length],
+                color: "#fff",
+                opacity: dimmed ? 0.35 : 1,
+                outline: isSel ? "2px solid var(--ink)" : "none",
+                transition: "opacity .15s",
+              }}>
+              <div className="font-semibold leading-tight truncate" style={{ fontSize: roomy ? 12 : 10 }}>{b.name}</div>
+              {roomy && (<>
+                <div className="sw-mono font-bold leading-tight" style={{ fontSize: b.w > 25 ? 18 : 13 }}>{fmtGBP(b.value)}</div>
+                <div style={{ fontSize: 10, opacity: 0.85 }}>{pct.toFixed(1)}%</div>
+              </>)}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Horizontal bars per product, with the combined total on the end.
+function ProductBars({ items, selected, onSelect, height = 220 }) {
+  const rows = useMemo(() => items.filter((i) => i.value > 0).sort((a, b) => b.value - a.value), [items]);
+  const total = rows.reduce((s, r) => s + r.value, 0);
+  const max = rows.length ? rows[0].value : 0;
+  if (!rows.length) {
+    return <div className="text-xs text-center py-12" style={{ color: "var(--ink-faint)" }}>No product data for this selection.</div>;
+  }
+  return (
+    <div style={{ height, overflowY: "auto" }} className="pr-1">
+      {rows.map((r, i) => {
+        const isSel = selected === r.name;
+        const dimmed = selected && !isSel;
+        const w = max > 0 ? (r.value / max) * 100 : 0;
+        return (
+          <div key={r.name} onClick={() => onSelect(isSel ? null : r.name)}
+            className="mb-1.5" style={{ cursor: "pointer", opacity: dimmed ? 0.4 : 1 }}>
+            <div className="flex items-center justify-between mb-0.5">
+              <span className="text-xs font-semibold truncate" style={{ color: isSel ? "var(--primary)" : "var(--ink-soft)" }}>{r.name}</span>
+              <span className="sw-mono text-xs font-bold ml-2 shrink-0">{fmtGBP(r.value)}</span>
+            </div>
+            <div className="rounded-full" style={{ height: 8, background: "var(--surface-alt)" }}>
+              <div className="rounded-full" style={{ width: w + "%", height: "100%", background: PRODUCT_SHADES[i % PRODUCT_SHADES.length], transition: "width .2s" }} />
+            </div>
+          </div>
+        );
+      })}
+      <div className="mt-3 pt-2 flex items-center justify-between" style={{ borderTop: "2px solid var(--border)" }}>
+        <span className="text-xs font-bold uppercase" style={{ color: "var(--ink)" }}>Total</span>
+        <span className="sw-mono text-sm font-bold" style={{ color: "var(--primary)" }}>{fmtGBP(total)}</span>
+      </div>
+    </div>
+  );
+}
+
+// The two charts side by side, sharing a selection.
+function ReportCharts({ items, selected, onSelect, title }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "0.75rem" }} className="mt-4">
+      <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="flex items-baseline justify-between mb-3">
+          <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>{title} — SHARE</div>
+          {selected && (
+            <button onClick={() => onSelect(null)} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>
+              Clear filter
+            </button>
+          )}
+        </div>
+        <ProductTreemap items={items} selected={selected} onSelect={onSelect} />
+      </div>
+      <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="sw-display font-bold text-sm mb-3" style={{ color: "var(--ink-soft)" }}>{title} — BY PRODUCT</div>
+        <ProductBars items={items} selected={selected} onSelect={onSelect} />
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /*  SALES BREAKDOWN — month or week, from NetSuite                         */
 /* ---------------------------------------------------------------------- */
 
 function SalesBreakdownView({ netsuite }) {
   const [grain, setGrain] = useState("month");   // 'month' | 'week'
   const [showAcq, setShowAcq] = useState(false);
+  const [team, setTeam] = useState("All");
+  const [agent, setAgent] = useState("All");
+  const [product, setProduct] = useState(null);  // set by clicking a chart
   const statusCfg = useStatusCfg();
+
+  const agentOptions = useMemo(() => {
+    const s = new Set();
+    (netsuite || []).forEach((r) => { if (r.closer_name) s.add(r.closer_name); if (r.referrer_name) s.add(r.referrer_name); });
+    return Array.from(s).sort();
+  }, [netsuite]);
+
+  const bucketOf = useCallback((r) => {
+    const s = [r.prod_for_gs, r.product_group_2, r.item_name_grouped].join(" ").toLowerCase();
+    if (/dv4/.test(s)) return "dv4b";
+    if (/mobile|\bsim\b|airtime|handset/.test(s)) return "mobile";
+    if (/cloud|voice/.test(s)) return "cloud";
+    if (/bt ?net|btnet/.test(s)) return "btnet";
+    if (/broadband|fttp|fttc|sogea|adsl/.test(s)) return "broadband";
+    if (/security|badr/.test(s)) return "security";
+    if (/data|ethernet/.test(s)) return "data";
+    return "other";
+  }, []);
+
+  // Product grouping used by the charts — "Prod for GS" is NetSuite's own
+  const groupOf = useCallback((r) => (r.prod_for_gs || r.product_group_2 || "Unspecified").trim() || "Unspecified", []);
+
+  // Apply team / agent / product filters before anything is calculated
+  const rowsFiltered = useMemo(() => (netsuite || []).filter((r) => {
+    if (team !== "All" && r.closer_team !== team && r.referrer_team !== team) return false;
+    if (agent !== "All" && r.closer_name !== agent && r.referrer_name !== agent) return false;
+    if (product && groupOf(r) !== product) return false;
+    return true;
+  }), [netsuite, team, agent, product, groupOf]);
 
   const counts = (r, kind) => {
     const cfg = r.order_status ? statusCfg[r.order_status] : null;
@@ -2018,20 +2181,24 @@ function SalesBreakdownView({ netsuite }) {
     return r.count_gp !== false;
   };
 
-  const bucketOf = (r) => {
-    const s = [r.prod_for_gs, r.product_group_2, r.item_name_grouped].join(" ").toLowerCase();
-    if (/dv4/.test(s)) return "dv4b";
-    if (/mobile|\bsim\b|airtime|handset/.test(s)) return "mobile";
-    if (/cloud|voice/.test(s)) return "cloud";
-    if (/bt ?net|btnet/.test(s)) return "btnet";
-    if (/broadband|fttp|fttc|sogea|adsl/.test(s)) return "broadband";
-    if (/security|badr/.test(s)) return "security";
-    if (/data|ethernet/.test(s)) return "data";
-    return "other";
-  };
   const isResign = (r) => /resign/i.test(String(r.class_name || ""));
   const isAcq = (r) => /acquisition/i.test(String(r.class_name || ""));
   const isCampaign = (r) => !!(r.campaign_source && String(r.campaign_source).trim());
+
+  // Chart data — SOV per product group, respecting team/agent but NOT the
+  // product filter, so you can still see the whole picture while focused.
+  const chartItems = useMemo(() => {
+    const m = {};
+    (netsuite || []).forEach((r) => {
+      if (team !== "All" && r.closer_team !== team && r.referrer_team !== team) return;
+      if (agent !== "All" && r.closer_name !== agent && r.referrer_name !== agent) return;
+      if (!counts(r, "sov")) return;
+      const k = groupOf(r);
+      m[k] = (m[k] || 0) + num(r.contract_value);
+    });
+    return Object.keys(m).map((name) => ({ name, value: m[name] }));
+  }, [netsuite, team, agent, groupOf, statusCfg]);
+
 
   // Build the columns: FY months, or the weeks present in the data
   const { columns, keyOf } = useMemo(() => {
@@ -2039,10 +2206,10 @@ function SalesBreakdownView({ netsuite }) {
       return { columns: FY_MONTHS.map((m, i) => ({ key: i, label: m })), keyOf: (d) => fyMonthIndex(d) };
     }
     const weeks = new Set();
-    (netsuite || []).forEach((r) => { if (r.order_date) weeks.add(weekNumber(new Date(r.order_date + "T00:00:00"))); });
+    rowsFiltered.forEach((r) => { if (r.order_date) weeks.add(weekNumber(new Date(r.order_date + "T00:00:00"))); });
     const sorted = Array.from(weeks).map(Number).sort((a, b) => a - b);
     return { columns: sorted.map((w) => ({ key: w, label: "W" + w })), keyOf: (d) => weekNumber(d) };
-  }, [grain, netsuite]);
+  }, [grain, rowsFiltered]);
 
   // Aggregate every metric per column
   const data = useMemo(() => {
@@ -2059,7 +2226,7 @@ function SalesBreakdownView({ netsuite }) {
       campaignGp: blank(), acqCampaignGp: blank(),
     };
 
-    (netsuite || []).forEach((r) => {
+    rowsFiltered.forEach((r) => {
       if (!r.order_date) return;
       const d = new Date(r.order_date + "T00:00:00");
       const k = keyOf(d);
@@ -2092,7 +2259,7 @@ function SalesBreakdownView({ netsuite }) {
       }
     });
     return rows;
-  }, [netsuite, columns, keyOf, statusCfg]);
+  }, [rowsFiltered, columns, keyOf, statusCfg]);
 
   const rowTotal = (r) => columns.reduce((s, c) => s + (r[c.key] || 0), 0);
   const rowAvg = (r) => {
@@ -2114,8 +2281,19 @@ function SalesBreakdownView({ netsuite }) {
   const MetricRow = ({ label, row, money = true, bold, tone, indent, pct }) => (
     <tr style={{ borderTop: "1px solid var(--border)" }}>
       <ReportLabel bold={bold} tone={tone} indent={indent}>{label}</ReportLabel>
-      <ReportCell value={pct ? null : rowAvg(row)} money={money} bold />
-      <ReportCell value={pct ? null : rowTotal(row)} money={money} bold />
+      {pct ? (
+        <>
+          <td className="px-2 py-1.5 sw-mono" style={{ fontSize: 12, textAlign: "center", background: "var(--primary-soft)", borderLeft: "1px solid var(--border)", fontWeight: 700 }}>
+            {(columns.reduce((s, c) => s + (row[c.key] || 0), 0) / (columns.filter((c) => (row[c.key] || 0) !== 0).length || 1)).toFixed(2)}%
+          </td>
+          <td className="px-2 py-1.5 sw-mono" style={{ fontSize: 12, textAlign: "center", background: "var(--primary-soft)", borderLeft: "1px solid var(--border)", color: "var(--ink-faint)" }}>—</td>
+        </>
+      ) : (
+        <>
+          <ReportCell value={rowAvg(row)} money={money} bold highlight />
+          <ReportCell value={rowTotal(row)} money={money} bold highlight />
+        </>
+      )}
       {columns.map((c) => (
         pct
           ? <td key={c.key} className="px-2 py-1.5 text-right sw-mono" style={{ fontSize: 12, borderLeft: "1px solid var(--border)", color: (row[c.key] || 0) ? "var(--ink)" : "var(--ink-faint)" }}>
@@ -2146,14 +2324,25 @@ function SalesBreakdownView({ netsuite }) {
         </div>
       </div>
 
+      <ReportFilters team={team} setTeam={setTeam} agent={agent} setAgent={setAgent} agentOptions={agentOptions} />
+
+      {product && (
+        <div className="rounded-xl p-2.5 mb-3 flex items-center justify-between" style={{ background: "var(--primary-soft)" }}>
+          <span className="text-xs font-semibold" style={{ color: "var(--primary)" }}>
+            Focused on {product} — every figure below is just this product.
+          </span>
+          <button onClick={() => setProduct(null)} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>Clear</button>
+        </div>
+      )}
+
       <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="overflow-x-auto">
           <table className="w-full" style={{ borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: "var(--primary)" }}>
                 <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "#fff", position: "sticky", left: 0, background: "var(--primary)" }}>Metric</th>
-                <th className="px-2 py-2 text-right text-xs font-bold" style={{ color: "rgba(255,255,255,0.85)" }}>Avg</th>
-                <th className="px-2 py-2 text-right text-xs font-bold" style={{ color: "rgba(255,255,255,0.85)" }}>Total</th>
+                <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Avg</th>
+                <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Total</th>
                 {columns.map((c) => (
                   <th key={c.key} className="px-2 py-2 text-right text-xs font-bold" style={{ color: "#fff" }}>{c.label}</th>
                 ))}
@@ -2194,6 +2383,8 @@ function SalesBreakdownView({ netsuite }) {
           </table>
         </div>
       </div>
+      <ReportCharts items={chartItems} selected={product} onSelect={setProduct} title="SOV BY PRODUCT" />
+
       <p className="text-xs mt-3" style={{ color: "var(--ink-faint)" }}>
         Averages ignore months with no activity, so a part-year doesn't drag the figure down.
         Connectivity combines Broadband, BT Net and Security.
@@ -2212,6 +2403,40 @@ function DayByDayView({ orders }) {
   const now = new Date();
   const wkStart = weekStart(now);
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const [team, setTeam] = useState("All");
+  const [agent, setAgent] = useState("All");
+  const [product, setProduct] = useState(null);
+
+  const agentOptions = useMemo(() => {
+    const s = new Set();
+    (orders || []).forEach((o) => { if (o.closer_name) s.add(o.closer_name); if (o.lead_gen_name) s.add(o.lead_gen_name); });
+    return Array.from(s).sort();
+  }, [orders]);
+
+  const groupOf = useCallback((o) => (o.item_name_grouped || o.product_group_2 || "Unspecified").trim() || "Unspecified", []);
+
+  const filtered = useMemo(() => (orders || []).filter((o) => {
+    if (o.removed_at) return false;
+    if (team !== "All" && o.closer_team !== team && o.lead_gen_team !== team) return false;
+    if (agent !== "All" && o.closer_name !== agent && o.lead_gen_name !== agent) return false;
+    if (product && groupOf(o) !== product) return false;
+    return true;
+  }), [orders, team, agent, product, groupOf]);
+
+  // Chart data — this month's GP per product, ignoring the product filter
+  // so the full picture stays visible while focused on one.
+  const chartItems = useMemo(() => {
+    const m = {};
+    (orders || []).forEach((o) => {
+      if (o.removed_at || !o.submission_date) return;
+      if (new Date(o.submission_date) < monthStart) return;
+      if (team !== "All" && o.closer_team !== team && o.lead_gen_team !== team) return;
+      if (agent !== "All" && o.closer_name !== agent && o.lead_gen_name !== agent) return;
+      const k = groupOf(o);
+      m[k] = (m[k] || 0) + num(o.gp_office != null ? o.gp_office : o.sales_agent_gp);
+    });
+    return Object.keys(m).map((name) => ({ name, value: m[name] }));
+  }, [orders, team, agent, monthStart, groupOf]);
 
   const hasProduct = (o, re) => re.test(String(o.item_name_grouped || "") + " " + String(o.product_group_2 || ""));
   const hasDeal = (o, re) => re.test(String(o.deal_type || ""));
@@ -2246,8 +2471,8 @@ function DayByDayView({ orders }) {
       }
     };
 
-    (orders || []).forEach((o) => {
-      if (!o.submission_date || o.removed_at) return;
+    filtered.forEach((o) => {
+      if (!o.submission_date) return;
       const d = o.submission_date;
       const gp = num(o.gp_office != null ? o.gp_office : o.sales_agent_gp);
       const sov = num(o.contract_value);
@@ -2280,16 +2505,16 @@ function DayByDayView({ orders }) {
       if (mob && resign) add("resignMobile", d, sov);
     });
     return rows;
-  }, [orders, wkStart, monthStart]);
+  }, [filtered, wkStart, monthStart]);
 
   const Row = ({ label, m, money = true, bold, tone, indent }) => {
     const weekTotal = m.week.reduce((s, v) => s + v, 0);
     return (
       <tr style={{ borderTop: "1px solid var(--border)" }}>
         <ReportLabel bold={bold} tone={tone} indent={indent}>{label}</ReportLabel>
-        <ReportCell value={m.month} money={money} bold tone={tone} />
+        <ReportCell value={m.month} money={money} bold tone={tone} highlight />
         {m.week.map((v, i) => <ReportCell key={i} value={v} money={money} tone={tone} />)}
-        <ReportCell value={weekTotal} money={money} bold tone={tone} />
+        <ReportCell value={weekTotal} money={money} bold tone={tone} highlight />
       </tr>
     );
   };
@@ -2304,17 +2529,28 @@ function DayByDayView({ orders }) {
         </span>
       </div>
 
+      <ReportFilters team={team} setTeam={setTeam} agent={agent} setAgent={setAgent} agentOptions={agentOptions} />
+
+      {product && (
+        <div className="rounded-xl p-2.5 mb-3 flex items-center justify-between" style={{ background: "var(--primary-soft)" }}>
+          <span className="text-xs font-semibold" style={{ color: "var(--primary)" }}>
+            Focused on {product} — every figure below is just this product.
+          </span>
+          <button onClick={() => setProduct(null)} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>Clear</button>
+        </div>
+      )}
+
       <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="overflow-x-auto">
           <table className="w-full" style={{ borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: "var(--primary)" }}>
                 <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "#fff", position: "sticky", left: 0, background: "var(--primary)" }}>Metric</th>
-                <th className="px-2 py-2 text-right text-xs font-bold" style={{ color: "rgba(255,255,255,0.85)" }}>Month Total</th>
+                <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Month Total</th>
                 {DAY_NAMES.map((d) => (
                   <th key={d} className="px-2 py-2 text-right text-xs font-bold" style={{ color: "#fff" }}>{d.slice(0, 3)}</th>
                 ))}
-                <th className="px-2 py-2 text-right text-xs font-bold" style={{ color: "rgba(255,255,255,0.85)" }}>Week Total</th>
+                <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Week Total</th>
               </tr>
             </thead>
             <tbody>
@@ -2337,6 +2573,8 @@ function DayByDayView({ orders }) {
           </table>
         </div>
       </div>
+
+      <ReportCharts items={chartItems} selected={product} onSelect={setProduct} title="GP THIS MONTH" />
 
       <div className="rounded-xl p-3 mt-3 text-xs" style={{ background: "var(--amber-soft)", color: "var(--ink-soft)" }}>
         <b>Building up.</b> Deal type (ACQ / Cross Sell / Modify / Resign) and unit counts have only just started
