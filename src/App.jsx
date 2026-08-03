@@ -5,6 +5,8 @@ import {
   Building2, Wallet, TrendingUp, ShieldAlert, RefreshCw, LogOut, Mail,
   Loader2, Users, Eye, EyeOff, ArrowLeft, LogIn, KeyRound, Palette, MapPin,
   BarChart3, CalendarDays, Target, Headphones, Phone,
+  ChevronDown, ClipboardList, LayoutDashboard, Settings as SettingsIcon,
+  PanelLeftClose, PanelLeftOpen,
 } from "lucide-react";
 
 /* ====================================================================== */
@@ -860,32 +862,6 @@ function DashboardView({ orders, netsuite, staff, payPlans, onOpenOrder, flashId
 
   return (
     <div>
-      {/* Time period — MTD by default. FY runs April to March. */}
-      <div className="flex items-center gap-2 mb-3 flex-wrap">
-        <span className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5" style={{ color: "var(--ink-soft)" }}><Clock size={13} /> Period</span>
-        {PERIODS.map((p) => (
-          <button key={p.key} onClick={() => setPeriod(p.key)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold"
-            style={period === p.key ? { background: "var(--ink)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>{p.label}</button>
-        ))}
-        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{periodLabel}</span>
-      </div>
-      {isOffice && (
-        <div className="flex items-center gap-2 mb-5 flex-wrap">
-          <span className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5" style={{ color: "var(--ink-soft)" }}><Eye size={13} /> Viewing</span>
-          <button onClick={() => setScope("office")} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold" style={scope === "office" ? { background: "var(--primary)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>Whole Office</button>
-          {SELLING_TEAMS.map((t) => (
-            <button key={t} onClick={() => setScope(t)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold" style={scope === t ? { background: "var(--primary)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>{t}</button>
-          ))}
-        </div>
-      )}
-      {is2ic && (
-        <div className="flex items-center gap-2 mb-5 flex-wrap">
-          <span className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5" style={{ color: "var(--ink-soft)" }}><Eye size={13} /> Viewing</span>
-          <span className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: "var(--primary)", color: "#fff" }}>{profile?.team || "My team"}</span>
-          <span className="text-xs" style={{ color: "var(--ink-faint)" }}>(2IC — you see your whole team)</span>
-        </div>
-      )}
-
       {/* Two rows of five units. The original five cards occupy the first
           three units (GP and SOV taking one and a half each on row one),
           with the NetSuite SOV breakdown filling the last two units. */}
@@ -923,6 +899,32 @@ function DashboardView({ orders, netsuite, staff, payPlans, onOpenOrder, flashId
           <KPICard icon={Wallet} label="Total SOV" value={fmtGBP(nsSovCards.all)} sub="NetSuite · excl. NSOV" accent="#1F7A3D" />
         </div>
       </div>
+
+      {/* Period + Team/Viewing sit right above the search/agent/status row */}
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <span className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5" style={{ color: "var(--ink-soft)" }}><Clock size={13} /> Period</span>
+        {PERIODS.map((p) => (
+          <button key={p.key} onClick={() => setPeriod(p.key)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold"
+            style={period === p.key ? { background: "var(--ink)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>{p.label}</button>
+        ))}
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{periodLabel}</span>
+      </div>
+      {isOffice && (
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          <span className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5" style={{ color: "var(--ink-soft)" }}><Eye size={13} /> Viewing</span>
+          <button onClick={() => setScope("office")} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold" style={scope === "office" ? { background: "var(--primary)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>Whole Office</button>
+          {SELLING_TEAMS.map((t) => (
+            <button key={t} onClick={() => setScope(t)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold" style={scope === t ? { background: "var(--primary)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>{t}</button>
+          ))}
+        </div>
+      )}
+      {is2ic && (
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          <span className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5" style={{ color: "var(--ink-soft)" }}><Eye size={13} /> Viewing</span>
+          <span className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: "var(--primary)", color: "#fff" }}>{profile?.team || "My team"}</span>
+          <span className="text-xs" style={{ color: "var(--ink-faint)" }}>(2IC — you see your whole team)</span>
+        </div>
+      )}
 
       <div className="flex flex-col md:flex-row md:items-center gap-3 mb-4 p-3 rounded-2xl" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="relative flex-1">
@@ -2217,24 +2219,35 @@ function ProductBars({ items, selected, onSelect, height = 220 }) {
   );
 }
 
-// The two charts side by side, sharing a selection.
-function ReportCharts({ items, selected, onSelect, title }) {
+// The two charts side by side. Treemap stays product-based (and drives the
+// page's product filter); the bar chart is per Sales Agent and drives the
+// existing agent filter, so clicking a bar is the same as picking that
+// agent from the dropdown.
+function ReportCharts({ treemapItems, treemapTitle, productSelected, onProductSelect, barItems, barTitle, agentSelected, onAgentSelect }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "0.75rem" }} className="mt-4">
       <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="flex items-baseline justify-between mb-3">
-          <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>{title} — SHARE</div>
-          {selected && (
-            <button onClick={() => onSelect(null)} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>
+          <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>{treemapTitle}</div>
+          {productSelected && (
+            <button onClick={() => onProductSelect(null)} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>
               Clear filter
             </button>
           )}
         </div>
-        <ProductTreemap items={items} selected={selected} onSelect={onSelect} />
+        <ProductTreemap items={treemapItems} selected={productSelected} onSelect={onProductSelect} />
       </div>
       <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-        <div className="sw-display font-bold text-sm mb-3" style={{ color: "var(--ink-soft)" }}>{title} — BY PRODUCT</div>
-        <ProductBars items={items} selected={selected} onSelect={onSelect} />
+        <div className="flex items-baseline justify-between mb-3">
+          <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>{barTitle}</div>
+          {agentSelected && agentSelected !== "All" && (
+            <button onClick={() => onAgentSelect("All")} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>
+              Clear filter
+            </button>
+          )}
+        </div>
+        <ProductBars items={barItems} selected={agentSelected === "All" ? null : agentSelected}
+          onSelect={(name) => onAgentSelect(name && name !== agentSelected ? name : "All")} />
       </div>
     </div>
   );
@@ -2295,9 +2308,9 @@ function SalesBreakdownView({ netsuite }) {
   const isAcq = (r) => /acquisition/i.test(String(r.class_name || ""));
   const isCampaign = (r) => !!(r.campaign_source && String(r.campaign_source).trim());
 
-  // Chart data — SOV per product group, respecting team/agent but NOT the
+  // Treemap data — SOV per product group, respecting team/agent but NOT the
   // product filter, so you can still see the whole picture while focused.
-  const chartItems = useMemo(() => {
+  const treemapItems = useMemo(() => {
     const m = {};
     (netsuite || []).forEach((r) => {
       if (team !== "All" && r.closer_team !== team && r.referrer_team !== team) return;
@@ -2309,6 +2322,19 @@ function SalesBreakdownView({ netsuite }) {
     return Object.keys(m).map((name) => ({ name, value: m[name] }));
   }, [netsuite, team, agent, groupOf, statusCfg]);
 
+  // Bar chart data — SOV per Sales Agent (closer's share of the deal).
+  // Respects team + product filters but not the agent filter itself, so
+  // every agent still shows and you can click one to filter by them.
+  const agentBarItems = useMemo(() => {
+    const m = {};
+    (netsuite || []).forEach((r) => {
+      if (team !== "All" && r.closer_team !== team) return;
+      if (product && groupOf(r) !== product) return;
+      if (!counts(r, "sov") || !r.closer_name) return;
+      m[r.closer_name] = (m[r.closer_name] || 0) + num(r.contract_value);
+    });
+    return Object.keys(m).map((name) => ({ name, value: m[name] }));
+  }, [netsuite, team, product, groupOf, statusCfg]);
 
   // Build the columns: FY months, or the weeks present in the data
   const { columns, keyOf } = useMemo(() => {
@@ -2493,7 +2519,8 @@ function SalesBreakdownView({ netsuite }) {
           </table>
         </div>
       </div>
-      <ReportCharts items={chartItems} selected={product} onSelect={setProduct} title="SOV BY PRODUCT" />
+      <ReportCharts treemapItems={treemapItems} treemapTitle="SOV BY PRODUCT" productSelected={product} onProductSelect={setProduct}
+        barItems={agentBarItems} barTitle="SOV BY SALES AGENT" agentSelected={agent} onAgentSelect={setAgent} />
 
       <p className="text-xs mt-3" style={{ color: "var(--ink-faint)" }}>
         Averages ignore months with no activity, so a part-year doesn't drag the figure down.
@@ -2684,7 +2711,8 @@ function DayByDayView({ orders }) {
         </div>
       </div>
 
-      <ReportCharts items={chartItems} selected={product} onSelect={setProduct} title="GP THIS MONTH" />
+      <ReportCharts treemapItems={chartItems} treemapTitle="GP THIS MONTH — BY PRODUCT" productSelected={product} onProductSelect={setProduct}
+        barItems={chartItems} barTitle="GP THIS MONTH — BY PRODUCT" agentSelected={product || "All"} onAgentSelect={(v) => setProduct(v === "All" ? null : v)} />
 
       <div className="rounded-xl p-3 mt-3 text-xs" style={{ background: "var(--amber-soft)", color: "var(--ink-soft)" }}>
         <b>Building up.</b> Deal type (ACQ / Cross Sell / Modify / Resign) and unit counts have only just started
@@ -3532,6 +3560,124 @@ function SalesCoachView() {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  SIDEBAR NAVIGATION                                                     */
+/* ---------------------------------------------------------------------- */
+
+const SIDEBAR_KEY = "sw-sidebar-pinned";
+
+function SidebarItem({ icon: Icon, label, active, collapsed, badge, indent, onClick, href }) {
+  const content = (
+    <>
+      <Icon size={16} className="shrink-0" />
+      {!collapsed && <span className="text-sm font-semibold truncate flex-1 text-left">{label}</span>}
+      {!collapsed && badge > 0 && (
+        <span className="rounded-full px-1.5 text-xs font-bold shrink-0" style={{ background: "var(--amber)", color: "#fff" }}>{badge}</span>
+      )}
+    </>
+  );
+  const style = {
+    background: active ? "var(--primary)" : "transparent",
+    color: active ? "#fff" : "var(--ink-soft)",
+    paddingLeft: indent && !collapsed ? 30 : 12,
+  };
+  const cls = "sw-focus w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition-colors";
+  if (href) {
+    return <a href={href} onClick={onClick} title={collapsed ? label : undefined} className={cls} style={style}>{content}</a>;
+  }
+  return <button onClick={onClick} title={collapsed ? label : undefined} className={cls} style={style}>{content}</button>;
+}
+
+function SidebarSection({ icon: Icon, label, collapsed, open, onToggle, childActive, children }) {
+  return (
+    <div>
+      <button onClick={onToggle} title={collapsed ? label : undefined}
+        className="sw-focus w-full flex items-center gap-2.5 px-3 py-2 rounded-xl"
+        style={{ color: childActive ? "var(--primary)" : "var(--ink-soft)" }}>
+        <Icon size={16} className="shrink-0" />
+        {!collapsed && <span className="text-sm font-semibold truncate flex-1 text-left">{label}</span>}
+        {!collapsed && <ChevronDown size={14} className="shrink-0" style={{ transform: open ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform .15s" }} />}
+      </button>
+      {(open || collapsed) && <div className={collapsed ? "" : "flex flex-col gap-0.5 mt-0.5"}>{children}</div>}
+    </div>
+  );
+}
+
+function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSignOut }) {
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem(SIDEBAR_KEY) === "collapsed"; } catch (_) { return false; }
+  });
+  const [dashOpen, setDashOpen] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(true);
+  const isOffice = profile?.role === "office";
+
+  const toggleCollapsed = () => {
+    setCollapsed((c) => {
+      const next = !c;
+      try { localStorage.setItem(SIDEBAR_KEY, next ? "collapsed" : "pinned"); } catch (_) {}
+      return next;
+    });
+  };
+
+  const dashboardsActive = ["daybyday", "breakdown"].includes(tab);
+  const settingsActive = ["admin", "statuses"].includes(tab);
+
+  return (
+    <div className="shrink-0 flex flex-col" style={{ width: collapsed ? 64 : 226, borderRight: "1px solid var(--border)", background: "var(--surface)", height: "100vh", position: "sticky", top: 0, transition: "width .15s" }}>
+      <div className="flex items-center gap-2 px-3 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
+        <Logo height={28} />
+        {!collapsed && (
+          <div className="min-w-0">
+            <div className="sw-display font-bold text-sm leading-none truncate">SchThrive WebOS</div>
+            <div className="text-xs flex items-center gap-1" style={{ color: "var(--ink-faint)" }}>
+              <Radio size={8} className="sw-live-dot" style={{ color: "var(--green)" }} /> Live
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-0.5">
+        <SidebarItem icon={ClipboardList} label="Claimed" collapsed={collapsed} active={tab === "dashboard"} onClick={() => setTab("dashboard")} />
+        <SidebarItem icon={Plus} label="Submit Lilac Box" collapsed={collapsed} active={tab === "new"} onClick={() => setTab("new")} />
+
+        <div className="my-1" />
+
+        <SidebarSection icon={LayoutDashboard} label="Dashboards" collapsed={collapsed} open={dashOpen} onToggle={() => setDashOpen((o) => !o)} childActive={dashboardsActive}>
+          <SidebarItem icon={CalendarDays} label="Day by Day" collapsed={collapsed} active={tab === "daybyday"} indent onClick={() => setTab("daybyday")} />
+          <SidebarItem icon={BarChart3} label="Sales Breakdown" collapsed={collapsed} active={tab === "breakdown"} indent onClick={() => setTab("breakdown")} />
+          <SidebarItem icon={Radio} label="TV Mode" collapsed={collapsed} active={false} indent href="#tv" onClick={() => setTimeout(() => window.location.reload(), 0)} />
+        </SidebarSection>
+
+        <div className="my-1" />
+
+        <SidebarItem icon={Headphones} label="Sales Coach" collapsed={collapsed} active={tab === "coach"} onClick={() => setTab("coach")} />
+
+        {isOffice && (
+          <>
+            <div className="my-1" />
+            <SidebarSection icon={SettingsIcon} label="Settings" collapsed={collapsed} open={settingsOpen} onToggle={() => setSettingsOpen((o) => !o)} childActive={settingsActive}>
+              <SidebarItem icon={Users} label="Admin" collapsed={collapsed} active={tab === "admin"} indent onClick={() => setTab("admin")} />
+              <SidebarItem icon={Palette} label="Settings" collapsed={collapsed} active={tab === "statuses"} indent badge={newStatusCount} onClick={() => setTab("statuses")} />
+              <SidebarItem icon={KeyRound} label="Change Password" collapsed={collapsed} active={false} indent onClick={onChangePassword} />
+            </SidebarSection>
+          </>
+        )}
+      </div>
+
+      <div className="p-2" style={{ borderTop: "1px solid var(--border)" }}>
+        {!collapsed && profile && (
+          <div className="px-2 pb-2 text-xs truncate" style={{ color: "var(--ink-faint)" }}>
+            {profile.role === "office" ? "Office" : profile.role === "2ic" ? "2IC" : "Agent"}{profile.team ? ` · ${profile.team}` : ""}
+          </div>
+        )}
+        <SidebarItem icon={KeyRound} label="Change Password" collapsed={collapsed} active={false} onClick={onChangePassword} />
+        <SidebarItem icon={LogOut} label="Sign Out" collapsed={collapsed} active={false} onClick={onSignOut} />
+        <SidebarItem icon={collapsed ? PanelLeftOpen : PanelLeftClose} label={collapsed ? "Expand" : "Collapse"} collapsed={collapsed} active={false} onClick={toggleCollapsed} />
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /*  APP SHELL — auth gate + live data                                     */
 /* ---------------------------------------------------------------------- */
 
@@ -3860,44 +4006,12 @@ export default function App() {
   return (
     <StatusCfgContext.Provider value={statusCfgMap}>
     <StaffContext.Provider value={staffValue}>
-    <div className="sw-root">
+    <div className="sw-root" style={{ display: "flex", minHeight: "100vh" }}>
       <style>{STYLE}</style>
-      <header className="sticky top-0 z-30 px-6 py-4 flex items-center justify-between" style={{ background: "var(--surface)", borderBottom: "1px solid var(--border)" }}>
-        <div className="flex items-center gap-3">
-          <Logo height={34} />
-          <div>
-            <div className="sw-display font-bold leading-tight">SchThrive WebOS</div>
-            <div className="text-xs flex items-center gap-1.5" style={{ color: "var(--ink-faint)" }}>
-              <Radio size={10} className="sw-live-dot" style={{ color: "var(--green)" }} /> Live · GBP
-              {profile && <span> · {profile.role === "office" ? "Office" : profile.role === "2ic" ? "2IC" : "Agent"}{profile.team ? ` · ${profile.team}` : ""}</span>}
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <nav className="flex gap-2">
-            <button onClick={() => setTab("dashboard")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold" style={tab === "dashboard" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}>Dashboard</button>
-            <button onClick={() => setTab("new")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "new" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}><Plus size={14} /> New Submission</button>
-            <button onClick={() => setTab("daybyday")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "daybyday" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}><CalendarDays size={14} /> Day by Day</button>
-            <button onClick={() => setTab("breakdown")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "breakdown" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}><BarChart3 size={14} /> Sales Breakdown</button>
-            <button onClick={() => setTab("coach")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "coach" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}><Headphones size={14} /> Sales Coach</button>
-            {profile?.role === "office" && (
-              <button onClick={() => setTab("admin")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "admin" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}><Users size={14} /> Admin</button>
-            )}
-            {profile?.role === "office" && (
-              <button onClick={() => setTab("statuses")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "statuses" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}>
-                <Palette size={14} /> Settings
-                {newStatusCount > 0 && (
-                  <span className="rounded-full px-1.5 text-xs font-bold" style={{ background: "var(--amber)", color: "#fff" }}>{newStatusCount}</span>
-                )}
-              </button>
-            )}
-            <a href="#tv" onClick={() => { setTimeout(() => window.location.reload(), 0); }} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={{ color: "var(--ink-soft)" }} title="Open the wall board"><Radio size={14} /> TV Mode</a>
-          </nav>
-          <button onClick={() => setChangingPassword(true)} title="Change password" className="sw-focus p-2 rounded-lg" style={{ color: "var(--ink-soft)" }}><KeyRound size={16} /></button>
-          <button onClick={signOut} title="Sign out" className="sw-focus p-2 rounded-lg" style={{ color: "var(--ink-soft)" }}><LogOut size={16} /></button>
-        </div>
-      </header>
+      <Sidebar tab={tab} setTab={setTab} profile={profile} newStatusCount={newStatusCount}
+        onChangePassword={() => setChangingPassword(true)} onSignOut={signOut} />
 
+      <div style={{ flex: 1, minWidth: 0 }}>
       <main className={`p-6 mx-auto ${tab === "breakdown" || tab === "daybyday" ? "max-w-none" : "max-w-6xl"}`}>
         {submitted && (
           <div className="sw-rise rounded-2xl p-4 mb-5 flex items-center justify-between gap-4" style={{ background: "var(--green-soft)", border: "1px solid var(--green)" }}>
@@ -3931,6 +4045,7 @@ export default function App() {
           {toast.startsWith("Couldn't") ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />} {toast}
         </div>
       )}
+      </div>
     </div>
     </StaffContext.Provider>
     </StatusCfgContext.Provider>
