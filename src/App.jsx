@@ -655,11 +655,13 @@ function ChangePasswordScreen({ forced, onDone, onCancel }) {
 /*  DASHBOARD                                                              */
 /* ---------------------------------------------------------------------- */
 
-function DashboardView({ orders, netsuite, staff, payPlans, onOpenOrder, flashId, profile, loading }) {
+function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrder, flashId, profile, loading }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [agentFilter, setAgentFilter] = useState("All");
   const [showNGP, setShowNGP] = useState(false);   // NGP deals hidden unless asked for
+  const [dataView, setDataView] = useState("claimed");   // forecast | claimed | statted
+  const [productFilter, setProductFilter] = useState("All");
   const [sortKey, setSortKey] = useState("last_updated");
   const [sortDir, setSortDir] = useState("desc");
   const role = profile?.role || "agent";
@@ -715,51 +717,141 @@ function DashboardView({ orders, netsuite, staff, payPlans, onOpenOrder, flashId
     return Array.from(names).sort();
   }, [scoped]);
 
+  // ---- Which dataset the table shows ---------------------------------
+  // Claimed = what agents submitted. Statted = what NetSuite booked.
+  // Forecast = what they said would land. Normalised to one row shape so
+  // the same table, filters and sorting work across all three.
+  const viewRows = useMemo(() => {
+    const from = periodStart(period);
+    const inPeriodDate = (d) => {
+      if (!from) return true;
+      if (!d) return false;
+      return new Date(d).getTime() >= from.getTime();
+    };
+    const teamScope = isOffice && scope !== "office" ? scope : (is2ic ? profile?.team : null);
+
+    if (dataView === "statted") {
+      return (netsuite || [])
+        .filter((n) => inPeriodDate(n.order_date ? n.order_date + "T00:00:00" : null))
+        .filter((n) => !teamScope || n.closer_team === teamScope || n.referrer_team === teamScope)
+        .map((n) => ({
+          id: "ns-" + n.document_number,
+          kind: "statted",
+          company_name: n.company_name,
+          closer_name: n.closer_name, closer_team: n.closer_team,
+          lead_gen_name: n.referrer_name, lead_gen_team: n.referrer_team,
+          product: n.prod_for_gs || n.product_group_2 || "—",
+          sov: num(n.contract_value),
+          gp: num(n.gp_office),
+          closer_share: num(n.closer_gp), lead_gen_share: num(n.referrer_gp),
+          status: n.order_status,
+          date: n.order_date,
+          ngp: n.count_gp === false, nsov: n.count_sov === false,
+          raw: n,
+        }));
+    }
+
+    if (dataView === "forecast") {
+      return (forecasts || [])
+        .filter((f) => inPeriodDate(f.forecast_date || f.forecast_week))
+        .filter((f) => !teamScope || f.agent_team === teamScope || f.lead_gen_team === teamScope)
+        .map((f) => ({
+          id: "fc-" + f.id,
+          kind: "forecast",
+          company_name: f.business_name,
+          closer_name: f.agent_name, closer_team: f.agent_team,
+          lead_gen_name: f.lead_gen_name, lead_gen_team: f.lead_gen_team,
+          product: f.pillar || "—",
+          sov: num(f.sov),
+          gp: num(f.gp),
+          closer_share: null, lead_gen_share: null,
+          status: f.status || "Open",
+          date: f.forecast_date || f.forecast_week,
+          matched: !!f.matched_at,
+          actual_gp: num(f.actual_gp),
+          ngp: false, nsov: false,
+          raw: f,
+        }));
+    }
+
+    // claimed
+    return scoped.map((o) => {
+      const { ns: n, ngp, nsov } = flagsFor(o);
+      return {
+        id: o.id,
+        kind: "claimed",
+        company_name: o.company_name,
+        closer_name: o.closer_name, closer_team: o.closer_team,
+        lead_gen_name: o.lead_gen_name, lead_gen_team: o.lead_gen_team,
+        product: o.item_name_grouped || o.product_group_2 || "—",
+        sov: num(o.contract_value),
+        gp: num(o.gp_office != null ? o.gp_office : o.sales_agent_gp),
+        closer_share: num(o.closer_share), lead_gen_share: num(o.lead_gen_share),
+        closer_pct: o.closer_pct, lead_gen_pct: o.lead_gen_pct,
+        status: (n && n.order_status) ? n.order_status : o.order_status,
+        date: o.last_updated,
+        dirty: o.dirty_order === "Yes",
+        notStatted: isNotStatted(o),
+        ngp, nsov,
+        raw: o,
+      };
+    });
+  }, [dataView, scoped, netsuite, forecasts, period, isOffice, is2ic, scope, profile, flagsFor]);
+
+  // Every product tag appearing in the current view, for the slicer.
+  // Products are often combined ("Cloud Voice + Broadband"), so the
+  // filter matches any order CONTAINING the chosen type.
+  const productOptions = useMemo(() => {
+    const set = new Set();
+    viewRows.forEach((r) => {
+      String(r.product || "").split(/\s*\+\s*/).forEach((p) => {
+        const t = p.trim();
+        if (t && t !== "—") set.add(t);
+      });
+    });
+    return Array.from(set).sort();
+  }, [viewRows]);
+
   const filtered = useMemo(() => {
-    const f = scoped.filter((o) => {
+    const f = viewRows.filter((r) => {
       // NGP deals don't count and are noise on the list — hidden unless asked for
-      if (!showNGP && isNGP(o)) return false;
+      if (!showNGP && r.ngp) return false;
       const q = query.trim().toLowerCase();
-      const mq = !q || (o.company_name || "").toLowerCase().includes(q) || (o.opp_id || "").toLowerCase().includes(q) || (o.cug || "").toLowerCase().includes(q);
-      const nRec = nsFor(o);
-      const liveStatus = nRec && nRec.order_status ? nRec.order_status : o.order_status;
+      const raw = r.raw || {};
+      const mq = !q
+        || (r.company_name || "").toLowerCase().includes(q)
+        || String(raw.opp_id || "").toLowerCase().includes(q)
+        || String(raw.cug || raw.customer_cug || "").toLowerCase().includes(q);
       const ms = statusFilter === "All"
-        || (statusFilter === "__not_statted" ? isNotStatted(o) : liveStatus === statusFilter);
-      const ma = agentFilter === "All" || o.closer_name === agentFilter || o.lead_gen_name === agentFilter;
-      return mq && ms && ma;
+        || (statusFilter === "__not_statted" ? !!r.notStatted : r.status === statusFilter);
+      const ma = agentFilter === "All" || r.closer_name === agentFilter || r.lead_gen_name === agentFilter;
+      // Product slicer — matches anything CONTAINING the chosen type
+      const mp = productFilter === "All"
+        || String(r.product || "").toLowerCase().includes(productFilter.toLowerCase());
+      return mq && ms && ma && mp;
     });
     const dir = sortDir === "asc" ? 1 : -1;
-    const sorted = [...f].sort((a, b) => {
+    return [...f].sort((a, b) => {
       let av, bv;
       switch (sortKey) {
         case "company": av = a.company_name || ""; bv = b.company_name || ""; break;
         case "agent": av = a.closer_name || ""; bv = b.closer_name || ""; break;
-        case "sov": av = num(a.contract_value); bv = num(b.contract_value); break;
-        case "gp": av = num(a.gp_office != null ? a.gp_office : a.sales_agent_gp); bv = num(b.gp_office != null ? b.gp_office : b.sales_agent_gp); break;
-        case "status": {
-          const na = nsFor(a), nb = nsFor(b);
-          av = (na && na.order_status) || a.order_status || "";
-          bv = (nb && nb.order_status) || b.order_status || "";
-          break;
-        }
-        default: av = a.last_updated || ""; bv = b.last_updated || "";
+        case "sov": av = a.sov; bv = b.sov; break;
+        case "gp": av = a.gp; bv = b.gp; break;
+        case "status": av = a.status || ""; bv = b.status || ""; break;
+        default: av = a.date || ""; bv = b.date || "";
       }
       if (typeof av === "string") return av.localeCompare(bv) * dir;
       return (av - bv) * dir;
     });
-    return sorted;
-  }, [scoped, query, statusFilter, agentFilter, sortKey, sortDir, showNGP, isNGP, nsFor]);
+  }, [viewRows, query, statusFilter, agentFilter, productFilter, sortKey, sortDir, showNGP]);
 
   // Statuses actually present — Lilac stages plus whatever NetSuite reports
   const statusOptions = useMemo(() => {
-    const set = new Set(STATUS_PIPELINE);
-    set.add("Arbitration Pending");
-    scoped.forEach((o) => {
-      const n = nsFor(o);
-      if (n && n.order_status) set.add(n.order_status);
-    });
+    const set = new Set();
+    viewRows.forEach((r) => { if (r.status) set.add(r.status); });
     return Array.from(set).sort();
-  }, [scoped, nsFor]);
+  }, [viewRows]);
 
   const toggleSort = (key) => {
     if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -778,7 +870,7 @@ function DashboardView({ orders, netsuite, staff, payPlans, onOpenOrder, flashId
     if (is2ic && profile?.team) return teamGP(gpCountable, profile.team);
     return officeGP(gpCountable);
   }, [gpCountable, isOffice, is2ic, scope, profile]);
-  const ngpCount = useMemo(() => scoped.filter(isNGP).length, [scoped, isNGP]);
+  const ngpCount = useMemo(() => viewRows.filter((r) => r.ngp).length, [viewRows]);
   const nsovCount = useMemo(() => scoped.filter(isNSOV).length, [scoped, isNSOV]);
   const activeOrders = useMemo(() => scoped.filter((o) => {
     const n = nsFor(o);
@@ -830,10 +922,14 @@ function DashboardView({ orders, netsuite, staff, payPlans, onOpenOrder, flashId
   // and Security together, which is how the office thinks about it.
   const nsSovCards = useMemo(() => {
     const from = periodStart(period);
+    // Scale with whatever is selected: period, team scope and agent.
+    const teamScope = isOffice && scope !== "office" ? scope : (is2ic ? profile?.team : null);
     const rows = (netsuite || []).filter((r) => {
       if (r.count_sov === false) return false;
       const cfg = r.order_status ? statusCfg[r.order_status] : null;
       if (cfg && cfg.count_sov === false) return false;
+      if (teamScope && r.closer_team !== teamScope && r.referrer_team !== teamScope) return false;
+      if (agentFilter !== "All" && r.closer_name !== agentFilter && r.referrer_name !== agentFilter) return false;
       if (!from) return true;
       return r.order_date && new Date(r.order_date + "T00:00:00").getTime() >= from.getTime();
     });
@@ -851,7 +947,7 @@ function DashboardView({ orders, netsuite, staff, payPlans, onOpenOrder, flashId
       totals.all += v;
     });
     return totals;
-  }, [netsuite, period, statusCfg]);
+  }, [netsuite, period, statusCfg, isOffice, is2ic, scope, profile, agentFilter]);
 
   const gpLabel = isOffice && scope !== "office" ? `GP · ${scope}` : is2ic && profile?.team ? `GP · ${profile.team}` : "GP · Office";
   const periodLabel = useMemo(() => {
@@ -900,63 +996,78 @@ function DashboardView({ orders, netsuite, staff, payPlans, onOpenOrder, flashId
         </div>
       </div>
 
-      {/* Period + Team/Viewing sit right above the search/agent/status row */}
-      <div className="flex items-center gap-2 mb-3 flex-wrap">
-        <span className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5" style={{ color: "var(--ink-soft)" }}><Clock size={13} /> Period</span>
-        {PERIODS.map((p) => (
-          <button key={p.key} onClick={() => setPeriod(p.key)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold"
-            style={period === p.key ? { background: "var(--ink)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>{p.label}</button>
-        ))}
-        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{periodLabel}</span>
-      </div>
-      {isOffice && (
-        <div className="flex items-center gap-2 mb-3 flex-wrap">
-          <span className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5" style={{ color: "var(--ink-soft)" }}><Eye size={13} /> Viewing</span>
-          <button onClick={() => setScope("office")} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold" style={scope === "office" ? { background: "var(--primary)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>Whole Office</button>
-          {SELLING_TEAMS.map((t) => (
-            <button key={t} onClick={() => setScope(t)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold" style={scope === t ? { background: "var(--primary)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>{t}</button>
+      {/* One condensed filter bar: view, period, team, search, agent, status, product */}
+      <div className="mb-4 p-3 rounded-2xl flex items-center gap-2 flex-wrap" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+
+        {/* What we're looking at */}
+        <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+          {[["forecast", "Forecast"], ["claimed", "Claimed"], ["statted", "Statted"]].map(([k, lbl]) => (
+            <button key={k} onClick={() => { setDataView(k); setStatusFilter("All"); setProductFilter("All"); }}
+              className="sw-focus px-3 py-2 text-xs font-bold"
+              style={dataView === k
+                ? { background: "var(--primary)", color: "#fff" }
+                : { background: "transparent", color: "var(--ink-soft)" }}>
+              {lbl}
+            </button>
           ))}
         </div>
-      )}
-      {is2ic && (
-        <div className="flex items-center gap-2 mb-3 flex-wrap">
-          <span className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5" style={{ color: "var(--ink-soft)" }}><Eye size={13} /> Viewing</span>
-          <span className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: "var(--primary)", color: "#fff" }}>{profile?.team || "My team"}</span>
-          <span className="text-xs" style={{ color: "var(--ink-faint)" }}>(2IC — you see your whole team)</span>
-        </div>
-      )}
 
-      <div className="flex flex-col md:flex-row md:items-center gap-3 mb-4 p-3 rounded-2xl" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-        <div className="relative flex-1">
-          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--ink-faint)" }} />
-          <input className="sw-input sw-focus" style={{ paddingLeft: 32 }} placeholder="Search company, Opp ID, or CUG..." value={query} onChange={(e) => setQuery(e.target.value)} />
-        </div>
-        <div className="flex items-center gap-2">
-          <Filter size={14} style={{ color: "var(--ink-faint)" }} />
-          {canFilterByAgent && (
-            <select className="sw-input sw-focus" style={{ width: 190 }} value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)}>
-              <option value="All">All agents</option>
-              {agentOptions.map((a) => <option key={a} value={a}>{a}</option>)}
-            </select>
-          )}
-          <select className="sw-input sw-focus" style={{ width: 190 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-            <option>All</option>
-            {statusOptions.map((s) => <option key={s}>{s}</option>)}
-            <option value="__not_statted">⚠ Not Statted</option>
+        <span style={{ width: 1, height: 22, background: "var(--border)" }} />
+
+        {/* Period */}
+        <select className="sw-input sw-focus" style={{ width: 108 }} value={period} onChange={(e) => setPeriod(e.target.value)} title={periodLabel}>
+          {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+        </select>
+
+        {/* Team scope */}
+        {isOffice && (
+          <select className="sw-input sw-focus" style={{ width: 150 }} value={scope} onChange={(e) => setScope(e.target.value)}>
+            <option value="office">Whole Office</option>
+            {SELLING_TEAMS.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
-          {ngpCount > 0 && (
-            <button
-              onClick={() => setShowNGP((v) => !v)}
-              title="NGP orders don't count toward GP — hidden by default"
-              className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold whitespace-nowrap"
-              style={showNGP
-                ? { background: "var(--red)", color: "#fff" }
-                : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}
-            >
-              {showNGP ? "Hide" : "Show"} NGP ({ngpCount})
-            </button>
-          )}
+        )}
+        {is2ic && (
+          <span className="px-2.5 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap" style={{ background: "var(--primary-soft)", color: "var(--primary)" }}>
+            {profile?.team || "My team"}
+          </span>
+        )}
+
+        {/* Search */}
+        <div className="relative" style={{ flex: 1, minWidth: 170 }}>
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--ink-faint)" }} />
+          <input className="sw-input sw-focus" style={{ paddingLeft: 32 }} placeholder="Search company..." value={query} onChange={(e) => setQuery(e.target.value)} />
         </div>
+
+        {canFilterByAgent && (
+          <select className="sw-input sw-focus" style={{ width: 155 }} value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)}>
+            <option value="All">All agents</option>
+            {agentOptions.map((a) => <option key={a} value={a}>{a}</option>)}
+          </select>
+        )}
+
+        <select className="sw-input sw-focus" style={{ width: 150 }} value={productFilter} onChange={(e) => setProductFilter(e.target.value)}>
+          <option value="All">All products</option>
+          {productOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
+
+        <select className="sw-input sw-focus" style={{ width: 155 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+          <option value="All">All statuses</option>
+          {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+          {dataView === "claimed" && <option value="__not_statted">⚠ Not Statted</option>}
+        </select>
+
+        {ngpCount > 0 && (
+          <button
+            onClick={() => setShowNGP((v) => !v)}
+            title="NGP orders don't count toward GP — hidden by default"
+            className="sw-focus px-2.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap"
+            style={showNGP
+              ? { background: "var(--red)", color: "#fff" }
+              : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}
+          >
+            {showNGP ? "Hide" : "Show"} NGP ({ngpCount})
+          </button>
+        )}
       </div>
 
       <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
@@ -965,19 +1076,18 @@ function DashboardView({ orders, netsuite, staff, payPlans, onOpenOrder, flashId
             <thead>
               <tr style={{ background: "var(--surface-alt)" }}>
                 {[
-                  { label: "Opp ID", key: null },
                   { label: "Company", key: "company" },
                   { label: "People", key: "agent" },
                   { label: "Product", key: null },
                   { label: "SOV", key: "sov" },
                   { label: "GP", key: "gp" },
                   { label: "Status", key: "status" },
-                  { label: "Updated", key: "last_updated" },
+                  { label: dataView === "forecast" ? "Expected" : "Date", key: "date" },
                 ].map(({ label, key }) => (
                   <th
                     key={label}
                     onClick={key ? () => toggleSort(key) : undefined}
-                    className={`text-left px-4 py-3 text-xs font-semibold uppercase tracking-wide ${key ? "cursor-pointer select-none" : ""}`}
+                    className={`text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide ${key ? "cursor-pointer select-none" : ""}`}
                     style={{ color: "var(--ink-soft)" }}
                   >
                     {label}{key && sortKey === key ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
@@ -986,62 +1096,69 @@ function DashboardView({ orders, netsuite, staff, payPlans, onOpenOrder, flashId
               </tr>
             </thead>
             <tbody>
-              {filtered.map((o) => (
-                <tr key={o.id} onClick={() => onOpenOrder(o)} className={`cursor-pointer transition-colors ${flashId === o.id ? "sw-flash" : ""}`}
-                  style={{ borderTop: "1px solid var(--border)", background: isNGP(o) ? "var(--red-soft)" : "transparent" }}
+              {filtered.map((r) => (
+                <tr key={r.id} onClick={() => r.kind === "claimed" && onOpenOrder(r.raw)}
+                  className={`transition-colors ${flashId === r.id ? "sw-flash" : ""} ${r.kind === "claimed" ? "cursor-pointer" : ""}`}
+                  style={{ borderTop: "1px solid var(--border)", background: r.ngp ? "var(--red-soft)" : "transparent" }}
                   onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-alt)")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = isNGP(o) ? "var(--red-soft)" : "transparent")}>
-                  <td className="px-4 py-3"><IdChip>{o.opp_id}</IdChip></td>
-                  <td className="px-4 py-3">
-                    <div className="font-medium">{o.company_name}</div>
-                    {o.dirty_order === "Yes" && <div className="flex items-center gap-1 text-xs mt-0.5" style={{ color: "var(--red)" }}><ShieldAlert size={11} /> Dirty order flagged</div>}
-                    {isNotStatted(o) && <div className="flex items-center gap-1 text-xs mt-0.5" style={{ color: "var(--amber)" }}><Clock size={11} /> Not Statted</div>}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = r.ngp ? "var(--red-soft)" : "transparent")}>
+
+                  {/* 1: company, with flags kept inline so the row stays short */}
+                  <td className="px-3 py-2" style={{ maxWidth: 260 }}>
+                    <div className="font-medium text-xs truncate">{r.company_name}</div>
+                    {(r.dirty || r.notStatted || r.nsov || (r.kind === "forecast" && r.matched)) && (
+                      <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                        {r.dirty && <span className="text-xs font-semibold" style={{ color: "var(--red)", fontSize: 10 }}>DIRTY</span>}
+                        {r.notStatted && <span className="text-xs font-semibold" style={{ color: "var(--amber)", fontSize: 10 }}>NOT STATTED</span>}
+                        {r.nsov && <span className="text-xs font-semibold" style={{ color: "var(--amber)", fontSize: 10 }}>NSOV</span>}
+                        {r.kind === "forecast" && r.matched && <span className="text-xs font-semibold" style={{ color: "var(--green)", fontSize: 10 }}>LANDED {fmtGBP(r.actual_gp)}</span>}
+                      </div>
+                    )}
                   </td>
-                  <td className="px-4 py-3">
-                    <div className="font-medium text-xs">{o.closer_name || "—"}{o.closer_team ? <span style={{ color: "var(--ink-faint)" }}> · {o.closer_team}</span> : null}</div>
-                    {o.lead_gen_name && <div className="text-xs mt-0.5" style={{ color: "var(--ink-soft)" }}>LG: {o.lead_gen_name}{o.lead_gen_team ? <span style={{ color: "var(--ink-faint)" }}> · {o.lead_gen_team}</span> : null}</div>}
+
+                  {/* 2: people */}
+                  <td className="px-3 py-2" style={{ maxWidth: 190 }}>
+                    <div className="text-xs truncate">{r.closer_name || "—"}</div>
+                    {r.lead_gen_name && <div className="text-xs truncate" style={{ color: "var(--ink-faint)", fontSize: 10 }}>LG: {r.lead_gen_name}</div>}
                   </td>
-                  <td className="px-4 py-3" style={{ color: "var(--ink-soft)" }}>{o.item_name_grouped || "—"}</td>
-                  <td className="px-4 py-3 sw-mono">{fmtGBP(o.contract_value)}</td>
-                  <td className="px-4 py-3">
-                    <div className="sw-mono font-semibold">{fmtGBP(o.gp_office != null ? o.gp_office : o.sales_agent_gp)}</div>
-                    <div className="text-xs mt-0.5" style={{ color: "var(--ink-faint)" }}>
-                      C {o.closer_pct != null ? `${o.closer_pct}%` : "—"} {fmtGBP(o.closer_share)}
-                      {o.lead_gen_name ? ` · LG ${o.lead_gen_pct != null ? `${o.lead_gen_pct}%` : "—"} ${fmtGBP(o.lead_gen_share)}` : ""}
-                    </div>
+
+                  <td className="px-3 py-2 text-xs truncate" style={{ color: "var(--ink-soft)", maxWidth: 170 }}>{r.product}</td>
+
+                  <td className="px-3 py-2 sw-mono text-xs">{fmtGBP(r.sov)}</td>
+
+                  {/* 3: GP with the split underneath */}
+                  <td className="px-3 py-2">
+                    <div className="sw-mono text-xs font-semibold">{fmtGBP(r.gp)}</div>
+                    {r.closer_share != null && r.closer_share > 0 && (
+                      <div style={{ color: "var(--ink-faint)", fontSize: 10 }} className="sw-mono">
+                        {fmtGBP(r.closer_share)}{r.lead_gen_name && r.lead_gen_share ? ` / ${fmtGBP(r.lead_gen_share)}` : ""}
+                      </div>
+                    )}
                   </td>
-                  <td className="px-4 py-3">
+
+                  {/* Compact status — pill only, no extra lines */}
+                  <td className="px-3 py-2">
                     {(() => {
-                      const { ns: n, ngp, nsov } = flagsFor(o);
-                      // NetSuite is the authority once it's seen the deal —
-                      // its status replaces "Lilac Submitted" on the pill.
-                      const live = n && n.order_status ? n.order_status : o.order_status;
+                      const tone = statusTone(r.status, r.ngp, statusCfg);
                       return (
-                        <>
-                          <StatusPill status={live} ngp={ngp} />
-                          <div className="text-xs mt-1" style={{ color: "var(--ink-faint)" }}>
-                            {n && n.order_status ? (
-                              (ngp || nsov) ? (
-                                <span className="font-semibold" style={{ color: ngp ? "var(--red)" : "var(--amber)" }}>
-                                  {ngp ? "NGP" : ""}{ngp && nsov ? " · " : ""}{nsov ? "NSOV" : ""}
-                                </span>
-                              ) : null
-                            ) : isNotStatted(o) ? (
-                              <span style={{ color: "var(--amber)" }}>Not Statted</span>
-                            ) : (
-                              <span>Awaiting NetSuite</span>
-                            )}
-                          </div>
-                        </>
+                        <span className="inline-block rounded-full px-2 py-0.5 font-semibold whitespace-nowrap"
+                          style={{ color: tone.fg, background: tone.bg, fontSize: 10.5, maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis" }}
+                          title={r.status}>
+                          {r.status || "—"}
+                        </span>
                       );
                     })()}
                   </td>
-                  <td className="px-4 py-3 text-xs" style={{ color: "var(--ink-faint)" }}>{fmtDate(o.last_updated)}</td>
+
+                  <td className="px-3 py-2 text-xs whitespace-nowrap" style={{ color: "var(--ink-faint)", fontSize: 11 }}>{r.date ? fmtDate(r.date) : "—"}</td>
                 </tr>
               ))}
               {filtered.length === 0 && (
-                <tr><td colSpan={8} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
-                  {loading ? "Loading orders..." : "No orders to show yet. Submit one from New Submission to see it here."}
+                <tr><td colSpan={7} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                  {loading ? "Loading..." :
+                    dataView === "forecast" ? "No forecasts for this period." :
+                    dataView === "statted" ? "No NetSuite orders for this period." :
+                    "No orders to show yet. Submit one from Submit Lilac Box to see it here."}
                 </td></tr>
               )}
             </tbody>
@@ -4573,6 +4690,7 @@ export default function App() {
   const [netsuite, setNetsuite] = useState([]);
   const [statusRows, setStatusRows] = useState([]);
   const [payPlans, setPayPlans] = useState([]);
+  const [forecasts, setForecasts] = useState([]);
   const [allProfiles, setAllProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("dashboard");
@@ -4634,6 +4752,13 @@ export default function App() {
     setNetsuite(all);
   }, [isTVRoute]);
   useEffect(() => { if (session?.user) loadNetsuite(); }, [session, loadNetsuite]);
+
+  // Forecasts — the Claimed page can switch to a forecast view
+  const loadForecasts = useCallback(async () => {
+    const { data } = await supabase.from("forecasts").select("*").order("forecast_week", { ascending: false });
+    setForecasts(data || []);
+  }, []);
+  useEffect(() => { if (session?.user) loadForecasts(); }, [session, loadForecasts]);
 
   // Pay plans — monthly targets the KPI cards are measured against
   const loadPayPlans = useCallback(async () => {
@@ -4913,7 +5038,7 @@ export default function App() {
             </div>
           </div>
         )}
-        {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuite} staff={staff} payPlans={payPlans} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
+        {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuite} forecasts={forecasts} staff={staff} payPlans={payPlans} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
         {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} />}
         {tab === "daybyday" && <DayByDayView orders={orders} />}
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuite} />}
