@@ -543,7 +543,7 @@ function KPICard({ icon: Icon, label, value, sub, accent, target, rawValue }) {
 }
 
 /* Headline figure. Carries a target when the viewer has a pay plan. */
-function HeroCard({ label, value, note, accent, target, fullTarget, rawValue, acq }) {
+function HeroCard({ label, value, note, accent, target, fullTarget, rawValue, acq, acqLabel }) {
   // Colour reflects pace (are you where you should be today); the number
   // and bar reflect the whole target, so day 1 doesn't read as 1200%.
   const tone = target ? paceTone(rawValue, target) : null;
@@ -551,20 +551,15 @@ function HeroCard({ label, value, note, accent, target, fullTarget, rawValue, ac
   const pct = denom ? Math.round((rawValue / denom) * 100) : 0;
   const pacePct = denom && target ? Math.min(100, (target / denom) * 100) : 0;
   return (
-    <div className="sw-rise rounded-xl flex" style={{ background: "var(--surface)", border: "1px solid var(--border)", minHeight: 112 }}>
-    {acq && (
-      <div className="flex flex-col justify-center px-3 py-4 shrink-0"
-        style={{ width: "33%", borderRight: "1px solid var(--border)", background: "var(--surface-alt)" }}>
-        <div className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em", fontSize: 10 }}>ACQ</div>
-        <div className="sw-display truncate" style={{ fontSize: 19, fontWeight: 600, letterSpacing: "-0.02em", marginTop: 2 }}>{acq.value}</div>
-        <div className="text-xs mt-0.5" style={{ color: "var(--ink-faint)" }}>{acq.pct.toFixed(0)}% of total</div>
-      </div>
-    )}
-    <div className="p-4 flex flex-col justify-between flex-1 min-w-0">
-      <div className="flex items-start justify-between gap-2">
+    <div className="sw-rise rounded-xl p-4 flex flex-col justify-between"
+      style={{ background: "var(--surface)", border: "1px solid var(--border)", minHeight: 112 }}>
+      <div className="flex items-start justify-between gap-3">
         <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{label}</span>
-        {tone && (
-          <span className="text-xs font-semibold shrink-0" style={{ color: tone.fg }}>{pct}%</span>
+        {acq && (
+          <div className="text-right shrink-0">
+            <div className="sw-mono" style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-soft)" }}>{acq.value}</div>
+            <div style={{ fontSize: 10, color: "var(--ink-faint)" }}>{acqLabel} · {acq.pct.toFixed(0)}%</div>
+          </div>
         )}
       </div>
       <div className="sw-display" style={{ fontSize: 29, fontWeight: 600, lineHeight: 1.05, letterSpacing: "-0.025em", color: "var(--ink)" }}>
@@ -572,10 +567,13 @@ function HeroCard({ label, value, note, accent, target, fullTarget, rawValue, ac
       </div>
       {tone ? (
         <div>
-          <div className="rounded-full mb-1.5" style={{ height: 4, background: "var(--surface-alt)", position: "relative" }}>
+          <div className="rounded-full mb-1.5" style={{ height: 5, background: "var(--surface-alt)", position: "relative" }}>
             <div className="rounded-full" style={{ width: Math.min(100, pct) + "%", height: "100%", background: tone.fg, transition: "width .3s" }} />
-            {pacePct > 0 && pacePct < 100 && (
-              <div style={{ position: "absolute", left: `${pacePct}%`, top: -1, bottom: -1, width: 2, background: "var(--ink)", opacity: 0.4 }} />
+            {/* Where you should be today — sits proud of the bar so it reads
+                whether it falls on filled or unfilled track. */}
+            {pacePct > 0 && pacePct <= 100 && (
+              <div title={`On pace today: ${fmtGBP(target)}`}
+                style={{ position: "absolute", left: `calc(${pacePct}% - 1px)`, top: -3, bottom: -3, width: 2, background: "var(--ink)", borderRadius: 1 }} />
             )}
           </div>
           <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
@@ -586,21 +584,19 @@ function HeroCard({ label, value, note, accent, target, fullTarget, rawValue, ac
         <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{note}</div>
       )}
     </div>
-    </div>
   );
 }
 
 /* Slim campaign figure tucked under a headline card. Full view only —
    it's context, not a headline in its own right. */
 function CampaignBar({ label, value, pct }) {
-  if (!value) return null;
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 mt-1 rounded-lg"
       style={{ background: "var(--surface-alt)", border: "1px solid var(--border)" }}>
-      <span style={{ fontSize: 11 }}>🎯</span>
+      <span style={{ fontSize: 11, opacity: value ? 1 : 0.4 }}>🎯</span>
       <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{label}</span>
-      <span className="sw-mono ml-auto" style={{ fontSize: 12, fontWeight: 600 }}>{fmtGBP(value)}</span>
-      <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{pct.toFixed(0)}%</span>
+      <span className="sw-mono ml-auto" style={{ fontSize: 12, fontWeight: 600, color: value ? "var(--ink)" : "var(--ink-faint)" }}>{fmtGBP(value)}</span>
+      <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{(pct || 0).toFixed(0)}%</span>
     </div>
   );
 }
@@ -610,6 +606,7 @@ function MiniStat({ label, value, target, fullTarget, accent, bold }) {
   const tone = target ? paceTone(value, target) : null;
   const denom = fullTarget || target;
   const pct = denom ? Math.round((value / denom) * 100) : 0;
+  const pacePct = denom && target ? Math.min(100, (target / denom) * 100) : 0;
   return (
     <div className="px-1 py-1">
       <div className="flex items-baseline justify-between gap-1">
@@ -618,8 +615,12 @@ function MiniStat({ label, value, target, fullTarget, accent, bold }) {
       </div>
       <div className="sw-display truncate" style={{ fontSize: bold ? 17 : 16, fontWeight: 600, letterSpacing: "-0.02em", color: "var(--ink)" }}>{fmtGBP(value)}</div>
       {tone && (
-        <div className="rounded-full mt-1" style={{ height: 2, background: "var(--surface-alt)" }}>
+        <div className="rounded-full mt-1" style={{ height: 4, background: "var(--surface-alt)", position: "relative" }}>
           <div className="rounded-full" style={{ width: Math.min(100, pct) + "%", height: "100%", background: tone.fg }} />
+          {pacePct > 0 && pacePct <= 100 && (
+            <div title={`On pace today: ${fmtGBP(target)}`}
+              style={{ position: "absolute", left: `calc(${pacePct}% - 1px)`, top: -2, bottom: -2, width: 2, background: "var(--ink)", borderRadius: 1 }} />
+          )}
         </div>
       )}
     </div>
@@ -1153,7 +1154,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
           date: n.order_date,
           ageDays: n.order_date ? Math.floor((Date.now() - new Date(n.order_date + "T00:00:00").getTime()) / 86400000) : null,
           needsAction: !!(n.order_status && statusCfg[n.order_status]?.needs_attention),
-          campaign: !!(n.campaign_source && String(n.campaign_source).trim() && !/lilac box/i.test(String(n.campaign_source))),
+          campaign: !!(n.campaign_source && String(n.campaign_source).trim()),
           campaignName: n.campaign_source || null,
           isAcq: /acquisition/i.test(String(n.class_name || "")),
           ngp: n.count_gp === false, nsov: n.count_sov === false,
@@ -1205,11 +1206,8 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         notStatted: isNotStatted(o),
         ageDays: o.submission_date ? Math.floor((Date.now() - new Date(o.submission_date).getTime()) / 86400000) : null,
         needsAction: !!(n && n.order_status && statusCfg[n.order_status]?.needs_attention),
-        campaign: (() => {
-          const s = o.campaign_source || (n || {}).campaign_source;
-          return !!(s && String(s).trim() && !/lilac box/i.test(String(s)));
-        })(),
-        campaignName: o.campaign_source || (n || {}).campaign_source || null,
+        campaign: !!(n && n.campaign_source && String(n.campaign_source).trim()),
+        campaignName: (n || {}).campaign_source || null,
         isAcq: /acquisition/i.test(String(o.deal_type || "")) || !!(n && /acquisition/i.test(String(n.class_name || ""))),
         ngp, nsov,
         raw: o,
@@ -1424,9 +1422,12 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
   // ---- Campaign and acquisition splits --------------------------------
   // Campaign = the deal came from a named campaign source.
   // ACQ = new business rather than a renewal or upgrade.
+  // A campaign deal is anything carrying a value in NetSuite's Campaign
+  // Source column. The order's own campaign_source is just the submission
+  // route ("Lilac Box"), so it isn't used here.
   const isCampaignRow = useCallback((o) => {
-    const src = o.campaign_source || (nsFor(o) || {}).campaign_source;
-    return !!(src && String(src).trim() && !/lilac box/i.test(String(src)));
+    const n = nsFor(o);
+    return !!(n && n.campaign_source && String(n.campaign_source).trim());
   }, [nsFor]);
 
   const isAcqRow = useCallback((o) => {
@@ -1683,40 +1684,40 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }} className="mb-3">
           {[
             { label: gpLabel, value: fmtGBP(gpTotal), target: targets.gp, fullTarget: targets.full.gp, raw: gpTotal,
-              acq: { value: fmtGBP(splits.acqGp), pct: splits.acqPct },
+              acq: { value: fmtGBP(splits.acqGp), pct: splits.acqPct }, acqLabel: "ACQ GP",
               note: gpWorking.dc > 0 ? `${fmtGBP(gpWorking.claimed)} claimed − ${fmtGBP(gpWorking.dc)} DC` : "Single-counted GP" },
             { label: "SOV", value: fmtGBP(sovTotal), target: null, raw: 0,
-              acq: { value: fmtGBP(splits.acqSov), pct: sovTotal ? (splits.acqSov / sovTotal) * 100 : 0 },
+              acq: { value: fmtGBP(splits.acqSov), pct: sovTotal ? (splits.acqSov / sovTotal) * 100 : 0 }, acqLabel: "ACQ SOV",
               note: `${productScoped.length} order${productScoped.length === 1 ? "" : "s"} · ${periodLabelFor(period)}` },
           ].map((c) => {
             const tone = c.target ? paceTone(c.raw, c.target) : null;
             const denom = c.fullTarget || c.target;
             const pct = denom ? Math.round((c.raw / denom) * 100) : 0;
+            const pacePct = denom && c.target ? Math.min(100, (c.target / denom) * 100) : 0;
             return (
-              <div key={c.label} className="rounded-xl flex" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              {showAcq && c.acq && (
-                <div className="flex flex-col justify-center px-4 py-7 shrink-0"
-                  style={{ width: "33%", borderRight: "1px solid var(--border)", background: "var(--surface-alt)" }}>
-                  <div className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.05em" }}>ACQ</div>
-                  <div className="sw-display truncate" style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.025em", marginTop: 6 }}>{c.acq.value}</div>
-                  <div className="text-xs mt-1" style={{ color: "var(--ink-faint)" }}>{c.acq.pct.toFixed(0)}% of total</div>
-                </div>
-              )}
-              <div className="px-6 py-7 flex-1 min-w-0">
-                <div className="flex items-baseline justify-between">
+              <div key={c.label} className="rounded-xl px-6 py-7" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+                <div className="flex items-start justify-between gap-3">
                   <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.05em" }}>{c.label}</span>
-                  {tone && <span className="text-xs font-semibold" style={{ color: tone.fg }}>{pct}% of pace</span>}
+                  {showAcq && c.acq && (
+                    <div className="text-right shrink-0">
+                      <div className="sw-mono" style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-soft)" }}>{c.acq.value}</div>
+                      <div style={{ fontSize: 10, color: "var(--ink-faint)" }}>{c.acqLabel} · {c.acq.pct.toFixed(0)}%</div>
+                    </div>
+                  )}
                 </div>
                 <div className="sw-display" style={{ fontSize: 46, fontWeight: 600, letterSpacing: "-0.03em", lineHeight: 1.05, marginTop: 10 }}>
                   {c.value}
                 </div>
                 {tone && (
-                  <div className="rounded-full mt-4" style={{ height: 3, background: "var(--surface-alt)" }}>
+                  <div className="rounded-full mt-4" style={{ height: 6, background: "var(--surface-alt)", position: "relative" }}>
                     <div className="rounded-full" style={{ width: `${Math.min(100, pct)}%`, height: "100%", background: tone.fg, transition: "width .3s" }} />
+                    {pacePct > 0 && pacePct <= 100 && (
+                      <div title={`On pace today: ${fmtGBP(c.target)}`}
+                        style={{ position: "absolute", left: `calc(${pacePct}% - 1px)`, top: -3, bottom: -3, width: 2, background: "var(--ink)", borderRadius: 1 }} />
+                    )}
                   </div>
                 )}
                 <div className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>{c.note}</div>
-              </div>
               </div>
             );
           })}
@@ -1728,14 +1729,14 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         <div>
           <HeroCard label={gpLabel} value={fmtGBP(gpTotal)} accent="#1F7A3D"
             target={targets.gp} fullTarget={targets.full.gp} rawValue={gpTotal}
-            acq={showAcq ? { value: fmtGBP(splits.acqGp), pct: splits.acqPct } : null}
+            acq={showAcq ? { value: fmtGBP(splits.acqGp), pct: splits.acqPct } : null} acqLabel="ACQ GP"
             note={gpWorking.dc > 0 ? `${fmtGBP(gpWorking.claimed)} claimed − ${fmtGBP(gpWorking.dc)} DC` : "Single-counted"} />
           <CampaignBar label="Campaign GP" value={splits.campaignGp} pct={splits.campaignPct} />
         </div>
 
         <div>
           <HeroCard label="SOV" value={fmtGBP(sovTotal)} accent="#4C1D8F"
-            acq={showAcq ? { value: fmtGBP(splits.acqSov), pct: sovTotal ? (splits.acqSov / sovTotal) * 100 : 0 } : null}
+            acq={showAcq ? { value: fmtGBP(splits.acqSov), pct: sovTotal ? (splits.acqSov / sovTotal) * 100 : 0 } : null} acqLabel="ACQ SOV"
             note={`${productScoped.length} order${productScoped.length === 1 ? "" : "s"}`} />
           <CampaignBar label="Campaign SOV" value={splits.campaignSov} pct={sovTotal ? (splits.campaignSov / sovTotal) * 100 : 0} />
         </div>
