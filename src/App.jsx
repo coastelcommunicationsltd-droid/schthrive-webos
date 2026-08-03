@@ -115,6 +115,7 @@ const STYLE = `
 .sw-label{display:block;font-size:12px;font-weight:600;color:var(--ink-soft);margin-bottom:5px;}
 .sw-req{color:var(--red);margin-left:2px;}
 .sw-err{color:var(--red);font-size:12px;margin-top:4px;}
+.sw-clamp2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;}
 `;
 
 /* ---------------------------------------------------------------------- */
@@ -437,6 +438,40 @@ const PRODUCT_SHADES = ["#3B1370", "#4C1D8F", "#5E2CA8", "#7040BE", "#8659CE", "
 // GP makeup on the ranked list — one colour per product group
 const MIX_ORDER = ["Cloud", "Connectivity", "Mobile", "Other"];
 const MIX_COLOURS = { Cloud: "#5E2CA8", Connectivity: "#2A6FB8", Mobile: "#8659CE", Other: "#B4AEC6" };
+
+// Team colours drawn from the Okabe-Ito palette, which stays distinguishable
+// under the common forms of colour blindness. Every use is paired with the
+// team's initials, so nobody has to rely on colour alone.
+const TEAM_PALETTE = [
+  { fg: "#0072B2", bg: "#E4F0F8" },   // blue
+  { fg: "#D55E00", bg: "#FBEDE4" },   // vermillion
+  { fg: "#7B52AB", bg: "#F0EAF7" },   // purple
+  { fg: "#009E73", bg: "#E2F4EF" },   // teal-green
+  { fg: "#8A6D3B", bg: "#F5EFE3" },   // brown
+];
+function teamStyle(team, allTeams) {
+  if (!team) return { fg: "var(--ink-faint)", bg: "var(--surface-alt)", initials: "—" };
+  const i = Math.max(0, (allTeams || []).indexOf(team));
+  const p = TEAM_PALETTE[i % TEAM_PALETTE.length];
+  const initials = String(team).split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+  return { ...p, initials };
+}
+
+// A small, consistent way of showing which team someone is on
+function TeamTag({ team, allTeams }) {
+  const s = teamStyle(team, allTeams);
+  return (
+    <span title={team || "No team"}
+      style={{
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        minWidth: 20, height: 15, padding: "0 4px", borderRadius: 3,
+        background: s.bg, color: s.fg, fontSize: 9.5, fontWeight: 700,
+        letterSpacing: "0.02em", flexShrink: 0,
+      }}>
+      {s.initials}
+    </span>
+  );
+}
 
 function treemapLayout(items, x, y, w, h, horizontal) {
   if (!items.length) return [];
@@ -976,12 +1011,12 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [agentFilter, setAgentFilter] = useState("All");
-  const [showNGP, setShowNGP] = useState(false);   // NGP deals hidden unless asked for
+  const [ngpMode, setNgpMode] = useState("hide");  // hide | show | only
   const [dataView, setDataView] = useState("claimed");   // forecast | claimed | statted
   const [productFilter, setProductFilter] = useState("All");
   const [focusFilter, setFocusFilter] = useState("All");   // All | aged | attention
   const [sideCard, setSideCard] = useState("plan");        // which summary card is showing
-  const [topView, setTopView] = useState(false);           // headline figures only
+  const [topView, setTopView] = useState(true);            // headline figures only
   const [sortKey, setSortKey] = useState("last_updated");
   const [sortDir, setSortDir] = useState("desc");
   const role = profile?.role || "agent";
@@ -1161,8 +1196,10 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
 
   const filtered = useMemo(() => {
     const f = viewRows.filter((r) => {
-      // NGP deals don't count and are noise on the list — hidden unless asked for
-      if (!showNGP && r.ngp) return false;
+      // NGP deals don't count, so they're out of the way by default —
+      // but sometimes chasing them is the job, hence "only".
+      if (ngpMode === "hide" && r.ngp) return false;
+      if (ngpMode === "only" && !r.ngp) return false;
       const q = query.trim().toLowerCase();
       const raw = r.raw || {};
       const mq = !q
@@ -1193,7 +1230,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       if (typeof av === "string") return av.localeCompare(bv) * dir;
       return (av - bv) * dir;
     });
-  }, [viewRows, query, statusFilter, agentFilter, productFilter, focusFilter, sortKey, sortDir, showNGP]);
+  }, [viewRows, query, statusFilter, agentFilter, productFilter, focusFilter, sortKey, sortDir, ngpMode]);
 
   // Statuses actually present — Lilac stages plus whatever NetSuite reports
   const statusOptions = useMemo(() => {
@@ -1766,8 +1803,10 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                       title={a.target > 0
                         ? `${fmtGBP(a.gp)} of ${fmtGBP(a.target)} — pace ${fmtGBP(a.pace)}`
                         : fmtGBP(a.gp)}>
-                      <div className="flex items-center gap-2">
-                        <span style={{ width: 6, height: 6, borderRadius: 99, background: dot, flexShrink: 0 }} />
+                      <div className="flex items-center gap-1.5">
+                        <span title={tone ? `${Math.round((a.gp / (a.pace || 1)) * 100)}% of pace` : "No pay plan"}
+                          style={{ width: 6, height: 6, borderRadius: 99, background: dot, flexShrink: 0 }} />
+                        {scope === "office" && !is2ic && <TeamTag team={a.team} allTeams={teamOptions} />}
                         <span className="truncate" style={{ fontSize: 12, color: sel ? "var(--primary)" : "var(--ink)", fontWeight: sel ? 600 : 500 }}>
                           {a.name}
                         </span>
@@ -1793,23 +1832,21 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
 
         {/* RIGHT — filters and the order list */}
         <div>
-      {/* One condensed filter bar: view, period, team, search, agent, status, product */}
-      <div className="mb-3 flex items-center gap-2 flex-wrap">
+      {/* Filters — one row, consistent control heights */}
+      <div className="mb-3 flex items-center gap-1.5 flex-wrap">
 
         {/* What we're looking at */}
         <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
           {[["forecast", "Forecast"], ["claimed", "Claimed"], ["statted", "Statted"]].map(([k, lbl]) => (
-            <button key={k} onClick={() => { setDataView(k); setStatusFilter("All"); setProductFilter("All"); }}
-              className="sw-focus px-3 py-2 text-xs font-bold"
+            <button key={k} onClick={() => { setDataView(k); setStatusFilter("All"); setProductFilter("All"); setFocusFilter("All"); }}
+              className="sw-focus px-3 py-2 text-xs"
               style={dataView === k
-                ? { background: "var(--primary)", color: "#fff" }
-                : { background: "transparent", color: "var(--ink-soft)" }}>
+                ? { background: "var(--primary)", color: "#fff", fontWeight: 600 }
+                : { background: "transparent", color: "var(--ink-faint)" }}>
               {lbl}
             </button>
           ))}
         </div>
-
-        <span style={{ width: 1, height: 22, background: "var(--border)" }} />
 
         {/* Period */}
         <select className="sw-input sw-focus" style={{ width: 108 }} value={period} onChange={(e) => setPeriod(e.target.value)} title={periodLabel}>
@@ -1850,34 +1887,36 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         {attentionCount > 0 && (
           <button onClick={() => setFocusFilter(focusFilter === "attention" ? "All" : "attention")}
             title="Orders sitting at a status that needs the agent to act"
-            className="sw-focus px-2.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap"
+            className="sw-focus px-2.5 py-2 rounded-lg text-xs whitespace-nowrap"
             style={focusFilter === "attention"
-              ? { background: "var(--amber)", color: "#fff" }
-              : { background: "var(--surface)", color: "var(--amber)", border: "1px solid var(--amber)" }}>
+              ? { background: "var(--amber)", color: "#fff", fontWeight: 600 }
+              : { background: "var(--surface)", color: "var(--amber)", border: "1px solid var(--border)" }}>
             Needs action ({attentionCount})
           </button>
         )}
         {agedCount > 0 && (
           <button onClick={() => setFocusFilter(focusFilter === "aged" ? "All" : "aged")}
             title="Submitted more than 90 days ago"
-            className="sw-focus px-2.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap"
+            className="sw-focus px-2.5 py-2 rounded-lg text-xs whitespace-nowrap"
             style={focusFilter === "aged"
-              ? { background: "var(--red)", color: "#fff" }
-              : { background: "var(--surface)", color: "var(--red)", border: "1px solid var(--red)" }}>
+              ? { background: "var(--red)", color: "#fff", fontWeight: 600 }
+              : { background: "var(--surface)", color: "var(--red)", border: "1px solid var(--border)" }}>
             90+ days ({agedCount})
           </button>
         )}
         {ngpCount > 0 && (
-          <button
-            onClick={() => setShowNGP((v) => !v)}
-            title="NGP orders don't count toward GP — hidden by default"
-            className="sw-focus px-2.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap"
-            style={showNGP
-              ? { background: "var(--red)", color: "#fff" }
-              : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}
-          >
-            {showNGP ? "Hide" : "Show"} NGP ({ngpCount})
-          </button>
+          <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}
+            title="NGP orders don't count toward GP">
+            {[["hide", "Hide NGP"], ["show", "Show"], ["only", `Only (${ngpCount})`]].map(([k, lbl]) => (
+              <button key={k} onClick={() => setNgpMode(k)}
+                className="sw-focus px-2.5 py-2 text-xs whitespace-nowrap"
+                style={ngpMode === k
+                  ? { background: k === "only" ? "var(--red)" : "var(--surface-alt)", color: k === "only" ? "#fff" : "var(--ink)", fontWeight: 600 }
+                  : { background: "transparent", color: "var(--ink-faint)" }}>
+                {lbl}
+              </button>
+            ))}
+          </div>
         )}
       </div>
 
@@ -1885,13 +1924,13 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         <div>
           <table className="w-full text-sm" style={{ tableLayout: "fixed" }}>
             <colgroup>
-              <col style={{ width: "26%" }} />
-              <col style={{ width: "18%" }} />
-              <col style={{ width: "18%" }} />
-              <col style={{ width: "11%" }} />
-              <col style={{ width: "12%" }} />
+              <col style={{ width: "24%" }} />
+              <col style={{ width: "17%" }} />
+              <col style={{ width: "16%" }} />
               <col style={{ width: "10%" }} />
-              <col style={{ width: "5%" }} />
+              <col style={{ width: "12%" }} />
+              <col style={{ width: "13%" }} />
+              <col style={{ width: "8%" }} />
             </colgroup>
             <thead>
               <tr style={{ background: "var(--surface-alt)" }}>
@@ -1925,7 +1964,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
 
                   {/* 1: company, with flags kept inline so the row stays short */}
                   <td className="px-3 py-2" style={{ overflow: "hidden" }}>
-                    <div className="font-medium text-xs truncate">{r.company_name}</div>
+                    <div className="font-medium text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>{r.company_name}</div>
                     {(r.dirty || r.notStatted || r.nsov || r.needsAction || (r.ageDays != null && r.ageDays >= 90) || (r.kind === "forecast" && r.matched)) && (
                       <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                         {r.dirty && <span className="text-xs font-semibold" style={{ color: "var(--red)", fontSize: 10 }}>DIRTY</span>}
@@ -1940,11 +1979,19 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
 
                   {/* 2: people */}
                   <td className="px-3 py-2" style={{ overflow: "hidden" }}>
-                    <div className="text-xs truncate">{r.closer_name || "—"}</div>
-                    {r.lead_gen_name && <div className="text-xs truncate" style={{ color: "var(--ink-faint)", fontSize: 10 }}>LG: {r.lead_gen_name}</div>}
+                    <div className="flex items-center gap-1.5">
+                      <TeamTag team={r.closer_team} allTeams={teamOptions} />
+                      <span className="text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>{r.closer_name || "—"}</span>
+                    </div>
+                    {r.lead_gen_name && (
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        <TeamTag team={r.lead_gen_team} allTeams={teamOptions} />
+                        <span className="sw-clamp2" style={{ color: "var(--ink-faint)", fontSize: 10, lineHeight: 1.3 }}>{r.lead_gen_name}</span>
+                      </div>
+                    )}
                   </td>
 
-                  <td className="px-3 py-2 text-xs truncate" style={{ color: "var(--ink-soft)" }}>{r.product}</td>
+                  <td className="px-3 py-2 text-xs sw-clamp2" style={{ color: "var(--ink-soft)", lineHeight: 1.3 }}>{r.product}</td>
 
                   <td className="px-3 py-2 sw-mono text-xs">{fmtGBP(r.sov)}</td>
 
@@ -1963,8 +2010,8 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                     {(() => {
                       const tone = statusTone(r.status, r.ngp, statusCfg);
                       return (
-                        <span className="inline-block rounded-full px-2 py-0.5 font-semibold whitespace-nowrap"
-                          style={{ color: tone.fg, background: tone.bg, fontSize: 10.5, maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis" }}
+                        <span className="inline-block rounded px-1.5 py-0.5 sw-clamp2"
+                          style={{ color: tone.fg, background: tone.bg, fontSize: 10.5, fontWeight: 600, lineHeight: 1.3 }}
                           title={r.status}>
                           {r.status || "—"}
                         </span>
@@ -1972,7 +2019,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                     })()}
                   </td>
 
-                  <td className="px-3 py-2 text-xs whitespace-nowrap" style={{ color: "var(--ink-faint)", fontSize: 11 }}>{r.date ? fmtDate(r.date) : "—"}</td>
+                  <td className="px-2 py-2 text-xs" style={{ color: "var(--ink-faint)", fontSize: 11, lineHeight: 1.3 }}>{r.date ? fmtDate(r.date) : "—"}</td>
                 </tr>
               ))}
               {filtered.length === 0 && (
