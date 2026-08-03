@@ -3718,9 +3718,11 @@ const groupForPillar = (p) => PILLAR_TO_GROUP[String(p || "").trim()] || "Other"
 const FORECAST_STATUSES = ["Open", "Won", "Lost", "Pushed"];
 const VISIT_MODES = ["Visit", "Teams", "Neither"];
 
-// The office double-count: 18% comes off the combined GP to give the
-// figure that actually lands.
-const DC_RATE = 0.18;
+// Forecast GP split. A closer working alone keeps the full GP. Bring in
+// a lead gen and the closer takes 80% and the lead gen 50% — 130% claimed
+// against 100% real, so 30% comes off as double-count.
+const CLOSER_SPLIT = 0.80;
+const LEADGEN_SPLIT = 0.50;
 
 function mondayOf(d) {
   const x = new Date(d);
@@ -3802,7 +3804,9 @@ function ForecastView({ netsuite, profile, staff }) {
   // ---- Summary: one line per team, pillar SOV/units across ------------
   const summary = useMemo(() => {
     const byTeam = {};
-    const ensure = (t) => {
+    const byAgent = {};
+
+    const ensureTeam = (t) => {
       if (!byTeam[t]) {
         byTeam[t] = { team: t, gp: 0, leads: {}, pillars: {} };
         PILLAR_GROUPS.forEach((p) => { byTeam[t].pillars[p] = { sov: 0, units: 0 }; byTeam[t].leads[p] = 0; });
@@ -3811,23 +3815,56 @@ function ForecastView({ netsuite, profile, staff }) {
       }
       return byTeam[t];
     };
+    const ensureAgent = (name, team) => {
+      if (!byAgent[name]) byAgent[name] = { name, team: team || "\u2014", gp: 0, sov: 0, lines: 0, asLeadGen: 0 };
+      if (team && byAgent[name].team === "\u2014") byAgent[name].team = team;
+      return byAgent[name];
+    };
+
+    let dcTotal = 0;
 
     weekRows.forEach((r) => {
-      const team = r.agent_team || "Unassigned";
-      const t = ensure(team);
+      const gp = num(r.gp);
+      const sov = num(r.sov);
       const g = groupForPillar(r.pillar);
-      t.gp += num(r.gp);
-      if (!t.pillars[g]) { t.pillars[g] = { sov: 0, units: 0 }; t.leads[g] = 0; }
-      t.pillars[g].sov += num(r.sov);
-      t.pillars[g].units += num(r.units);
-      // A "lead" is a forecast someone else generated for this agent
-      if (r.lead_gen_name) t.leads[g] += 1;
+      const hasLeadGen = !!(r.lead_gen_name && String(r.lead_gen_name).trim());
+
+      // Closer alone keeps 100%. With a lead gen it's 80/50, and the
+      // extra 30% claimed above the real value comes off as double-count.
+      const closerGp = hasLeadGen ? gp * CLOSER_SPLIT : gp;
+      const leadGenGp = hasLeadGen ? gp * LEADGEN_SPLIT : 0;
+      if (hasLeadGen) dcTotal -= gp * (CLOSER_SPLIT + LEADGEN_SPLIT - 1);
+
+      // The closer's team carries the deal's SOV and units
+      const closerTeam = r.agent_team || "Unassigned";
+      const ct = ensureTeam(closerTeam);
+      ct.gp += closerGp;
+      if (!ct.pillars[g]) { ct.pillars[g] = { sov: 0, units: 0 }; ct.leads[g] = 0; }
+      ct.pillars[g].sov += sov;
+      ct.pillars[g].units += num(r.units);
+
+      const ca = ensureAgent(r.agent_name || "Unknown", r.agent_team);
+      ca.gp += closerGp;
+      ca.sov += sov;
+      ca.lines += 1;
+
+      if (hasLeadGen) {
+        const lgTeam = r.lead_gen_team || "Unassigned";
+        const lt = ensureTeam(lgTeam);
+        lt.gp += leadGenGp;
+        if (!lt.leads[g]) lt.leads[g] = 0;
+        lt.leads[g] += 1;
+
+        const la = ensureAgent(r.lead_gen_name, r.lead_gen_team);
+        la.gp += leadGenGp;
+        la.asLeadGen += 1;
+      }
     });
 
     const teams = Object.keys(byTeam).map((k) => byTeam[k]).sort((a, b) => b.gp - a.gp);
+    const agents = Object.keys(byAgent).map((k) => byAgent[k]).sort((a, b) => b.gp - a.gp);
     const gpSum = teams.reduce((s, t) => s + t.gp, 0);
-    const dc = -(gpSum * DC_RATE);
-    return { teams, gpSum, dc, grand: gpSum + dc };
+    return { teams, agents, gpSum, dc: dcTotal, grand: gpSum + dcTotal };
   }, [weekRows]);
 
   // ---- Accuracy: forecast vs what NetSuite actually shows -------------
@@ -4058,7 +4095,7 @@ function ForecastView({ netsuite, profile, staff }) {
           <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{accuracy.lines} lines</div>
         </div>
         <div className="rounded-2xl p-3.5" style={{ background: "var(--primary-soft)", border: "1px solid var(--primary)" }}>
-          <div className="text-xs font-semibold uppercase" style={{ color: "var(--primary)" }}>After DC (−18%)</div>
+          <div className="text-xs font-semibold uppercase" style={{ color: "var(--primary)" }}>After DC</div>
           <div className="sw-display font-bold text-xl" style={{ color: "var(--primary)" }}>{fmtGBP(summary.grand)}</div>
           <div className="text-xs" style={{ color: "var(--ink-soft)" }}>DC {fmtGBP(summary.dc)}</div>
         </div>
@@ -4119,7 +4156,8 @@ function ForecastView({ netsuite, profile, staff }) {
       {/* SUMMARY */}
       {view === "summary" && (
         <>
-          <div className="rounded-2xl overflow-hidden mb-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2.2fr) minmax(260px, 1fr)", gap: "0.75rem" }} className="mb-4">
+          <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
             <div className="overflow-x-auto">
               <table className="w-full" style={{ borderCollapse: "collapse" }}>
                 <thead>
@@ -4150,7 +4188,7 @@ function ForecastView({ netsuite, profile, staff }) {
                   {/* DC line — 18% off the combined GP */}
                   <tr style={{ borderTop: "2px solid var(--border)", background: "var(--red-soft)" }}>
                     <td className="px-3 py-1.5 text-sm font-semibold" style={{ position: "sticky", left: 0, background: "var(--red-soft)", color: "var(--red)" }}>
-                      DC <span className="text-xs" style={{ fontWeight: 400 }}>(−18%)</span>
+                      DC <span className="text-xs" style={{ fontWeight: 400 }}>(lead-gen overlap)</span>
                     </td>
                     <ForecastCell value={summary.dc} bold tone="var(--red)" highlight />
                     {PILLAR_GROUPS.map((p) => (
@@ -4175,6 +4213,47 @@ function ForecastView({ netsuite, profile, staff }) {
               </table>
             </div>
           </div>
+
+          {/* Per agent, beside the team table */}
+          <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="px-3 py-2 flex items-center justify-between" style={{ background: "var(--primary)" }}>
+              <span className="text-xs font-bold uppercase" style={{ color: "#fff" }}>By Agent</span>
+              <span className="text-xs" style={{ color: "rgba(255,255,255,0.7)" }}>{summary.agents.length}</span>
+            </div>
+            <div style={{ maxHeight: 340, overflowY: "auto" }}>
+              <table className="w-full" style={{ borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: "var(--surface-alt)", position: "sticky", top: 0 }}>
+                    <th className="px-2 py-1.5 text-left text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Agent</th>
+                    <th className="px-2 py-1.5 text-center text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>GP</th>
+                    <th className="px-2 py-1.5 text-center text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>SOV</th>
+                    <th className="px-2 py-1.5 text-center text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Lines</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {summary.agents.map((a) => (
+                    <tr key={a.name} style={{ borderTop: "1px solid var(--border)", cursor: "pointer" }}
+                      onClick={() => setAgentFilter(agentFilter === a.name ? "All" : a.name)}
+                      title="Click to filter the page to this agent">
+                      <td className="px-2 py-1.5">
+                        <div className="text-xs font-semibold truncate" style={{ color: agentFilter === a.name ? "var(--primary)" : "var(--ink)" }}>{a.name}</div>
+                        <div className="text-xs truncate" style={{ color: "var(--ink-faint)", fontSize: 10 }}>
+                          {a.team}{a.asLeadGen > 0 ? ` · ${a.asLeadGen} as lead gen` : ""}
+                        </div>
+                      </td>
+                      <td className="px-2 py-1.5 sw-mono text-center" style={{ fontSize: 12, fontWeight: 700, borderLeft: "1px solid var(--border)" }}>{fmtGBP(a.gp)}</td>
+                      <td className="px-2 py-1.5 sw-mono text-center" style={{ fontSize: 11, color: "var(--ink-soft)", borderLeft: "1px solid var(--border)" }}>{fmtGBP(a.sov)}</td>
+                      <td className="px-2 py-1.5 sw-mono text-center" style={{ fontSize: 11, color: "var(--ink-faint)", borderLeft: "1px solid var(--border)" }}>{a.lines}</td>
+                    </tr>
+                  ))}
+                  {summary.agents.length === 0 && (
+                    <tr><td colSpan={4} className="px-3 py-8 text-center text-xs" style={{ color: "var(--ink-faint)" }}>No forecasts this week.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
 
           {/* Leads generated, by pillar */}
           <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
