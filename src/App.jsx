@@ -85,12 +85,12 @@ function normalisePostcode(pc) {
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 .sw-root {
-  --bg:#EFEBF9; --surface:#FDFCFF; --surface-alt:#F5F1FC; --border:#DCD4EF;
-  --ink:#1D1A2E; --ink-soft:#665F80; --ink-faint:#948DAE;
-  --primary:#4C1D8F; --primary-soft:#EAE1FA;
-  --gold:#96700A; --gold-soft:#FBF3DE; --green:#1F7A3D; --green-soft:#E4F5E9;
-  --amber:#B3660E; --amber-soft:#FBEDDA; --blue:#205EA6; --blue-soft:#E4EDF9;
-  --red:#C0392B; --red-soft:#FBE7E4;
+  --bg:#F7F6FB; --surface:#FFFFFF; --surface-alt:#F7F5FC; --border:#E8E4F2;
+  --ink:#211E32; --ink-soft:#6B6584; --ink-faint:#A19BB4;
+  --primary:#4C1D8F; --primary-soft:#F1ECFB;
+  --gold:#8A6608; --gold-soft:#FBF5E6; --green:#1B7038; --green-soft:#EAF6EE;
+  --amber:#A55C0B; --amber-soft:#FCF1E4; --blue:#1D5595; --blue-soft:#EBF1FA;
+  --red:#B3352A; --red-soft:#FBEEEC;
   font-family:'Inter',ui-sans-serif,system-ui,sans-serif; color:var(--ink);
   background:var(--bg); min-height:100vh;
 }
@@ -507,20 +507,20 @@ function HeroCard({ label, value, note, accent, target, rawValue }) {
   const tone = target ? paceTone(rawValue, target) : null;
   const pct = target ? Math.round((rawValue / target) * 100) : 0;
   return (
-    <div className="sw-rise rounded-2xl p-4 flex flex-col justify-between"
-      style={{ background: "var(--surface)", border: `1px solid ${tone ? tone.fg : "var(--border)"}`, minHeight: 116 }}>
+    <div className="sw-rise rounded-xl p-4 flex flex-col justify-between"
+      style={{ background: "var(--surface)", border: "1px solid var(--border)", minHeight: 112 }}>
       <div className="flex items-start justify-between gap-2">
-        <span className="text-xs font-semibold uppercase tracking-wide truncate" style={{ color: "var(--ink-soft)" }}>{label}</span>
+        <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{label}</span>
         {tone && (
-          <span className="text-xs font-bold px-1.5 py-0.5 rounded shrink-0" style={{ background: tone.bg, color: tone.fg }}>{pct}%</span>
+          <span className="text-xs font-semibold shrink-0" style={{ color: tone.fg }}>{pct}%</span>
         )}
       </div>
-      <div className="sw-display font-bold" style={{ fontSize: 30, lineHeight: 1.05, letterSpacing: "-0.02em", color: tone ? tone.fg : accent }}>
+      <div className="sw-display" style={{ fontSize: 29, fontWeight: 600, lineHeight: 1.05, letterSpacing: "-0.025em", color: "var(--ink)" }}>
         {value}
       </div>
       {tone ? (
         <div>
-          <div className="rounded-full mb-1" style={{ height: 4, background: "var(--surface-alt)" }}>
+          <div className="rounded-full mb-1.5" style={{ height: 3, background: "var(--surface-alt)" }}>
             <div className="rounded-full" style={{ width: Math.min(100, pct) + "%", height: "100%", background: tone.fg, transition: "width .3s" }} />
           </div>
           <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{fmtGBP(target)} to pace</div>
@@ -537,14 +537,14 @@ function MiniStat({ label, value, target, accent, bold }) {
   const tone = target ? paceTone(value, target) : null;
   const pct = target ? Math.round((value / target) * 100) : 0;
   return (
-    <div className="rounded-xl px-2.5 py-2" style={{ background: "var(--surface-alt)", borderLeft: `3px solid ${tone ? tone.fg : accent}` }}>
+    <div className="px-1 py-1">
       <div className="flex items-baseline justify-between gap-1">
-        <span className="text-xs font-semibold truncate" style={{ color: "var(--ink-soft)" }}>{label}</span>
-        {tone && <span className="text-xs font-bold shrink-0" style={{ color: tone.fg, fontSize: 10 }}>{pct}%</span>}
+        <span className="text-xs truncate" style={{ color: "var(--ink-faint)" }}>{label}</span>
+        {tone && <span className="text-xs font-semibold shrink-0" style={{ color: tone.fg, fontSize: 10 }}>{pct}%</span>}
       </div>
-      <div className="sw-display font-bold truncate" style={{ fontSize: bold ? 17 : 15.5, color: tone ? tone.fg : "var(--ink)" }}>{fmtGBP(value)}</div>
+      <div className="sw-display truncate" style={{ fontSize: bold ? 17 : 16, fontWeight: 600, letterSpacing: "-0.02em", color: "var(--ink)" }}>{fmtGBP(value)}</div>
       {tone && (
-        <div className="rounded-full mt-1" style={{ height: 3, background: "rgba(0,0,0,0.07)" }}>
+        <div className="rounded-full mt-1" style={{ height: 2, background: "var(--surface-alt)" }}>
           <div className="rounded-full" style={{ width: Math.min(100, pct) + "%", height: "100%", background: tone.fg }} />
         </div>
       )}
@@ -555,10 +555,9 @@ function MiniStat({ label, value, target, accent, bold }) {
 /* A single count in the health strip. */
 function HealthItem({ label, value, colour, hint }) {
   return (
-    <div className="flex items-center gap-2" title={hint}>
-      <span style={{ width: 7, height: 7, borderRadius: 99, background: colour, display: "inline-block" }} />
-      <span className="sw-display font-bold" style={{ fontSize: 16, color: colour }}>{value}</span>
-      <span className="text-xs" style={{ color: "var(--ink-soft)" }}>{label}</span>
+    <div className="flex items-baseline gap-1.5" title={hint}>
+      <span className="sw-display" style={{ fontSize: 15, fontWeight: 600, color: value ? colour : "var(--ink-faint)" }}>{value}</span>
+      <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{label}</span>
     </div>
   );
 }
@@ -765,13 +764,13 @@ function TargetBars({ groups, height = 210, money = true }) {
 // A percentage with a short explanation — used for cancellation / rejection.
 function RateCard({ label, pct, count, of, colour, hint }) {
   return (
-    <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }} title={hint}>
-      <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>{label}</div>
+    <div className="rounded-xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }} title={hint}>
+      <div className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{label}</div>
       <div className="flex items-baseline gap-2 mt-1">
-        <span className="sw-display font-bold" style={{ fontSize: 24, color: colour }}>{pct.toFixed(1)}%</span>
-        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{count} of {of}</span>
+        <span className="sw-display" style={{ fontSize: 23, fontWeight: 600, letterSpacing: "-0.02em", color: "var(--ink)" }}>{pct.toFixed(1)}%</span>
       </div>
-      <div className="rounded-full mt-2" style={{ height: 4, background: "var(--surface-alt)" }}>
+      <div className="text-xs mt-0.5" style={{ color: "var(--ink-faint)" }}>{count} of {of}</div>
+      <div className="rounded-full mt-2" style={{ height: 3, background: "var(--surface-alt)" }}>
         <div className="rounded-full" style={{ width: Math.min(100, pct) + "%", height: "100%", background: colour }} />
       </div>
     </div>
@@ -1469,38 +1468,36 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         </div>
 
         {/* Product SOV, from NetSuite */}
-        <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="flex items-baseline justify-between mb-2">
-            <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>SOV by product</span>
-            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>NetSuite · excl. NSOV</span>
+        <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="flex items-baseline justify-between mb-2.5">
+            <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>SOV by product</span>
+            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>NetSuite</span>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.4rem" }}>
-            <MiniStat label="Cloud" value={nsSovCards.cloud} target={targets.cloud} accent="#5E2CA8" />
-            <MiniStat label="Connectivity" value={nsSovCards.connectivity} target={targets.conn} accent="#205EA6" />
-            <MiniStat label="Mobile" value={nsSovCards.mobile} target={targets.mobile} accent="#8659CE" />
-            <MiniStat label="Total" value={nsSovCards.all} accent="#1F7A3D" bold />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem 1.25rem" }}>
+            <MiniStat label="Cloud" value={nsSovCards.cloud} target={targets.cloud} />
+            <MiniStat label="Connectivity" value={nsSovCards.connectivity} target={targets.conn} />
+            <MiniStat label="Mobile" value={nsSovCards.mobile} target={targets.mobile} />
+            <MiniStat label="Total" value={nsSovCards.all} bold />
           </div>
         </div>
       </div>
 
-      {/* Health strip */}
-      <div className="rounded-2xl px-4 py-2.5 mb-4 flex items-center gap-5 flex-wrap"
-        style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-        <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-faint)" }}>Health</span>
-        <HealthItem label="Active" value={activeOrders} colour="var(--blue)" hint="Not yet complete" />
-        <HealthItem label="Not statted" value={notStattedCount} colour={notStattedCount > 0 ? "var(--amber)" : "var(--ink-faint)"} hint="No NetSuite match after 12h" />
-        <HealthItem label="Dirty" value={dirtyCount} colour={dirtyCount > 0 ? "var(--red)" : "var(--ink-faint)"} hint="Flagged for review" />
+      {/* Health — a quiet line, not a card */}
+      <div className="flex items-center gap-5 flex-wrap mb-4 px-1">
+        <HealthItem label="active" value={activeOrders} colour="var(--blue)" hint="Not yet complete" />
+        <HealthItem label="not statted" value={notStattedCount} colour="var(--amber)" hint="No NetSuite match after 12h" />
+        <HealthItem label="dirty" value={dirtyCount} colour="var(--red)" hint="Flagged for review" />
         {ngpCount > 0 && <HealthItem label="NGP" value={ngpCount} colour="var(--red)" hint="Excluded from GP" />}
         {nsovCount > 0 && <HealthItem label="NSOV" value={nsovCount} colour="var(--amber)" hint="Excluded from SOV" />}
         <button onClick={onNewOrder}
-          className="sw-focus ml-auto px-3.5 py-1.5 rounded-full text-xs font-semibold text-white flex items-center gap-1.5"
+          className="sw-focus ml-auto px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white flex items-center gap-1.5"
           style={{ background: "var(--primary)" }}>
           <Plus size={13} /> Submit a Lilac Box
         </button>
       </div>
 
       {/* One condensed filter bar: view, period, team, search, agent, status, product */}
-      <div className="mb-4 p-3 rounded-2xl flex items-center gap-2 flex-wrap" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+      <div className="mb-3 flex items-center gap-2 flex-wrap">
 
         {/* What we're looking at */}
         <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
@@ -1597,7 +1594,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
           view while the order list scrolls. */}
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px", gap: "0.75rem", alignItems: "start" }}>
 
-      <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -1701,9 +1698,9 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
 
         {/* Pay plan against what has actually statted */}
         {targets.people > 0 && (
-          <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
             <div className="flex items-baseline justify-between mb-3">
-              <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>PAY PLAN vs STATTED</div>
+              <div className="sw-display text-sm" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>PAY PLAN vs STATTED</div>
               <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
                 {targets.people} plan{targets.people === 1 ? "" : "s"} · {periodLabelFor(period)}
               </span>
@@ -1749,8 +1746,8 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
           </div>
         )}
         {/* Top deals */}
-        <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="sw-display font-bold text-sm mb-3" style={{ color: "var(--ink-soft)" }}>TOP 5 DEALS — THIS PERIOD</div>
+        <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="sw-display text-sm mb-3" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>TOP 5 DEALS — THIS PERIOD</div>
           {analytics.top.length === 0 ? (
             <div className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>No deals in this period yet.</div>
           ) : (
@@ -1775,9 +1772,9 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
             </div>
           )}
         </div>
-        <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <div className="flex items-baseline justify-between mb-3">
-            <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>STATTED vs FORECAST</div>
+            <div className="sw-display text-sm" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>STATTED vs FORECAST</div>
             <span className="text-xs" style={{ color: analytics.accuracy >= 90 ? "var(--green)" : analytics.accuracy >= 70 ? "var(--amber)" : "var(--red)" }}>
               {analytics.accuracy.toFixed(0)}% of forecast
             </span>
@@ -2699,7 +2696,7 @@ function TVBoard({ orders, netsuite }) {
 
         {/* Team vs Team + pipeline — spans columns 1-2 */}
         <div style={{ gridColumn: "span 2", background: "var(--surface)", border: "1px solid var(--border)" }} className="rounded-2xl p-4">
-          <div className="sw-display font-bold text-sm mb-3" style={{ color: "var(--ink-soft)" }}>TEAM VS TEAM — GP</div>
+          <div className="sw-display text-sm mb-3" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>TEAM VS TEAM — GP</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "0.6rem" }} className="mb-4">
             {teamRows.map((r, i) => (
               <div key={r.team} className="rounded-xl p-3 text-center" style={{ background: "var(--surface-alt)", borderTop: `3px solid ${ACCENTS[i % 3]}` }}>
@@ -2725,7 +2722,7 @@ function TVBoard({ orders, netsuite }) {
 
         {/* Agent leaderboard — spans columns 3-4, two columns of names inside */}
         <div style={{ gridColumn: "span 2", background: "var(--surface)", border: "1px solid var(--border)" }} className="rounded-2xl p-4">
-          <div className="sw-display font-bold text-sm mb-3" style={{ color: "var(--ink-soft)" }}>AGENT LEADERBOARD</div>
+          <div className="sw-display text-sm mb-3" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>AGENT LEADERBOARD</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "0.5rem" }}>
             {leaderboard.map((a, i) => (
               <div key={a.name} className="flex items-center justify-between px-2.5 py-1.5 rounded-lg" style={{ background: i === 0 ? "var(--primary-soft)" : "var(--surface-alt)" }}>
@@ -2743,7 +2740,7 @@ function TVBoard({ orders, netsuite }) {
         {/* Sales by product group — box size follows GP */}
         <div style={{ gridColumn: "span 2", background: "var(--surface)", border: "1px solid var(--border)" }} className="rounded-2xl p-4">
           <div className="flex items-baseline justify-between mb-3">
-            <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>SALES BY PRODUCT GROUP — GP</div>
+            <div className="sw-display text-sm" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>SALES BY PRODUCT GROUP — GP</div>
             <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{fmtGBP(productTotal)} total</div>
           </div>
           {productBoxes.length === 0 ? (
@@ -2782,7 +2779,7 @@ function TVBoard({ orders, netsuite }) {
         {/* Where we're selling — postcode areas, shaded by GP */}
         <div style={{ gridColumn: "span 2", background: "var(--surface)", border: "1px solid var(--border)" }} className="rounded-2xl p-4">
           <div className="flex items-baseline justify-between mb-3">
-            <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>WHERE WE'RE SELLING</div>
+            <div className="sw-display text-sm" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>WHERE WE'RE SELLING</div>
             <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
               {areaBoxes.length ? `${areaBoxes.length} postcode areas` : "by postcode area"}
             </div>
@@ -3003,9 +3000,9 @@ function ProductBars({ items, selected, onSelect, height = 220 }) {
 function ReportCharts({ treemapItems, treemapTitle, productSelected, onProductSelect, barItems, barTitle, agentSelected, onAgentSelect }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "0.75rem" }} className="mt-4">
-      <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+      <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="flex items-baseline justify-between mb-3">
-          <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>{treemapTitle}</div>
+          <div className="sw-display text-sm" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>{treemapTitle}</div>
           {productSelected && (
             <button onClick={() => onProductSelect(null)} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>
               Clear filter
@@ -3014,9 +3011,9 @@ function ReportCharts({ treemapItems, treemapTitle, productSelected, onProductSe
         </div>
         <ProductTreemap items={treemapItems} selected={productSelected} onSelect={onProductSelect} />
       </div>
-      <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+      <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="flex items-baseline justify-between mb-3">
-          <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>{barTitle}</div>
+          <div className="sw-display text-sm" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>{barTitle}</div>
           {agentSelected && agentSelected !== "All" && (
             <button onClick={() => onAgentSelect("All")} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>
               Clear filter
@@ -3288,16 +3285,16 @@ function SalesBreakdownView({ netsuite }) {
         </div>
       )}
 
-      <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="overflow-x-auto">
           <table className="w-full" style={{ borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background: "var(--primary)" }}>
-                <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "#fff", position: "sticky", left: 0, background: "var(--primary)" }}>Metric</th>
-                <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Avg</th>
-                <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Total</th>
+              <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
+                <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "var(--ink-soft)", position: "sticky", left: 0, background: "var(--surface-alt)" }}>Metric</th>
+                <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "var(--ink-soft)", background: "var(--primary-soft)" }}>Avg</th>
+                <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "var(--ink-soft)", background: "var(--primary-soft)" }}>Total</th>
                 {columns.map((c) => (
-                  <th key={c.key} className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff" }}>{c.label}</th>
+                  <th key={c.key} className="px-2 py-2 text-center text-xs font-semibold" style={{ color: "var(--ink-soft)" }}>{c.label}</th>
                 ))}
               </tr>
             </thead>
@@ -3561,17 +3558,17 @@ function DayByDayView({ orders }) {
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(280px, 1fr)", gap: "0.75rem", alignItems: "start" }}>
 
-        <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <div className="overflow-x-auto">
             <table className="w-full" style={{ borderCollapse: "collapse" }}>
               <thead>
-                <tr style={{ background: "var(--primary)" }}>
-                  <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "#fff", position: "sticky", left: 0, background: "var(--primary)" }}>Metric</th>
-                  <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Month</th>
+                <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
+                  <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "var(--ink-soft)", position: "sticky", left: 0, background: "var(--surface-alt)" }}>Metric</th>
+                  <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "var(--ink-soft)", background: "var(--primary-soft)" }}>Month</th>
                   {DAY_NAMES.map((d) => (
-                    <th key={d} className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff" }}>{d.slice(0, 3)}</th>
+                    <th key={d} className="px-2 py-2 text-center text-xs font-semibold" style={{ color: "var(--ink-soft)" }}>{d.slice(0, 3)}</th>
                   ))}
-                  <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Week</th>
+                  <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "var(--ink-soft)", background: "var(--primary-soft)" }}>Week</th>
                 </tr>
               </thead>
               <tbody>
@@ -3623,14 +3620,14 @@ function DayByDayView({ orders }) {
 
         {/* Charts beside the table */}
         <div className="flex flex-col gap-3">
-          <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-            <div className="sw-display font-bold text-xs mb-2" style={{ color: "var(--ink-soft)" }}>SOV SHARE — THIS MONTH</div>
+          <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="sw-display text-xs mb-2" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>SOV SHARE — THIS MONTH</div>
             <ProductTreemap items={chartItems} height={150}
               selected={product ? DBD_GROUPS.find((g) => g.key === product)?.label : null}
               onSelect={(name) => setProduct(name ? (DBD_GROUPS.find((g) => g.label === name)?.key || null) : null)} />
           </div>
-          <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-            <div className="sw-display font-bold text-xs mb-2" style={{ color: "var(--ink-soft)" }}>SOV BY PRODUCT</div>
+          <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="sw-display text-xs mb-2" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>SOV BY PRODUCT</div>
             <ProductBars items={chartItems} height={150}
               selected={product ? DBD_GROUPS.find((g) => g.key === product)?.label : null}
               onSelect={(name) => setProduct(name ? (DBD_GROUPS.find((g) => g.label === name)?.key || null) : null)} />
@@ -3793,8 +3790,8 @@ function PayPlansView({ plans, staff, onSave, onAdd, onDelete }) {
         </div>
       </div>
 
-      <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-        <div className="sw-display font-bold text-sm mb-3" style={{ color: "var(--ink-soft)" }}>OFFICE MONTHLY TARGET (all assigned plans)</div>
+      <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="sw-display text-sm mb-3" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>OFFICE MONTHLY TARGET (all assigned plans)</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "0.75rem" }}>
           {[["GP", officeTotals.gp], ["Cloud SOV", officeTotals.cloud], ["Connectivity SOV", officeTotals.conn], ["Mobile SOV", officeTotals.mobile]].map(([lbl, v]) => (
             <div key={lbl} className="rounded-xl p-3" style={{ background: "var(--surface-alt)" }}>
@@ -3891,7 +3888,7 @@ function StatusSettingsView({ rows, onSave, newCount }) {
         {newCount > 0 && <> <b>{newCount} new {newCount === 1 ? "status" : "statuses"}</b> to review.</>}
       </p>
 
-      <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <table className="w-full text-sm">
           <thead>
             <tr style={{ background: "var(--surface-alt)" }}>
@@ -3998,7 +3995,7 @@ function CoachSettingsView({ scenarios, settings, onSaveScenario, onAddScenario,
       {/* What good looks like */}
       <div className="rounded-2xl p-4 mb-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="flex items-center justify-between mb-2">
-          <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>WHAT GOOD LOOKS LIKE</div>
+          <div className="sw-display text-sm" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>WHAT GOOD LOOKS LIKE</div>
           <div className="flex items-center gap-2">
             {savedCfg && <CheckCircle2 size={15} style={{ color: "var(--green)" }} />}
             <button disabled={!cfgDirty || savingCfg}
@@ -4025,7 +4022,7 @@ function CoachSettingsView({ scenarios, settings, onSaveScenario, onAddScenario,
       </div>
 
       {/* Scenarios */}
-      <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="px-3 py-2 flex items-center justify-between" style={{ background: "var(--surface-alt)" }}>
           <span className="text-xs font-bold uppercase" style={{ color: "var(--ink-soft)" }}>Scenarios</span>
           <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{scenarios.length}</span>
@@ -4402,7 +4399,7 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
       <AdminIssues staff={staff} netsuite={netsuite} aliases={aliases}
         onAddAlias={onAddAlias} onDeleteAlias={onDeleteAlias} plans={plans} />
 
-      <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -4871,11 +4868,11 @@ function SalesCoachView() {
         <div className="mt-6">
           <div className="flex items-center gap-2 mb-3">
             <History size={16} style={{ color: "var(--ink-soft)" }} />
-            <h3 className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>PREVIOUS CALLS</h3>
+            <h3 className="sw-display text-sm" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>PREVIOUS CALLS</h3>
             <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{history.length} kept</span>
           </div>
 
-          <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
             {history.map((h) => {
               const isOpen = openSession === h.id;
               const scen = (scenarios.length ? scenarios : COACH_SCENARIOS).find((s) => s.key === h.scenario);
@@ -5447,13 +5444,18 @@ function ForecastView({ netsuite, profile, staff }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "0.75rem" }} className="mb-4">
         <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast GP</div>
-          <div className="sw-display font-bold text-xl">{fmtGBP(summary.gpSum)}</div>
-          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{accuracy.lines} lines</div>
+          {/* Net of the lead-gen double count — this is what actually lands */}
+          <div className="sw-display font-bold text-xl">{fmtGBP(summary.grand)}</div>
+          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+            {summary.dc < 0
+              ? `${fmtGBP(summary.gpSum)} claimed − ${fmtGBP(Math.abs(summary.dc))} DC`
+              : `${accuracy.lines} lines`}
+          </div>
         </div>
-        <div className="rounded-2xl p-3.5" style={{ background: "var(--primary-soft)", border: "1px solid var(--primary)" }}>
-          <div className="text-xs font-semibold uppercase" style={{ color: "var(--primary)" }}>After DC</div>
-          <div className="sw-display font-bold text-xl" style={{ color: "var(--primary)" }}>{fmtGBP(summary.grand)}</div>
-          <div className="text-xs" style={{ color: "var(--ink-soft)" }}>DC {fmtGBP(summary.dc)}</div>
+        <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast lines</div>
+          <div className="sw-display font-bold text-xl">{accuracy.lines}</div>
+          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{fmtGBP(accuracy.forecastSov)} SOV</div>
         </div>
         <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Statted this week</div>
@@ -5523,16 +5525,16 @@ function ForecastView({ netsuite, profile, staff }) {
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px", gap: "0.75rem", alignItems: "start" }} className="mb-4">
 
           {/* Expandable breakdown — all teams first, then each team */}
-          <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
             <div className="overflow-x-auto">
               <table className="w-full" style={{ borderCollapse: "collapse" }}>
                 <thead>
-                  <tr style={{ background: "var(--primary)" }}>
-                    <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "#fff" }}>Metric</th>
-                    <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>GP</th>
-                    <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff" }}>SOV</th>
-                    <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "rgba(255,255,255,0.75)" }}>Units</th>
-                    <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "rgba(255,255,255,0.75)" }}>Lines</th>
+                  <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
+                    <th className="px-3 py-2 text-left text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Metric</th>
+                    <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "var(--ink-soft)", background: "var(--primary-soft)" }}>GP</th>
+                    <th className="px-2 py-2 text-center text-xs font-semibold" style={{ color: "var(--ink-soft)" }}>SOV</th>
+                    <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "var(--ink-faint)" }}>Units</th>
+                    <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "var(--ink-faint)" }}>Lines</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -5616,20 +5618,20 @@ function ForecastView({ netsuite, profile, staff }) {
 
           {/* Charts, pinned beside the table */}
           <div style={{ position: "sticky", top: 12, maxHeight: "calc(100vh - 24px)", overflowY: "auto" }} className="flex flex-col gap-3 pr-0.5">
-            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
               <div className="flex items-baseline justify-between mb-2">
                 <span className="sw-display font-bold text-xs" style={{ color: "var(--ink-soft)" }}>GP BY PILLAR</span>
                 {pillarFilter && <button onClick={() => setPillarFilter(null)} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>Clear</button>}
               </div>
               <ProductTreemap items={pillarChartItems} height={150} selected={pillarFilter} onSelect={setPillarFilter} />
             </div>
-            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              <div className="sw-display font-bold text-xs mb-2" style={{ color: "var(--ink-soft)" }}>GP BY AGENT</div>
+            <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="sw-display text-xs mb-2" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>GP BY AGENT</div>
               <ProductBars items={agentChartItems} height={190}
                 selected={agentFilter === "All" ? null : agentFilter}
                 onSelect={(name) => setAgentFilter(name && name !== agentFilter ? name : "All")} />
             </div>
-            <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
               <div className="px-3 py-2 text-xs font-bold uppercase" style={{ background: "var(--surface-alt)", color: "var(--ink-soft)" }}>Leads passed in</div>
               <table className="w-full">
                 <tbody>
@@ -5660,7 +5662,7 @@ function ForecastView({ netsuite, profile, staff }) {
 
       {/* DETAIL */}
       {view === "detail" && (
-        <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <div className="overflow-x-auto">
             <table className="w-full text-sm" style={{ borderCollapse: "collapse" }}>
               <thead>
@@ -5825,8 +5827,8 @@ function QuoteBuilderView({ profile, staff }) {
       <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 320px) minmax(0, 1fr)", gap: "1rem", alignItems: "start" }}>
 
         {/* Inputs */}
-        <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="sw-display font-bold text-sm mb-3" style={{ color: "var(--ink-soft)" }}>DETAILS</div>
+        <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="sw-display text-sm mb-3" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>DETAILS</div>
 
           <label className="sw-label">Customer contact name</label>
           <input className="sw-input sw-focus mb-2" value={q.customerName} onChange={set("customerName")} placeholder="e.g. Sarah" />
@@ -6180,7 +6182,7 @@ function LandscapesView({ profile, staff }) {
       )}
 
       {/* Table */}
-      <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -6373,7 +6375,7 @@ function DistributionView({ orders, netsuite }) {
       {/* Team against team */}
       <div className="rounded-2xl p-4 mb-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="flex items-baseline justify-between mb-3">
-          <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>TEAM RELATIONSHIPS</div>
+          <div className="sw-display text-sm" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>TEAM RELATIONSHIPS</div>
           <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
             {pairs.length} shared deal{pairs.length === 1 ? "" : "s"} · {fmt(grand)} total
           </span>
@@ -6423,9 +6425,9 @@ function DistributionView({ orders, netsuite }) {
       </div>
 
       {/* Person against person */}
-      <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="px-4 py-2.5 flex items-baseline justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
-          <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>AGENT MATRIX</div>
+          <div className="sw-display text-sm" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>AGENT MATRIX</div>
           <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
             {hover ? `${hover.leadGen} → ${hover.closer}` : "Lead gens down the side, closers across the top"}
           </span>
