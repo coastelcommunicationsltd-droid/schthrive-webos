@@ -53,6 +53,16 @@ const findStaff = (list, name) => list.find((s) => s.full_name === name) || null
 const StatusCfgContext = React.createContext({});
 const useStatusCfg = () => React.useContext(StatusCfgContext);
 
+// NetSuite sometimes spells a name differently to the staff list. This maps
+// the alias back to the real person so figures land on the right agent.
+const AliasContext = React.createContext({});
+const useAliases = () => React.useContext(AliasContext);
+const resolveName = (name, aliases) => {
+  if (!name) return name;
+  const hit = aliases[String(name).trim().toLowerCase()];
+  return hit || name;
+};
+
 /* ---- Postcodes --------------------------------------------------------
    The "area" is the leading letters of a UK postcode — PL is Plymouth,
    EX Exeter, TQ Torquay. That's the right grain for a sales heatmap:
@@ -938,6 +948,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
   const [showNGP, setShowNGP] = useState(false);   // NGP deals hidden unless asked for
   const [dataView, setDataView] = useState("claimed");   // forecast | claimed | statted
   const [productFilter, setProductFilter] = useState("All");
+  const [focusFilter, setFocusFilter] = useState("All");   // All | aged | attention
   const [sortKey, setSortKey] = useState("last_updated");
   const [sortDir, setSortDir] = useState("desc");
   const role = profile?.role || "agent";
@@ -1035,6 +1046,8 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
           closer_share: num(n.closer_gp), lead_gen_share: num(n.referrer_gp),
           status: n.order_status,
           date: n.order_date,
+          ageDays: n.order_date ? Math.floor((Date.now() - new Date(n.order_date + "T00:00:00").getTime()) / 86400000) : null,
+          needsAction: !!(n.order_status && statusCfg[n.order_status]?.needs_attention),
           ngp: n.count_gp === false, nsov: n.count_sov === false,
           raw: n,
         }));
@@ -1081,11 +1094,13 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         date: o.last_updated,
         dirty: o.dirty_order === "Yes",
         notStatted: isNotStatted(o),
+        ageDays: o.submission_date ? Math.floor((Date.now() - new Date(o.submission_date).getTime()) / 86400000) : null,
+        needsAction: !!(n && n.order_status && statusCfg[n.order_status]?.needs_attention),
         ngp, nsov,
         raw: o,
       };
     });
-  }, [dataView, scoped, netsuite, forecasts, period, isOffice, is2ic, scope, profile, flagsFor]);
+  }, [dataView, scoped, netsuite, forecasts, period, isOffice, is2ic, scope, profile, flagsFor, statusCfg]);
 
   // Every product tag appearing in the current view, for the slicer.
   // Products are often combined ("Cloud Voice + Broadband"), so the
@@ -1117,7 +1132,9 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       // Product slicer — matches anything CONTAINING the chosen type
       const mp = productFilter === "All"
         || String(r.product || "").toLowerCase().includes(productFilter.toLowerCase());
-      return mq && ms && ma && mp;
+      const mf = focusFilter === "All"
+        || (focusFilter === "aged" ? (r.ageDays != null && r.ageDays >= 90) : !!r.needsAction);
+      return mq && ms && ma && mp && mf;
     });
     const dir = sortDir === "asc" ? 1 : -1;
     return [...f].sort((a, b) => {
@@ -1133,7 +1150,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       if (typeof av === "string") return av.localeCompare(bv) * dir;
       return (av - bv) * dir;
     });
-  }, [viewRows, query, statusFilter, agentFilter, productFilter, sortKey, sortDir, showNGP]);
+  }, [viewRows, query, statusFilter, agentFilter, productFilter, focusFilter, sortKey, sortDir, showNGP]);
 
   // Statuses actually present — Lilac stages plus whatever NetSuite reports
   const statusOptions = useMemo(() => {
@@ -1194,6 +1211,8 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
     return gpWorking.net;
   }, [gpCountable, isOffice, is2ic, scope, profile, agentFilter, gpWorking]);
   const ngpCount = useMemo(() => viewRows.filter((r) => r.ngp).length, [viewRows]);
+  const agedCount = useMemo(() => viewRows.filter((r) => r.ageDays != null && r.ageDays >= 90).length, [viewRows]);
+  const attentionCount = useMemo(() => viewRows.filter((r) => r.needsAction).length, [viewRows]);
   const nsovCount = useMemo(() => productScoped.filter(isNSOV).length, [productScoped, isNSOV]);
   const activeOrders = useMemo(() => productScoped.filter((o) => {
     const n = nsFor(o);
@@ -1275,6 +1294,44 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
     });
     return totals;
   }, [netsuite, period, statusCfg, isOffice, is2ic, scope, profile, agentFilter, productFilter]);
+
+  // ---- Pay plan measured against what NetSuite actually statted -------
+  // The KPI cards use claimed GP; this asks the harder question — has the
+  // work landed against what the plan expects by now?
+  const planVsStatted = useMemo(() => {
+    const from = periodStart(period);
+    const teamScope = isOffice && scope !== "office" ? scope : (is2ic ? profile?.team : null);
+    let gp = 0, cloud = 0, conn = 0, mobile = 0;
+
+    (netsuite || []).forEach((n) => {
+      if (from && (!n.order_date || new Date(n.order_date + "T00:00:00") < from)) return;
+      if (teamScope && n.closer_team !== teamScope && n.referrer_team !== teamScope) return;
+      if (agentFilter !== "All" && n.closer_name !== agentFilter && n.referrer_name !== agentFilter) return;
+
+      const cfg = n.order_status ? statusCfg[n.order_status] : null;
+      const countsGp = cfg ? cfg.count_gp !== false : n.count_gp !== false;
+      const countsSov = cfg ? cfg.count_sov !== false : n.count_sov !== false;
+
+      if (countsGp) {
+        // An individual is credited with their own share
+        if (agentFilter !== "All") {
+          if (n.closer_name === agentFilter) gp += num(n.closer_gp);
+          if (n.referrer_name === agentFilter) gp += num(n.referrer_gp);
+        } else {
+          gp += num(n.gp_office);
+        }
+      }
+      if (countsSov) {
+        const s = [n.prod_for_gs, n.product_group_2, n.item_name_grouped].join(" ").toLowerCase();
+        const v = num(n.contract_value);
+        if (/mobile|\bsim\b|airtime|handset/.test(s)) mobile += v;
+        else if (/cloud|dv4|voice/.test(s)) cloud += v;
+        else if (/broadband|bt ?net|btnet|security|badr|fttp|fttc|ethernet|pstn|line/.test(s)) conn += v;
+      }
+    });
+
+    return { gp, cloud, conn, mobile };
+  }, [netsuite, period, statusCfg, isOffice, is2ic, scope, profile, agentFilter]);
 
   // ---- Month-on-month, rates and top deals ---------------------------
   // These look at the last six months rather than the period toggle —
@@ -1478,6 +1535,26 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
           {dataView === "claimed" && <option value="__not_statted">⚠ Not Statted</option>}
         </select>
 
+        {attentionCount > 0 && (
+          <button onClick={() => setFocusFilter(focusFilter === "attention" ? "All" : "attention")}
+            title="Orders sitting at a status that needs the agent to act"
+            className="sw-focus px-2.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap"
+            style={focusFilter === "attention"
+              ? { background: "var(--amber)", color: "#fff" }
+              : { background: "var(--surface)", color: "var(--amber)", border: "1px solid var(--amber)" }}>
+            Needs action ({attentionCount})
+          </button>
+        )}
+        {agedCount > 0 && (
+          <button onClick={() => setFocusFilter(focusFilter === "aged" ? "All" : "aged")}
+            title="Submitted more than 90 days ago"
+            className="sw-focus px-2.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap"
+            style={focusFilter === "aged"
+              ? { background: "var(--red)", color: "#fff" }
+              : { background: "var(--surface)", color: "var(--red)", border: "1px solid var(--red)" }}>
+            90+ days ({agedCount})
+          </button>
+        )}
         {ngpCount > 0 && (
           <button
             onClick={() => setShowNGP((v) => !v)}
@@ -1532,10 +1609,12 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                   {/* 1: company, with flags kept inline so the row stays short */}
                   <td className="px-3 py-2" style={{ maxWidth: 260 }}>
                     <div className="font-medium text-xs truncate">{r.company_name}</div>
-                    {(r.dirty || r.notStatted || r.nsov || (r.kind === "forecast" && r.matched)) && (
+                    {(r.dirty || r.notStatted || r.nsov || r.needsAction || (r.ageDays != null && r.ageDays >= 90) || (r.kind === "forecast" && r.matched)) && (
                       <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                         {r.dirty && <span className="text-xs font-semibold" style={{ color: "var(--red)", fontSize: 10 }}>DIRTY</span>}
                         {r.notStatted && <span className="text-xs font-semibold" style={{ color: "var(--amber)", fontSize: 10 }}>NOT STATTED</span>}
+                        {r.ageDays != null && r.ageDays >= 90 && <span className="text-xs font-semibold" style={{ color: "var(--red)", fontSize: 10 }}>{r.ageDays}d OLD</span>}
+                        {r.needsAction && <span className="text-xs font-semibold" style={{ color: "var(--amber)", fontSize: 10 }}>NEEDS ACTION</span>}
                         {r.nsov && <span className="text-xs font-semibold" style={{ color: "var(--amber)", fontSize: 10 }}>NSOV</span>}
                         {r.kind === "forecast" && r.matched && <span className="text-xs font-semibold" style={{ color: "var(--green)", fontSize: 10 }}>LANDED {fmtGBP(r.actual_gp)}</span>}
                       </div>
@@ -1595,6 +1674,46 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
 
       {/* Analytics column — sticks while the list scrolls */}
       <div style={{ position: "sticky", top: 12, maxHeight: "calc(100vh - 24px)", overflowY: "auto" }} className="flex flex-col gap-3 pr-0.5">
+
+        {/* Pay plan against what has actually statted */}
+        {targets.people > 0 && (
+          <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="flex items-baseline justify-between mb-3">
+              <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>PAY PLAN vs STATTED</div>
+              <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                {targets.people} plan{targets.people === 1 ? "" : "s"} · {periodLabelFor(period)}
+              </span>
+            </div>
+            <div className="flex flex-col gap-2">
+              {[
+                ["GP", planVsStatted.gp, targets.gp],
+                ["Cloud SOV", planVsStatted.cloud, targets.cloud],
+                ["Connectivity SOV", planVsStatted.conn, targets.conn],
+                ["Mobile SOV", planVsStatted.mobile, targets.mobile],
+              ].map(([label, actual, target]) => {
+                const tone = paceTone(actual, target);
+                const pct = target > 0 ? Math.round((actual / target) * 100) : null;
+                return (
+                  <div key={label}>
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-xs font-semibold" style={{ color: "var(--ink-soft)" }}>{label}</span>
+                      <span className="sw-mono text-xs" style={{ color: "var(--ink-faint)" }}>
+                        <b style={{ color: tone ? tone.fg : "var(--ink)" }}>{fmtGBP(actual)}</b>
+                        {target > 0 ? ` / ${fmtGBP(target)}` : ""}
+                      </span>
+                    </div>
+                    <div className="rounded-full mt-1" style={{ height: 5, background: "var(--surface-alt)" }}>
+                      <div className="rounded-full" style={{ width: `${Math.min(100, pct || 0)}%`, height: "100%", background: tone ? tone.fg : "var(--ink-faint)", transition: "width .3s" }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
+              Measured against NetSuite, pro-rated by working day. Claimed GP will usually run ahead of this.
+            </p>
+          </div>
+        )}
         <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <div className="flex items-baseline justify-between mb-3">
             <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>STATTED vs FORECAST</div>
@@ -3664,10 +3783,11 @@ function StatusConfigRow({ row, onSave }) {
   const [tone, setTone] = useState(row.tone || "primary");
   const [countGp, setCountGp] = useState(row.count_gp !== false);
   const [countSov, setCountSov] = useState(row.count_sov !== false);
+  const [needsAttention, setNeedsAttention] = useState(row.needs_attention === true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  const dirty = tone !== row.tone || countGp !== (row.count_gp !== false) || countSov !== (row.count_sov !== false);
+  const dirty = tone !== row.tone || countGp !== (row.count_gp !== false) || countSov !== (row.count_sov !== false) || needsAttention !== (row.needs_attention === true);
   const preview = TONE_MAP[tone] || TONE_MAP.neutral;
 
   return (
@@ -3693,12 +3813,17 @@ function StatusConfigRow({ row, onSave }) {
         <input type="checkbox" checked={countSov} onChange={(e) => setCountSov(e.target.checked)} title="Counts toward SOV" />
         <div className="text-xs" style={{ color: countSov ? "var(--ink-faint)" : "var(--amber)" }}>{countSov ? "counts" : "NSOV"}</div>
       </td>
+      <td className="px-3 py-2 text-center">
+        <input type="checkbox" checked={needsAttention} onChange={(e) => setNeedsAttention(e.target.checked)}
+          title="An order sitting at this status needs the agent to do something" />
+        <div className="text-xs" style={{ color: needsAttention ? "var(--amber)" : "var(--ink-faint)" }}>{needsAttention ? "chase" : "—"}</div>
+      </td>
       <td className="px-3 py-2">
         <button
           disabled={!dirty || saving}
           onClick={async () => {
             setSaving(true);
-            await onSave(row.status, { tone, count_gp: countGp, count_sov: countSov, auto_added: false });
+            await onSave(row.status, { tone, count_gp: countGp, count_sov: countSov, needs_attention: needsAttention, auto_added: false });
             setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 1500);
           }}
           className="sw-focus text-xs font-semibold px-2.5 py-1.5 rounded-lg"
@@ -3737,7 +3862,7 @@ function StatusSettingsView({ rows, onSave, newCount }) {
         <table className="w-full text-sm">
           <thead>
             <tr style={{ background: "var(--surface-alt)" }}>
-              {["Status", "Colour", "Counts to GP", "Counts to SOV", "", ""].map((h, i) => (
+              {["Status", "Colour", "Counts to GP", "Counts to SOV", "Needs action", "", ""].map((h, i) => (
                 <th key={i} className="text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>{h}</th>
               ))}
             </tr>
@@ -4051,7 +4176,148 @@ function AddStaffRow({ onAdd }) {
   );
 }
 
-function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, onResetPassword, plans }) {
+/* Staff who aren't fully set up yet, and NetSuite names nothing matches.
+   Both are silent problems — figures quietly land nowhere. */
+function AdminIssues({ staff, netsuite, aliases, onAddAlias, onDeleteAlias, plans }) {
+  const [newAlias, setNewAlias] = useState("");
+  const [newTarget, setNewTarget] = useState("");
+  const [tab, setTab] = useState("staff");
+
+  const issues = useMemo(() => (staff || []).map((s) => {
+    const problems = [];
+    if (!s.user_id) problems.push("never signed in");
+    if (!s.team) problems.push("no team");
+    if (s.sells !== false && !s.pay_plan_id) problems.push("no pay plan");
+    if (!s.email) problems.push("no email");
+    if (!s.uin) problems.push("no UIN");
+    return { ...s, problems };
+  }).filter((s) => s.problems.length), [staff]);
+
+  // NetSuite names that match neither a staff record nor an existing alias
+  const unmatched = useMemo(() => {
+    const known = new Set((staff || []).map((s) => String(s.full_name || "").toLowerCase()));
+    const aliased = new Set((aliases || []).map((a) => String(a.alias || "").toLowerCase()));
+    const counts = {};
+    (netsuite || []).forEach((n) => {
+      [n.closer_name, n.referrer_name].forEach((nm) => {
+        if (!nm) return;
+        const k = String(nm).trim();
+        if (!k || known.has(k.toLowerCase()) || aliased.has(k.toLowerCase())) return;
+        counts[k] = (counts[k] || 0) + 1;
+      });
+    });
+    return Object.keys(counts).map((name) => ({ name, count: counts[name] })).sort((a, b) => b.count - a.count);
+  }, [netsuite, staff, aliases]);
+
+  const sellers = (staff || []).filter((s) => s.sells !== false);
+
+  return (
+    <div className="rounded-2xl overflow-hidden mb-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+      <div className="flex items-center gap-2 px-3 py-2" style={{ borderBottom: "1px solid var(--border)" }}>
+        <AlertTriangle size={15} style={{ color: unmatched.length || issues.length ? "var(--amber)" : "var(--green)" }} />
+        <span className="sw-display font-bold text-sm">Needs attention</span>
+        <div className="ml-auto flex items-center gap-1.5">
+          {[["staff", `Setup (${issues.length})`], ["names", `Unmatched names (${unmatched.length})`]].map(([k, lbl]) => (
+            <button key={k} onClick={() => setTab(k)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold"
+              style={tab === k ? { background: "var(--primary)", color: "#fff" } : { background: "var(--surface-alt)", color: "var(--ink-soft)" }}>
+              {lbl}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {tab === "staff" && (
+        issues.length === 0 ? (
+          <div className="px-4 py-6 text-center text-xs" style={{ color: "var(--green)" }}>Everyone is fully set up.</div>
+        ) : (
+          <div style={{ maxHeight: 260, overflowY: "auto" }}>
+            <table className="w-full text-sm">
+              <tbody>
+                {issues.map((s) => (
+                  <tr key={s.id} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td className="px-3 py-1.5 text-xs font-semibold" style={{ minWidth: 150 }}>{s.full_name}</td>
+                    <td className="px-3 py-1.5 text-xs" style={{ color: "var(--ink-faint)" }}>{s.team || "—"}</td>
+                    <td className="px-3 py-1.5">
+                      <div className="flex gap-1.5 flex-wrap">
+                        {s.problems.map((p) => (
+                          <span key={p} className="text-xs font-semibold px-1.5 py-0.5 rounded"
+                            style={{ background: "var(--amber-soft)", color: "var(--amber)", fontSize: 10 }}>{p}</span>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      )}
+
+      {tab === "names" && (
+        <>
+          <div className="px-3 py-2 flex items-center gap-2 flex-wrap" style={{ background: "var(--surface-alt)" }}>
+            <input className="sw-input sw-focus" style={{ maxWidth: 200 }} placeholder="Name as NetSuite spells it"
+              value={newAlias} onChange={(e) => setNewAlias(e.target.value)} />
+            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>is really</span>
+            <select className="sw-input sw-focus" style={{ maxWidth: 200 }} value={newTarget} onChange={(e) => setNewTarget(e.target.value)}>
+              <option value="">Select the agent...</option>
+              {sellers.map((s) => <option key={s.full_name} value={s.full_name}>{s.full_name}</option>)}
+            </select>
+            <button disabled={!newAlias.trim() || !newTarget}
+              onClick={async () => { await onAddAlias(newAlias, newTarget); setNewAlias(""); setNewTarget(""); }}
+              className="sw-focus px-3 py-1.5 rounded-lg text-xs font-semibold"
+              style={{ background: newAlias.trim() && newTarget ? "var(--primary)" : "var(--surface)", color: newAlias.trim() && newTarget ? "#fff" : "var(--ink-faint)", border: "1px solid var(--border)" }}>
+              Add mapping
+            </button>
+          </div>
+
+          {unmatched.length > 0 && (
+            <div className="px-3 py-2" style={{ borderTop: "1px solid var(--border)" }}>
+              <div className="text-xs font-semibold uppercase mb-1.5" style={{ color: "var(--amber)" }}>
+                In NetSuite but not in the staff list
+              </div>
+              <div className="flex gap-1.5 flex-wrap">
+                {unmatched.map((u) => (
+                  <button key={u.name} onClick={() => setNewAlias(u.name)}
+                    className="sw-focus text-xs px-2 py-1 rounded-lg"
+                    style={{ background: "var(--amber-soft)", color: "var(--ink)" }}
+                    title="Click to start a mapping for this name">
+                    {u.name} <span style={{ color: "var(--ink-faint)" }}>×{u.count}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div style={{ maxHeight: 220, overflowY: "auto" }}>
+            <table className="w-full text-sm">
+              <tbody>
+                {(aliases || []).map((a) => (
+                  <tr key={a.id} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td className="px-3 py-1.5 text-xs">{a.alias}</td>
+                    <td className="px-3 py-1.5 text-xs" style={{ color: "var(--ink-faint)" }}>→</td>
+                    <td className="px-3 py-1.5 text-xs font-semibold">{a.staff_full_name}</td>
+                    <td className="px-3 py-1.5 text-right">
+                      <button onClick={() => onDeleteAlias(a.id)} className="sw-focus text-xs" style={{ color: "var(--red)" }}>✕</button>
+                    </td>
+                  </tr>
+                ))}
+                {(aliases || []).length === 0 && (
+                  <tr><td colSpan={4} className="px-3 py-5 text-center text-xs" style={{ color: "var(--ink-faint)" }}>
+                    No mappings yet. Add one above when a NetSuite name doesn't match the staff list.
+                  </td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, onResetPassword, plans,
+                    netsuite, aliases, onAddAlias, onDeleteAlias }) {
   const teamOptions = useMemo(() => Array.from(new Set(staff.map((s) => s.team).filter(Boolean))), [staff]);
   const profileByUserId = useMemo(() => {
     const m = {};
@@ -4067,6 +4333,9 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
         <h2 className="sw-display text-lg font-bold">Staff & Roles</h2>
         <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Office only · changes take effect immediately</span>
       </div>
+      <AdminIssues staff={staff} netsuite={netsuite} aliases={aliases}
+        onAddAlias={onAddAlias} onDeleteAlias={onDeleteAlias} plans={plans} />
+
       <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -6331,6 +6600,7 @@ export default function App() {
   const [statusRows, setStatusRows] = useState([]);
   const [payPlans, setPayPlans] = useState([]);
   const [forecasts, setForecasts] = useState([]);
+  const [aliases, setAliases] = useState([]);
   const [coachScenarios, setCoachScenarios] = useState([]);
   const [coachSettings, setCoachSettings] = useState({ rubric: "", what_good_looks_like: "" });
   const [allProfiles, setAllProfiles] = useState([]);
@@ -6401,6 +6671,39 @@ export default function App() {
     setForecasts(data || []);
   }, []);
   useEffect(() => { if (session?.user) loadForecasts(); }, [session, loadForecasts]);
+
+  // Name aliases — NetSuite spellings mapped back to the staff list
+  const loadAliases = useCallback(async () => {
+    const { data } = await supabase.from("staff_aliases").select("*").order("alias");
+    setAliases(data || []);
+  }, []);
+  useEffect(() => { if (session?.user) loadAliases(); }, [session, loadAliases]);
+
+  const aliasMap = useMemo(() => {
+    const m = {};
+    aliases.forEach((a) => { if (a.alias) m[a.alias.trim().toLowerCase()] = a.staff_full_name; });
+    return m;
+  }, [aliases]);
+
+  const saveAlias = useCallback(async (id, patch) => {
+    const { error } = await supabase.from("staff_aliases").update(patch).eq("id", id);
+    if (error) { setToast(`Couldn't save: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    loadAliases();
+  }, [loadAliases]);
+
+  const addAlias = useCallback(async (alias, staffName) => {
+    const { error } = await supabase.from("staff_aliases").insert({ alias: alias.trim(), staff_full_name: staffName });
+    if (error) { setToast(`Couldn't add: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    setToast(`"${alias}" now maps to ${staffName}`);
+    setTimeout(() => setToast(""), 3000);
+    loadAliases();
+  }, [loadAliases]);
+
+  const deleteAlias = useCallback(async (id) => {
+    const { error } = await supabase.from("staff_aliases").delete().eq("id", id);
+    if (error) { setToast(`Couldn't delete: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    loadAliases();
+  }, [loadAliases]);
 
   // Sales Coach scenarios and grading, editable in Settings
   const loadCoachCfg = useCallback(async () => {
@@ -6675,6 +6978,18 @@ export default function App() {
 
   const staffValue = useMemo(() => ({ all: staff, sellers: staff.filter((s) => s.sells) }), [staff]);
 
+  // Apply the alias map once, here, so every view sees corrected names
+  // rather than each having to remember to resolve them.
+  const netsuiteResolved = useMemo(() => {
+    if (!Object.keys(aliasMap).length) return netsuite;
+    return netsuite.map((n) => {
+      const c = resolveName(n.closer_name, aliasMap);
+      const r = resolveName(n.referrer_name, aliasMap);
+      if (c === n.closer_name && r === n.referrer_name) return n;
+      return { ...n, closer_name: c, referrer_name: r };
+    });
+  }, [netsuite, aliasMap]);
+
   if (!authReady) return <div className="sw-root flex items-center justify-center" style={{ minHeight: "100vh" }}><style>{STYLE}</style><Loader2 className="animate-spin" style={{ color: "var(--primary)" }} /></div>;
   if (!session) return <LoginScreen />;
 
@@ -6692,7 +7007,7 @@ export default function App() {
     return (
       <StatusCfgContext.Provider value={statusCfgMap}>
         <StaffContext.Provider value={staffValue}>
-          <TVBoard orders={orders} netsuite={netsuite} />
+          <TVBoard orders={orders} netsuite={netsuiteResolved} />
         </StaffContext.Provider>
       </StatusCfgContext.Provider>
     );
@@ -6707,7 +7022,7 @@ export default function App() {
         onChangePassword={() => setChangingPassword(true)} onSignOut={signOut} />
 
       <div style={{ flex: 1, minWidth: 0 }}>
-      <main className={`p-6 mx-auto ${["breakdown", "daybyday", "forecast", "landscapes", "dashboard", "distribution"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
+      <main className={`p-6 mx-auto ${["breakdown", "daybyday", "forecast", "landscapes", "dashboard", "distribution", "admin", "statuses"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
         {submitted && (
           <div className="sw-rise rounded-2xl p-4 mb-5 flex items-center justify-between gap-4" style={{ background: "var(--green-soft)", border: "1px solid var(--green)" }}>
             <div className="flex items-center gap-3">
@@ -6725,16 +7040,17 @@ export default function App() {
             </div>
           </div>
         )}
-        {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuite} forecasts={forecasts} staff={staff} payPlans={payPlans} onNewOrder={() => setTab("new")} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
+        {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuiteResolved} forecasts={forecasts} staff={staff} payPlans={payPlans} onNewOrder={() => setTab("new")} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
         {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} />}
         {tab === "daybyday" && <DayByDayView orders={orders} />}
-        {tab === "breakdown" && <SalesBreakdownView netsuite={netsuite} />}
-        {tab === "distribution" && <DistributionView orders={orders} netsuite={netsuite} />}
-        {tab === "forecast" && <ForecastView netsuite={netsuite} profile={profile} staff={staff} />}
+        {tab === "breakdown" && <SalesBreakdownView netsuite={netsuiteResolved} />}
+        {tab === "distribution" && <DistributionView orders={orders} netsuite={netsuiteResolved} />}
+        {tab === "forecast" && <ForecastView netsuite={netsuiteResolved} profile={profile} staff={staff} />}
         {tab === "landscapes" && <LandscapesView profile={profile} staff={staff} />}
         {tab === "quote" && <QuoteBuilderView profile={profile} staff={staff} />}
         {tab === "coach" && <SalesCoachView />}
-        {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onResetPassword={resetPassword} plans={payPlans} />}
+        {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onResetPassword={resetPassword} plans={payPlans}
+          netsuite={netsuiteResolved} aliases={aliases} onAddAlias={addAlias} onDeleteAlias={deleteAlias} />}
         {tab === "statuses" && profile?.role === "office" && <SettingsView statusRows={statusRows} onSaveStatus={saveStatusCfg} newCount={newStatusCount} plans={payPlans} staff={staff} onSavePlan={savePayPlan} onAddPlan={addPayPlan} onDeletePlan={deletePayPlan}
           coachScenarios={coachScenarios} coachSettings={coachSettings}
           onSaveCoachScenario={saveCoachScenario} onAddCoachScenario={addCoachScenario}
