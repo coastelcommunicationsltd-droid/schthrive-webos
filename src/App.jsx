@@ -3759,6 +3759,8 @@ function ForecastView({ netsuite, profile, staff }) {
   const [view, setView] = useState("summary");   // summary | detail
   const [teamFilter, setTeamFilter] = useState("All");
   const [agentFilter, setAgentFilter] = useState("All");
+  const [pillarFilter, setPillarFilter] = useState(null);   // set by clicking the treemap
+  const [sidePanel, setSidePanel] = useState("agent");      // agent | product
   const [adding, setAdding] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToastLocal] = useState("");
@@ -3798,8 +3800,9 @@ function ForecastView({ netsuite, profile, staff }) {
     if (r.forecast_week !== week) return false;
     if (teamFilter !== "All" && r.agent_team !== teamFilter && r.lead_gen_team !== teamFilter) return false;
     if (agentFilter !== "All" && r.agent_name !== agentFilter && r.lead_gen_name !== agentFilter) return false;
+    if (pillarFilter && groupForPillar(r.pillar) !== pillarFilter) return false;
     return true;
-  }), [rows, week, teamFilter, agentFilter]);
+  }), [rows, week, teamFilter, agentFilter, pillarFilter]);
 
   // ---- Summary: one line per team, pillar SOV/units across ------------
   const summary = useMemo(() => {
@@ -3914,22 +3917,46 @@ function ForecastView({ netsuite, profile, staff }) {
   }, [weekRows, netsuite, week, teamFilter, agentFilter]);
 
   // ---- Chart data ----------------------------------------------------
+  // Each chart shows every option but reflects the OTHER chart's
+  // selection, so picking a product re-ranks the agents and picking an
+  // agent re-sizes the products. Neither filters itself away.
+  const baseRows = useMemo(() => rows.filter((r) => {
+    if (r.forecast_week !== week) return false;
+    if (teamFilter !== "All" && r.agent_team !== teamFilter && r.lead_gen_team !== teamFilter) return false;
+    return true;
+  }), [rows, week, teamFilter]);
+
   const pillarChartItems = useMemo(() => {
     const m = {};
-    weekRows.forEach((r) => {
+    baseRows.forEach((r) => {
+      if (agentFilter !== "All" && r.agent_name !== agentFilter && r.lead_gen_name !== agentFilter) return;
       const g = groupForPillar(r.pillar);
       m[g] = (m[g] || 0) + num(r.gp);
     });
     return Object.keys(m).map((name) => ({ name, value: m[name] }));
-  }, [weekRows]);
+  }, [baseRows, agentFilter]);
 
   const agentChartItems = useMemo(() => {
     const m = {};
-    weekRows.forEach((r) => {
+    baseRows.forEach((r) => {
+      if (pillarFilter && groupForPillar(r.pillar) !== pillarFilter) return;
       if (!r.agent_name) return;
       m[r.agent_name] = (m[r.agent_name] || 0) + num(r.gp);
     });
     return Object.keys(m).map((name) => ({ name, value: m[name] }));
+  }, [baseRows, pillarFilter]);
+
+  // Product breakdown for the side panel — GP and SOV per pillar group
+  const productPanelRows = useMemo(() => {
+    const m = {};
+    weekRows.forEach((r) => {
+      const g = groupForPillar(r.pillar);
+      if (!m[g]) m[g] = { name: g, gp: 0, sov: 0, lines: 0 };
+      m[g].gp += num(r.gp);
+      m[g].sov += num(r.sov);
+      m[g].lines += 1;
+    });
+    return Object.keys(m).map((k) => m[k]).sort((a, b) => b.gp - a.gp);
   }, [weekRows]);
 
   const addForecast = async () => {
@@ -4151,6 +4178,14 @@ function ForecastView({ netsuite, profile, staff }) {
           <option value="All">All agents</option>
           {agentOptions.map((a) => <option key={a} value={a}>{a}</option>)}
         </select>
+        {pillarFilter && (
+          <button onClick={() => setPillarFilter(null)}
+            className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1"
+            style={{ background: "var(--primary)", color: "#fff" }}
+            title="Clear the product filter">
+            {pillarFilter} <X size={12} />
+          </button>
+        )}
       </div>
 
       {/* SUMMARY */}
@@ -4214,49 +4249,77 @@ function ForecastView({ netsuite, profile, staff }) {
             </div>
           </div>
 
-          {/* Per agent, beside the team table */}
-          <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-            <div className="px-3 py-2 flex items-center justify-between" style={{ background: "var(--primary)" }}>
-              <span className="text-xs font-bold uppercase" style={{ color: "#fff" }}>By Agent</span>
-              <span className="text-xs" style={{ color: "rgba(255,255,255,0.7)" }}>{summary.agents.length}</span>
+          {/* Side panel — agents or products, spanning both tables */}
+          <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)", gridRow: "span 2", alignSelf: "start" }}>
+            <div className="flex" style={{ background: "var(--primary)" }}>
+              {[["agent", "By Agent"], ["product", "By Product"]].map(([k, lbl]) => (
+                <button key={k} onClick={() => setSidePanel(k)}
+                  className="sw-focus flex-1 px-3 py-2 text-xs font-bold uppercase"
+                  style={sidePanel === k
+                    ? { background: "#3B1370", color: "#fff" }
+                    : { background: "transparent", color: "rgba(255,255,255,0.65)" }}>
+                  {lbl}
+                </button>
+              ))}
             </div>
-            <div style={{ maxHeight: 340, overflowY: "auto" }}>
-              <table className="w-full" style={{ borderCollapse: "collapse" }}>
-                <thead>
-                  <tr style={{ background: "var(--surface-alt)", position: "sticky", top: 0 }}>
-                    <th className="px-2 py-1.5 text-left text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Agent</th>
-                    <th className="px-2 py-1.5 text-center text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>GP</th>
-                    <th className="px-2 py-1.5 text-center text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>SOV</th>
-                    <th className="px-2 py-1.5 text-center text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Lines</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {summary.agents.map((a) => (
-                    <tr key={a.name} style={{ borderTop: "1px solid var(--border)", cursor: "pointer" }}
-                      onClick={() => setAgentFilter(agentFilter === a.name ? "All" : a.name)}
-                      title="Click to filter the page to this agent">
-                      <td className="px-2 py-1.5">
-                        <div className="text-xs font-semibold truncate" style={{ color: agentFilter === a.name ? "var(--primary)" : "var(--ink)" }}>{a.name}</div>
-                        <div className="text-xs truncate" style={{ color: "var(--ink-faint)", fontSize: 10 }}>
-                          {a.team}{a.asLeadGen > 0 ? ` · ${a.asLeadGen} as lead gen` : ""}
-                        </div>
-                      </td>
-                      <td className="px-2 py-1.5 sw-mono text-center" style={{ fontSize: 12, fontWeight: 700, borderLeft: "1px solid var(--border)" }}>{fmtGBP(a.gp)}</td>
-                      <td className="px-2 py-1.5 sw-mono text-center" style={{ fontSize: 11, color: "var(--ink-soft)", borderLeft: "1px solid var(--border)" }}>{fmtGBP(a.sov)}</td>
-                      <td className="px-2 py-1.5 sw-mono text-center" style={{ fontSize: 11, color: "var(--ink-faint)", borderLeft: "1px solid var(--border)" }}>{a.lines}</td>
-                    </tr>
-                  ))}
-                  {summary.agents.length === 0 && (
-                    <tr><td colSpan={4} className="px-3 py-8 text-center text-xs" style={{ color: "var(--ink-faint)" }}>No forecasts this week.</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
 
-          {/* Leads generated, by pillar */}
-          <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            {sidePanel === "agent" ? (
+              <div style={{ maxHeight: 640, overflowY: "auto" }}>
+                <table className="w-full" style={{ borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ background: "var(--surface-alt)", position: "sticky", top: 0 }}>
+                      <th className="px-2 py-1.5 text-left text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Agent</th>
+                      <th className="px-2 py-1.5 text-center text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>GP</th>
+                      <th className="px-2 py-1.5 text-center text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>SOV</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.agents.map((a) => (
+                      <tr key={a.name} style={{ borderTop: "1px solid var(--border)", cursor: "pointer", background: agentFilter === a.name ? "var(--primary-soft)" : undefined }}
+                        onClick={() => setAgentFilter(agentFilter === a.name ? "All" : a.name)}
+                        title="Click to filter the page to this agent">
+                        <td className="px-2 py-1 text-xs font-semibold truncate" style={{ color: agentFilter === a.name ? "var(--primary)" : "var(--ink)", maxWidth: 140 }}>{a.name}</td>
+                        <td className="px-2 py-1 sw-mono text-center" style={{ fontSize: 11.5, fontWeight: 700, borderLeft: "1px solid var(--border)" }}>{fmtGBP(a.gp)}</td>
+                        <td className="px-2 py-1 sw-mono text-center" style={{ fontSize: 11, color: "var(--ink-soft)", borderLeft: "1px solid var(--border)" }}>{fmtGBP(a.sov)}</td>
+                      </tr>
+                    ))}
+                    {summary.agents.length === 0 && (
+                      <tr><td colSpan={3} className="px-3 py-8 text-center text-xs" style={{ color: "var(--ink-faint)" }}>No forecasts this week.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={{ maxHeight: 640, overflowY: "auto" }}>
+                <table className="w-full" style={{ borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ background: "var(--surface-alt)", position: "sticky", top: 0 }}>
+                      <th className="px-2 py-1.5 text-left text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Product</th>
+                      <th className="px-2 py-1.5 text-center text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>GP</th>
+                      <th className="px-2 py-1.5 text-center text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>SOV</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {productPanelRows.map((p) => (
+                      <tr key={p.name} style={{ borderTop: "1px solid var(--border)", cursor: "pointer", background: pillarFilter === p.name ? "var(--primary-soft)" : undefined }}
+                        onClick={() => setPillarFilter(pillarFilter === p.name ? null : p.name)}
+                        title="Click to filter the page to this product">
+                        <td className="px-2 py-1 text-xs font-semibold truncate" style={{ color: pillarFilter === p.name ? "var(--primary)" : "var(--ink)", maxWidth: 140 }}>{p.name}</td>
+                        <td className="px-2 py-1 sw-mono text-center" style={{ fontSize: 11.5, fontWeight: 700, borderLeft: "1px solid var(--border)" }}>{fmtGBP(p.gp)}</td>
+                        <td className="px-2 py-1 sw-mono text-center" style={{ fontSize: 11, color: "var(--ink-soft)", borderLeft: "1px solid var(--border)" }}>{fmtGBP(p.sov)}</td>
+                      </tr>
+                    ))}
+                    {productPanelRows.length === 0 && (
+                      <tr><td colSpan={3} className="px-3 py-8 text-center text-xs" style={{ color: "var(--ink-faint)" }}>No forecasts this week.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Leads generated, by pillar — column 1, under the team table */}
+          <div className="rounded-2xl overflow-hidden" style={{ gridColumn: 1, background: "var(--surface)", border: "1px solid var(--border)" }}>
             <div className="overflow-x-auto">
               <table className="w-full" style={{ borderCollapse: "collapse" }}>
                 <thead>
@@ -4283,14 +4346,17 @@ function ForecastView({ netsuite, profile, staff }) {
               </table>
             </div>
           </div>
-          <p className="text-xs mt-3" style={{ color: "var(--ink-faint)" }}>
+        </div>
+
+          <p className="text-xs mb-3" style={{ color: "var(--ink-faint)" }}>
             A "lead passed in" counts any forecast line where a Lead Gen is named — so the person who
             sourced it gets credit alongside the closer.
           </p>
 
+          {/* Treemap and agent ranking cross-filter each other */}
           <ReportCharts
             treemapItems={pillarChartItems} treemapTitle="FORECAST GP BY PILLAR"
-            productSelected={null} onProductSelect={() => {}}
+            productSelected={pillarFilter} onProductSelect={setPillarFilter}
             barItems={agentChartItems} barTitle="FORECAST GP BY AGENT"
             agentSelected={agentFilter} onAgentSelect={setAgentFilter} />
         </>
@@ -4418,6 +4484,7 @@ function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSig
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem(SIDEBAR_KEY) === "collapsed"; } catch (_) { return false; }
   });
+  const [mainOpen, setMainOpen] = useState(true);
   const [dashOpen, setDashOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(true);
   const isOffice = profile?.role === "office";
@@ -4430,7 +4497,8 @@ function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSig
     });
   };
 
-  const dashboardsActive = ["daybyday", "breakdown", "forecast"].includes(tab);
+  const mainActive = ["dashboard", "forecast", "new", "daybyday"].includes(tab);
+  const dashboardsActive = ["breakdown"].includes(tab);
   const settingsActive = ["admin", "statuses"].includes(tab);
 
   return (
@@ -4448,15 +4516,17 @@ function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSig
       </div>
 
       <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-0.5">
-        <SidebarItem icon={ClipboardList} label="Claimed" collapsed={collapsed} active={tab === "dashboard"} onClick={() => setTab("dashboard")} />
-        <SidebarItem icon={Plus} label="Submit Lilac Box" collapsed={collapsed} active={tab === "new"} onClick={() => setTab("new")} />
+        <SidebarSection icon={ClipboardList} label="Main Views" collapsed={collapsed} open={mainOpen} onToggle={() => setMainOpen((o) => !o)} childActive={mainActive}>
+          <SidebarItem icon={ClipboardList} label="Claimed" collapsed={collapsed} active={tab === "dashboard"} indent onClick={() => setTab("dashboard")} />
+          <SidebarItem icon={TrendingUp} label="Forecasting" collapsed={collapsed} active={tab === "forecast"} indent onClick={() => setTab("forecast")} />
+          <SidebarItem icon={Plus} label="Submit Lilac Box" collapsed={collapsed} active={tab === "new"} indent onClick={() => setTab("new")} />
+          <SidebarItem icon={CalendarDays} label="Day by Day" collapsed={collapsed} active={tab === "daybyday"} indent onClick={() => setTab("daybyday")} />
+        </SidebarSection>
 
         <div className="my-1" />
 
         <SidebarSection icon={LayoutDashboard} label="Dashboards" collapsed={collapsed} open={dashOpen} onToggle={() => setDashOpen((o) => !o)} childActive={dashboardsActive}>
-          <SidebarItem icon={CalendarDays} label="Day by Day" collapsed={collapsed} active={tab === "daybyday"} indent onClick={() => setTab("daybyday")} />
           <SidebarItem icon={BarChart3} label="Sales Breakdown" collapsed={collapsed} active={tab === "breakdown"} indent onClick={() => setTab("breakdown")} />
-          <SidebarItem icon={TrendingUp} label="Forecasting" collapsed={collapsed} active={tab === "forecast"} indent onClick={() => setTab("forecast")} />
           <SidebarItem icon={Radio} label="TV Mode" collapsed={collapsed} active={false} indent href="#tv" onClick={() => setTimeout(() => window.location.reload(), 0)} />
         </SidebarSection>
 
