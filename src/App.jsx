@@ -6,7 +6,7 @@ import {
   Loader2, Users, Eye, EyeOff, ArrowLeft, LogIn, KeyRound, Palette, MapPin,
   BarChart3, CalendarDays, Target, Headphones, Phone,
   ChevronDown, ClipboardList, LayoutDashboard, Settings as SettingsIcon,
-  PanelLeftClose, PanelLeftOpen, History,
+  PanelLeftClose, PanelLeftOpen, History, FileText,
 } from "lucide-react";
 
 /* ====================================================================== */
@@ -859,8 +859,16 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
   };
 
   // NetSuite decides what actually counts: NGP is out of GP, NSOV is out of SOV.
-  const gpCountable = useMemo(() => scoped.filter((o) => !isNGP(o)), [scoped, isNGP]);
-  const sovCountable = useMemo(() => scoped.filter((o) => !isNSOV(o)), [scoped, isNSOV]);
+  // The product slicer applies to the summary figures too, so the cards
+  // always describe the same slice the table is showing.
+  const productScoped = useMemo(() => {
+    if (productFilter === "All") return scoped;
+    const needle = productFilter.toLowerCase();
+    return scoped.filter((o) => String(o.item_name_grouped || o.product_group_2 || "").toLowerCase().includes(needle));
+  }, [scoped, productFilter]);
+
+  const gpCountable = useMemo(() => productScoped.filter((o) => !isNGP(o)), [productScoped, isNGP]);
+  const sovCountable = useMemo(() => productScoped.filter((o) => !isNSOV(o)), [productScoped, isNSOV]);
 
   const sovTotal = useMemo(() => totalSOV(sovCountable), [sovCountable]);
   const gpTotal = useMemo(() => {
@@ -871,14 +879,14 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
     return officeGP(gpCountable);
   }, [gpCountable, isOffice, is2ic, scope, profile]);
   const ngpCount = useMemo(() => viewRows.filter((r) => r.ngp).length, [viewRows]);
-  const nsovCount = useMemo(() => scoped.filter(isNSOV).length, [scoped, isNSOV]);
-  const activeOrders = useMemo(() => scoped.filter((o) => {
+  const nsovCount = useMemo(() => productScoped.filter(isNSOV).length, [productScoped, isNSOV]);
+  const activeOrders = useMemo(() => productScoped.filter((o) => {
     const n = nsFor(o);
     const live = (n && n.order_status) || o.order_status || "";
     return !/(closed won|complete|billed|cease|cancel)/i.test(live);
-  }).length, [scoped, nsFor]);
-  const dirtyCount = useMemo(() => scoped.filter((o) => o.dirty_order === "Yes").length, [scoped]);
-  const notStattedCount = useMemo(() => scoped.filter(isNotStatted).length, [scoped]);
+  }).length, [productScoped, nsFor]);
+  const dirtyCount = useMemo(() => productScoped.filter((o) => o.dirty_order === "Yes").length, [productScoped]);
+  const notStattedCount = useMemo(() => productScoped.filter(isNotStatted).length, [productScoped]);
 
   // ---- Targets for whoever is in scope --------------------------------
   // An agent is measured against their own plan; a team or the whole
@@ -930,6 +938,10 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       if (cfg && cfg.count_sov === false) return false;
       if (teamScope && r.closer_team !== teamScope && r.referrer_team !== teamScope) return false;
       if (agentFilter !== "All" && r.closer_name !== agentFilter && r.referrer_name !== agentFilter) return false;
+      if (productFilter !== "All") {
+        const hay = [r.prod_for_gs, r.product_group_2, r.item_name_grouped].join(" ").toLowerCase();
+        if (!hay.includes(productFilter.toLowerCase())) return false;
+      }
       if (!from) return true;
       return r.order_date && new Date(r.order_date + "T00:00:00").getTime() >= from.getTime();
     });
@@ -947,7 +959,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       totals.all += v;
     });
     return totals;
-  }, [netsuite, period, statusCfg, isOffice, is2ic, scope, profile, agentFilter]);
+  }, [netsuite, period, statusCfg, isOffice, is2ic, scope, profile, agentFilter, productFilter]);
 
   const gpLabel = isOffice && scope !== "office" ? `GP · ${scope}` : is2ic && profile?.team ? `GP · ${profile.team}` : "GP · Office";
   const periodLabel = useMemo(() => {
@@ -967,7 +979,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
           <KPICard icon={TrendingUp} label={gpLabel} value={fmtGBP(gpTotal)} sub="Single-counted GP" accent="#1F7A3D" target={targets.gp} rawValue={gpTotal} />
         </div>
         <div style={{ gridColumn: "span 3" }}>
-          <KPICard icon={Wallet} label="SOV" value={fmtGBP(sovTotal)} sub={`${scoped.length} orders`} accent="#4C1D8F" />
+          <KPICard icon={Wallet} label="SOV" value={fmtGBP(sovTotal)} sub={`${productScoped.length} orders`} accent="#4C1D8F" />
         </div>
         {/* Row 1 — last two units */}
         <div style={{ gridColumn: "span 2" }}>
@@ -4555,6 +4567,543 @@ function ForecastView({ netsuite, profile, staff }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  QUOTE BUILDER — customer-facing order confirmation                     */
+/* ---------------------------------------------------------------------- */
+
+const LEAD_TIMES = [
+  ["Broadband", "Up to 14 working days"],
+  ["Cloud Voice Express", "Up to 14 working days"],
+  ["Cloud Voice / Cloud Works", "Up to 6 weeks"],
+  ["Digital Voice for Business", "Up to 7 working days"],
+  ["EE Mobile (Future Mobile)", "Up to 14 working days"],
+  ["EE SME", "Up to 7 working days"],
+  ["BTNet Leased Line", "Up to 90 working days"],
+];
+
+function QuoteBuilderView({ profile, staff }) {
+  const me = useMemo(
+    () => (staff || []).find((s) => s.user_id && profile && s.user_id === profile.id) || null,
+    [staff, profile]
+  );
+
+  const [q, setQ] = useState({
+    customerName: "",
+    companyName: "",
+    monthly: "",
+    term: "60",
+    directPhone: "",
+    services: "Cloud Voice Package – 5 Users & 5 × Yealink W73P Handsets\nCloud Voice Unlimited Calling Plan – Unlimited calls to UK local, national & UK mobiles\nSOGEA Broadband – XMbps Download / XMbps Upload – Minimum Guaranteed Access Line Speed (MGALS): XMbps\nBusiness Antivirus, Detect & Respond licences – Covers up to X devices",
+    senderName: "",
+    senderTitle: "Sales Advisor",
+  });
+  const [copied, setCopied] = useState("");
+
+  // Prefill from whoever's signed in
+  useEffect(() => {
+    if (me && !q.senderName) setQ((p) => ({ ...p, senderName: me.full_name || "" }));
+  }, [me]);
+
+  const set = (k) => (e) => setQ((p) => ({ ...p, [k]: e.target.value }));
+  const serviceLines = q.services.split("\n").map((s) => s.trim()).filter(Boolean);
+
+  const printQuote = () => {
+    const node = document.getElementById("sw-quote-doc");
+    if (!node) return;
+    const w = window.open("", "_blank");
+    if (!w) return;
+    w.document.write(`<!doctype html><html><head><title>Order Confirmation — ${q.companyName || "Customer"}</title>
+      <meta charset="utf-8" />
+      <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body { margin:0; font-family:'Inter',Arial,sans-serif; }
+        @page { margin: 12mm; }
+      </style></head><body>${node.outerHTML}</body></html>`);
+    w.document.close();
+    setTimeout(() => { w.focus(); w.print(); }, 400);
+  };
+
+  const copyText = () => {
+    const node = document.getElementById("sw-quote-doc");
+    if (!node) return;
+    navigator.clipboard?.writeText(node.innerText || "");
+    setCopied("Copied — paste straight into an email");
+    setTimeout(() => setCopied(""), 2500);
+  };
+
+  const H = ({ children }) => (
+    <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", margin: "22px 0 8px", letterSpacing: "-0.01em" }}>{children}</div>
+  );
+  const P = ({ children, dim }) => (
+    <p style={{ fontSize: 13, lineHeight: 1.6, color: dim ? "rgba(255,255,255,0.72)" : "rgba(255,255,255,0.92)", margin: "0 0 10px" }}>{children}</p>
+  );
+  const Bullet = ({ children }) => (
+    <li style={{ fontSize: 13, lineHeight: 1.6, color: "rgba(255,255,255,0.92)", marginBottom: 4 }}>{children}</li>
+  );
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <FileText size={18} style={{ color: "var(--primary)" }} />
+        <h2 className="sw-display text-lg font-bold">Quote Builder</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Order confirmation to send to the customer</span>
+        <div className="ml-auto flex items-center gap-2">
+          {copied && <span className="text-xs font-semibold" style={{ color: "var(--green)" }}>{copied}</span>}
+          <button onClick={copyText} className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold"
+            style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>Copy text</button>
+          <button onClick={printQuote} className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold text-white"
+            style={{ background: "var(--primary)" }}>Print / Save PDF</button>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 320px) minmax(0, 1fr)", gap: "1rem", alignItems: "start" }}>
+
+        {/* Inputs */}
+        <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="sw-display font-bold text-sm mb-3" style={{ color: "var(--ink-soft)" }}>DETAILS</div>
+
+          <label className="sw-label">Customer contact name</label>
+          <input className="sw-input sw-focus mb-2" value={q.customerName} onChange={set("customerName")} placeholder="e.g. Sarah" />
+
+          <label className="sw-label">Company name</label>
+          <input className="sw-input sw-focus mb-2" value={q.companyName} onChange={set("companyName")} />
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
+            <div>
+              <label className="sw-label">£ per month</label>
+              <input className="sw-input sw-focus mb-2" value={q.monthly} onChange={set("monthly")} placeholder="249" />
+            </div>
+            <div>
+              <label className="sw-label">Term (months)</label>
+              <input className="sw-input sw-focus mb-2" value={q.term} onChange={set("term")} />
+            </div>
+          </div>
+
+          <label className="sw-label">Services — one per line</label>
+          <textarea className="sw-input sw-focus mb-2" rows={7} value={q.services} onChange={set("services")} />
+
+          <div className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+            <div className="text-xs font-semibold uppercase mb-2" style={{ color: "var(--ink-soft)" }}>Your details</div>
+            <label className="sw-label">Name</label>
+            <input className="sw-input sw-focus mb-2" value={q.senderName} onChange={set("senderName")} />
+            <label className="sw-label">Job title</label>
+            <input className="sw-input sw-focus mb-2" value={q.senderTitle} onChange={set("senderTitle")} />
+            <label className="sw-label">Direct telephone</label>
+            <input className="sw-input sw-focus" value={q.directPhone} onChange={set("directPhone")} placeholder="01752 XXXXXX" />
+          </div>
+        </div>
+
+        {/* The document itself */}
+        <div id="sw-quote-doc" style={{ background: "#4C1D8F", borderRadius: 16, padding: "34px 38px", color: "#fff" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 26 }}>
+            <div>
+              <div style={{ fontSize: 21, fontWeight: 700, letterSpacing: "-0.02em" }}>Order Confirmation</div>
+              <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.7)", marginTop: 2 }}>
+                What happens next{q.companyName ? ` — ${q.companyName}` : ""}
+              </div>
+            </div>
+            <div style={{ background: "#fff", borderRadius: 8, padding: "8px 12px" }}>
+              <img src="/logo.jpg" alt="BT Local Business — Coastel Communications" style={{ height: 34, display: "block" }} />
+            </div>
+          </div>
+
+          <P>Dear {q.customerName || "Customer Name"},</P>
+          <P>Firstly, thank you for choosing to place your order with me and BT Local Business. I truly appreciate your trust in us and look forward to supporting you throughout your installation and beyond.</P>
+          <P>Below is a clear summary of your agreed package, along with what you can expect over the coming weeks. Please keep this email for reference.</P>
+          <P>If at any stage you have questions or need clarification, you can contact me directly on {q.directPhone || "01752 XXXXXX"}.</P>
+
+          <H>Your Agreed Package</H>
+          <div style={{ background: "rgba(255,255,255,0.10)", borderRadius: 10, padding: "14px 18px", marginBottom: 12 }}>
+            <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.04em", color: "rgba(255,255,255,0.65)", marginBottom: 6 }}>Contract &amp; charges</div>
+            <div style={{ fontSize: 22, fontWeight: 700 }}>£{q.monthly || "X"} <span style={{ fontSize: 13, fontWeight: 400, color: "rgba(255,255,255,0.75)" }}>per month (excl. VAT)</span></div>
+            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.8)", marginTop: 2 }}>{q.term || "60"} month agreement</div>
+          </div>
+
+          <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.04em", color: "rgba(255,255,255,0.65)", marginBottom: 6 }}>Services included</div>
+          <ul style={{ margin: "0 0 14px", paddingLeft: 18 }}>
+            {serviceLines.map((s, i) => <Bullet key={i}>{s}</Bullet>)}
+          </ul>
+
+          <P>You will shortly receive a series of automated emails confirming:</P>
+          <ul style={{ margin: "0 0 10px", paddingLeft: 18 }}>
+            <Bullet>The full product breakdown</Bullet>
+            <Bullet>Your official order reference number(s)</Bullet>
+            <Bullet>Provisional installation / activation dates</Bullet>
+          </ul>
+          <P dim>Please review these carefully and let me know if anything appears incorrect.</P>
+
+          <H>Estimated Timescales</H>
+          <P dim>Whilst we will always aim to complete your order as efficiently as possible, the following are standard estimated lead times:</P>
+          <div style={{ background: "rgba(255,255,255,0.08)", borderRadius: 10, overflow: "hidden", marginBottom: 10 }}>
+            {LEAD_TIMES.map(([svc, time], i) => (
+              <div key={svc} style={{ display: "flex", justifyContent: "space-between", padding: "7px 14px", fontSize: 12.5, background: i % 2 ? "rgba(255,255,255,0.05)" : "transparent" }}>
+                <span>{svc}</span><span style={{ color: "rgba(255,255,255,0.78)" }}>{time}</span>
+              </div>
+            ))}
+          </div>
+          <P dim>These timescales may vary depending on survey requirements and engineering availability, and are all subject to survey.</P>
+
+          <H>What Happens Next</H>
+          <P><b>1. Sales Delivery contact</b> — you may receive a call or email from our Sales Delivery Team to confirm order details, arrange any required engineer visit, and validate installation information. If you spot any discrepancy, tell me or the Sales Delivery agent immediately so we can resolve it before the order progresses.</P>
+          <P><b>2. Credit &amp; validation</b> — your order passes through our Credit Referral Department for validation.</P>
+          <P><b>3. Aftersales &amp; installation</b> — if your package includes broadband, our Aftersales Team will confirm installation dates and engineer time slots by email. If Openreach attendance is required, you'll receive the appointment window.</P>
+          <P><b>4. Cloud setup (if applicable)</b> — for Cloud Voice, Cloud Works or Digital Voice you'll receive a CRF to complete and return, and an invitation to book a Welcome Call with our Cloud Onboarding Team. The order won't progress until both are done.</P>
+          <P><b>5. Order completion</b> — once installation is complete a new account number is generated (beginning WW, WM, ST, GP or VP). Each product may generate its own number.</P>
+
+          <H>Important Information</H>
+          <P><b>Subject to survey.</b> Any installation or activation date is subject to survey and may change following engineering checks. You'll be notified by email, text or phone if it does.</P>
+          <P><b>Minimum Guaranteed Access Line Speed.</b> If, after a 30-day stabilisation period, your service consistently falls below the stated threshold and cannot be resolved, you may have the option to leave without Early Termination Charges by following our Faults Process.</P>
+
+          <H>Ongoing Support</H>
+          <P>Thank you again for your business and for taking the time to work through your requirements with me.</P>
+          <P>I'm available Monday to Friday, 9:00am–5:00pm. I'm typically unavailable between 11:30am and 3:00pm due to customer appointments, however voicemails and emails will be answered the same working day wherever possible, or by 12:00pm the next working day at the latest.</P>
+          <P>I look forward to seeing your services go live and supporting your business moving forward.</P>
+
+          <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.25)" }}>
+            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.8)" }}>Kind regards,</div>
+            <div style={{ fontSize: 16, fontWeight: 700, marginTop: 8 }}>{q.senderName || "Your name"}</div>
+            <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.78)" }}>{q.senderTitle}</div>
+            <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.78)" }}>BT Local Business (Devon, Cornwall, Somerset and Dorset)</div>
+            {q.directPhone && <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.78)", marginTop: 6 }}>Direct: {q.directPhone}</div>}
+            <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.6)", marginTop: 6 }}>
+              Plymouth 01752 777880 · Exeter 01392 825990 · Taunton 01823 490000 · Bournemouth 01202 868869
+            </div>
+            <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.5)", marginTop: 12, lineHeight: 1.5 }}>
+              Prices are indicative and will be confirmed when the order is accepted by BT. They may be subject to survey.
+              All products and services come with our standard terms and conditions, available online.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  LANDSCAPES — prospect bank, allocated out to be called                 */
+/* ---------------------------------------------------------------------- */
+
+const LANDSCAPE_PRODUCTS = ["Mobile", "BTNet", "Broadband", "Cloud"];
+const LANDSCAPE_STATUSES = ["New", "Allocated", "Called", "Callback", "Not Interested", "Converted"];
+const LANDSCAPE_TONE = {
+  "New": "primary", "Allocated": "blue", "Called": "amber",
+  "Callback": "gold", "Not Interested": "neutral", "Converted": "green",
+};
+
+function LandscapesView({ profile, staff }) {
+  const { sellers } = useStaff();
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState("");
+  const [query, setQuery] = useState("");
+  const [productFilter, setProductFilter] = useState("All");
+  const [statusFilter, setStatusFilter] = useState("All");
+  const [allocFilter, setAllocFilter] = useState("All");
+  const [endsWithin, setEndsWithin] = useState("All");
+  const [selected, setSelected] = useState([]);
+  const [bulkTarget, setBulkTarget] = useState("");
+
+  const canAllocate = profile?.role === "office" || profile?.role === "2ic";
+  const me = useMemo(() => (staff || []).find((s) => s.user_id && profile && s.user_id === profile.id) || null, [staff, profile]);
+
+  const blank = { company_name: "", contact_name: "", contact_number: "", product: "Mobile", units: "", current_provider: "", contract_end: "", notes: "" };
+  const [draft, setDraft] = useState(blank);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase.from("landscapes").select("*").order("created_at", { ascending: false });
+    setRows(data || []);
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const flash = (m) => { setNote(m); setTimeout(() => setNote(""), 3500); };
+
+  const addLandscape = async () => {
+    if (!draft.company_name.trim()) { flash("Company name is needed."); return; }
+    setSaving(true);
+    const { error } = await supabase.from("landscapes").insert({
+      company_name: draft.company_name.trim(),
+      contact_name: draft.contact_name.trim() || null,
+      contact_number: draft.contact_number.trim() || null,
+      product: draft.product,
+      units: draft.units ? parseFloat(draft.units) || null : null,
+      current_provider: draft.current_provider.trim() || null,
+      contract_end: draft.contract_end || null,
+      notes: draft.notes.trim() || null,
+      created_by_name: me?.full_name || profile?.full_name || null,
+      created_team: me?.team || null,
+      status: "New",
+    });
+    setSaving(false);
+    if (error) { flash(`Couldn't save: ${error.message}`); return; }
+    setDraft(blank); setAdding(false); load();
+  };
+
+  const allocate = async (ids, agentName) => {
+    if (!ids.length || !agentName) return;
+    const s = findStaff(sellers, agentName);
+    const { error } = await supabase.from("landscapes").update({
+      allocated_to: s?.user_id || null,
+      allocated_to_name: agentName,
+      allocated_team: s?.team || null,
+      allocated_at: new Date().toISOString(),
+      allocated_by_name: me?.full_name || profile?.full_name || null,
+      status: "Allocated",
+    }).in("id", ids);
+    if (error) { flash(`Couldn't allocate: ${error.message}`); return; }
+    flash(`${ids.length} allocated to ${agentName}`);
+    setSelected([]); setBulkTarget(""); load();
+  };
+
+  const updateRow = async (id, patch) => {
+    const { error } = await supabase.from("landscapes").update(patch).eq("id", id);
+    if (error) { flash(`Couldn't update: ${error.message}`); return; }
+    load();
+  };
+
+  const daysUntil = (d) => {
+    if (!d) return null;
+    return Math.round((new Date(d + "T00:00:00").getTime() - Date.now()) / 86400000);
+  };
+
+  const filtered = useMemo(() => rows.filter((r) => {
+    const q = query.trim().toLowerCase();
+    if (q && !(String(r.company_name || "").toLowerCase().includes(q)
+      || String(r.contact_name || "").toLowerCase().includes(q)
+      || String(r.current_provider || "").toLowerCase().includes(q))) return false;
+    if (productFilter !== "All" && r.product !== productFilter) return false;
+    if (statusFilter !== "All" && r.status !== statusFilter) return false;
+    if (allocFilter === "__mine" && r.allocated_to !== profile?.id) return false;
+    if (allocFilter === "__unallocated" && r.allocated_to_name) return false;
+    if (allocFilter !== "All" && allocFilter !== "__mine" && allocFilter !== "__unallocated"
+      && r.allocated_to_name !== allocFilter) return false;
+    if (endsWithin !== "All") {
+      const d = daysUntil(r.contract_end);
+      if (d === null) return false;
+      if (endsWithin === "overdue" && d >= 0) return false;
+      if (endsWithin !== "overdue" && (d < 0 || d > parseInt(endsWithin, 10))) return false;
+    }
+    return true;
+  }), [rows, query, productFilter, statusFilter, allocFilter, endsWithin, profile]);
+
+  const allocatedNames = useMemo(() => {
+    const s = new Set();
+    rows.forEach((r) => { if (r.allocated_to_name) s.add(r.allocated_to_name); });
+    return Array.from(s).sort();
+  }, [rows]);
+
+  const stats = useMemo(() => ({
+    total: rows.length,
+    unallocated: rows.filter((r) => !r.allocated_to_name).length,
+    mine: rows.filter((r) => r.allocated_to === profile?.id && r.status !== "Converted").length,
+    dueSoon: rows.filter((r) => { const d = daysUntil(r.contract_end); return d !== null && d >= 0 && d <= 90; }).length,
+    converted: rows.filter((r) => r.status === "Converted").length,
+  }), [rows, profile]);
+
+  const toggleSel = (id) => setSelected((s) => s.includes(id) ? s.filter((x) => x !== id) : [...s, id]);
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <MapPin size={18} style={{ color: "var(--primary)" }} />
+        <h2 className="sw-display text-lg font-bold">Landscapes</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Prospects gathered, allocated out to be called</span>
+        <button onClick={() => setAdding((a) => !a)} className="sw-focus ml-auto px-3 py-2 rounded-lg text-xs font-semibold text-white flex items-center gap-1"
+          style={{ background: "var(--primary)" }}><Plus size={13} /> Add landscape</button>
+      </div>
+
+      {note && (
+        <div className="rounded-xl p-2.5 mb-3 text-xs font-semibold"
+          style={{ background: note.startsWith("Couldn't") ? "var(--red-soft)" : "var(--green-soft)", color: note.startsWith("Couldn't") ? "var(--red)" : "var(--green)" }}>{note}</div>
+      )}
+
+      {/* Snapshot */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "0.75rem" }} className="mb-4">
+        {[
+          ["In the bank", stats.total, "var(--ink)"],
+          ["Unallocated", stats.unallocated, "var(--amber)"],
+          ["Allocated to me", stats.mine, "var(--primary)"],
+          ["Ending in 90 days", stats.dueSoon, "var(--blue)"],
+          ["Converted", stats.converted, "var(--green)"],
+        ].map(([label, val, colour]) => (
+          <div key={label} className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>{label}</div>
+            <div className="sw-display font-bold text-xl" style={{ color: colour }}>{val}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Add form */}
+      {adding && (
+        <div className="rounded-2xl p-4 mb-4" style={{ background: "var(--surface)", border: "1px solid var(--primary)" }}>
+          <div className="sw-display font-bold text-sm mb-3">New landscape</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "0.6rem" }}>
+            <div><label className="sw-label">Company name *</label>
+              <input className="sw-input sw-focus" value={draft.company_name} onChange={(e) => setDraft((d) => ({ ...d, company_name: e.target.value }))} /></div>
+            <div><label className="sw-label">Contact name</label>
+              <input className="sw-input sw-focus" value={draft.contact_name} onChange={(e) => setDraft((d) => ({ ...d, contact_name: e.target.value }))} /></div>
+            <div><label className="sw-label">Contact number</label>
+              <input className="sw-input sw-focus" value={draft.contact_number} onChange={(e) => setDraft((d) => ({ ...d, contact_number: e.target.value }))} /></div>
+            <div><label className="sw-label">Product</label>
+              <select className="sw-input sw-focus" value={draft.product} onChange={(e) => setDraft((d) => ({ ...d, product: e.target.value }))}>
+                {LANDSCAPE_PRODUCTS.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select></div>
+            <div><label className="sw-label">Units</label>
+              <input className="sw-input sw-focus" value={draft.units} onChange={(e) => setDraft((d) => ({ ...d, units: e.target.value }))} /></div>
+            <div><label className="sw-label">Current provider</label>
+              <input className="sw-input sw-focus" value={draft.current_provider} onChange={(e) => setDraft((d) => ({ ...d, current_provider: e.target.value }))} /></div>
+            <div><label className="sw-label">Contract end date</label>
+              <input className="sw-input sw-focus" type="date" value={draft.contract_end} onChange={(e) => setDraft((d) => ({ ...d, contract_end: e.target.value }))} /></div>
+            <div style={{ gridColumn: "span 2" }}><label className="sw-label">Notes</label>
+              <input className="sw-input sw-focus" value={draft.notes} onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))} /></div>
+          </div>
+          <div className="flex gap-2 mt-3 justify-end">
+            <button onClick={() => { setAdding(false); setDraft(blank); }} className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold"
+              style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>Cancel</button>
+            <button onClick={addLandscape} disabled={saving} className="sw-focus px-4 py-2 rounded-lg text-xs font-semibold text-white"
+              style={{ background: "var(--primary)" }}>{saving ? "Saving..." : "Add landscape"}</button>
+          </div>
+        </div>
+      )}
+
+      {/* Filters */}
+      <div className="mb-3 p-3 rounded-2xl flex items-center gap-2 flex-wrap" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="relative" style={{ flex: 1, minWidth: 180 }}>
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--ink-faint)" }} />
+          <input className="sw-input sw-focus" style={{ paddingLeft: 32 }} placeholder="Search company, contact or provider..." value={query} onChange={(e) => setQuery(e.target.value)} />
+        </div>
+        <select className="sw-input sw-focus" style={{ width: 140 }} value={productFilter} onChange={(e) => setProductFilter(e.target.value)}>
+          <option value="All">All products</option>
+          {LANDSCAPE_PRODUCTS.map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <select className="sw-input sw-focus" style={{ width: 150 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+          <option value="All">All statuses</option>
+          {LANDSCAPE_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select className="sw-input sw-focus" style={{ width: 170 }} value={allocFilter} onChange={(e) => setAllocFilter(e.target.value)}>
+          <option value="All">Anyone</option>
+          <option value="__mine">Allocated to me</option>
+          <option value="__unallocated">Unallocated</option>
+          {allocatedNames.map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+        <select className="sw-input sw-focus" style={{ width: 160 }} value={endsWithin} onChange={(e) => setEndsWithin(e.target.value)}>
+          <option value="All">Any end date</option>
+          <option value="overdue">Already ended</option>
+          <option value="30">Ends in 30 days</option>
+          <option value="90">Ends in 90 days</option>
+          <option value="180">Ends in 6 months</option>
+        </select>
+      </div>
+
+      {/* Bulk allocate */}
+      {canAllocate && selected.length > 0 && (
+        <div className="rounded-xl p-3 mb-3 flex items-center gap-2 flex-wrap" style={{ background: "var(--primary-soft)", border: "1px solid var(--primary)" }}>
+          <span className="text-xs font-semibold" style={{ color: "var(--primary)" }}>{selected.length} selected</span>
+          <select className="sw-input sw-focus" style={{ width: 190 }} value={bulkTarget} onChange={(e) => setBulkTarget(e.target.value)}>
+            <option value="">Allocate to...</option>
+            {sellers.map((s) => <option key={s.full_name} value={s.full_name}>{s.full_name}</option>)}
+          </select>
+          <button onClick={() => allocate(selected, bulkTarget)} disabled={!bulkTarget}
+            className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold text-white"
+            style={{ background: bulkTarget ? "var(--primary)" : "var(--ink-faint)" }}>Allocate</button>
+          <button onClick={() => setSelected([])} className="sw-focus text-xs font-semibold ml-auto" style={{ color: "var(--primary)" }}>Clear selection</button>
+        </div>
+      )}
+
+      {/* Table */}
+      <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr style={{ background: "var(--surface-alt)" }}>
+                {canAllocate && <th className="px-2 py-2" style={{ width: 32 }}>
+                  <input type="checkbox"
+                    checked={filtered.length > 0 && selected.length === filtered.length}
+                    onChange={(e) => setSelected(e.target.checked ? filtered.map((r) => r.id) : [])} />
+                </th>}
+                {["Company", "Contact", "Product", "Provider", "Contract ends", "Allocated to", "Status"].map((h) => (
+                  <th key={h} className="text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide whitespace-nowrap" style={{ color: "var(--ink-soft)" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((r) => {
+                const d = daysUntil(r.contract_end);
+                const urgent = d !== null && d >= 0 && d <= 90;
+                const ended = d !== null && d < 0;
+                return (
+                  <tr key={r.id} style={{ borderTop: "1px solid var(--border)", background: selected.includes(r.id) ? "var(--primary-soft)" : undefined }}>
+                    {canAllocate && <td className="px-2 py-2 text-center">
+                      <input type="checkbox" checked={selected.includes(r.id)} onChange={() => toggleSel(r.id)} />
+                    </td>}
+                    <td className="px-3 py-2" style={{ maxWidth: 200 }}>
+                      <div className="text-xs font-medium truncate">{r.company_name}</div>
+                      {r.notes && <div className="truncate" style={{ color: "var(--ink-faint)", fontSize: 10 }}>{r.notes}</div>}
+                    </td>
+                    <td className="px-3 py-2" style={{ maxWidth: 150 }}>
+                      <div className="text-xs truncate">{r.contact_name || "—"}</div>
+                      {r.contact_number && <div className="sw-mono truncate" style={{ color: "var(--ink-soft)", fontSize: 10.5 }}>{r.contact_number}</div>}
+                    </td>
+                    <td className="px-3 py-2 text-xs whitespace-nowrap">
+                      {r.product}{r.units ? <span style={{ color: "var(--ink-faint)" }}> ×{num(r.units)}</span> : null}
+                    </td>
+                    <td className="px-3 py-2 text-xs truncate" style={{ color: "var(--ink-soft)", maxWidth: 130 }}>{r.current_provider || "—"}</td>
+                    <td className="px-3 py-2 text-xs whitespace-nowrap">
+                      {r.contract_end ? (
+                        <span style={{ color: ended ? "var(--red)" : urgent ? "var(--amber)" : "var(--ink)" }}>
+                          {fmtDate(r.contract_end)}
+                          <span style={{ fontSize: 10, display: "block", color: "var(--ink-faint)" }}>
+                            {ended ? `${Math.abs(d)}d ago` : `in ${d}d`}
+                          </span>
+                        </span>
+                      ) : <span style={{ color: "var(--ink-faint)" }}>—</span>}
+                    </td>
+                    <td className="px-3 py-2">
+                      {canAllocate ? (
+                        <select className="sw-input sw-focus" style={{ width: 145, fontSize: 11, padding: "4px 6px" }}
+                          value={r.allocated_to_name || ""} onChange={(e) => allocate([r.id], e.target.value)}>
+                          <option value="">Unallocated</option>
+                          {sellers.map((s) => <option key={s.full_name} value={s.full_name}>{s.full_name}</option>)}
+                        </select>
+                      ) : (
+                        <span className="text-xs">{r.allocated_to_name || <span style={{ color: "var(--ink-faint)" }}>Unallocated</span>}</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2">
+                      <select className="sw-input sw-focus" style={{ width: 130, fontSize: 11, padding: "4px 6px" }}
+                        value={r.status || "New"}
+                        onChange={(e) => updateRow(r.id, {
+                          status: e.target.value,
+                          called_at: e.target.value === "Called" ? new Date().toISOString() : r.called_at,
+                        })}>
+                        {LANDSCAPE_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </td>
+                  </tr>
+                );
+              })}
+              {filtered.length === 0 && (
+                <tr><td colSpan={canAllocate ? 8 : 7} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                  {loading ? "Loading..." : "Nothing matches those filters yet."}
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <p className="text-xs mt-3" style={{ color: "var(--ink-faint)" }}>
+        Anyone can add a landscape and see the bank. Managers and 2ICs allocate them out; whoever it's
+        allocated to can log the outcome. Call-log matching comes later — that's what will confirm the
+        call actually happened.
+      </p>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /*  SIDEBAR NAVIGATION                                                     */
 /* ---------------------------------------------------------------------- */
 
@@ -4614,7 +5163,7 @@ function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSig
     });
   };
 
-  const mainActive = ["dashboard", "forecast", "new", "daybyday"].includes(tab);
+  const mainActive = ["dashboard", "forecast", "new", "daybyday", "landscapes", "quote"].includes(tab);
   const dashboardsActive = ["breakdown"].includes(tab);
   const settingsActive = ["admin", "statuses"].includes(tab);
 
@@ -4638,6 +5187,8 @@ function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSig
           <SidebarItem icon={TrendingUp} label="Forecasting" collapsed={collapsed} active={tab === "forecast"} indent onClick={() => setTab("forecast")} />
           <SidebarItem icon={Plus} label="Submit Lilac Box" collapsed={collapsed} active={tab === "new"} indent onClick={() => setTab("new")} />
           <SidebarItem icon={CalendarDays} label="Day by Day" collapsed={collapsed} active={tab === "daybyday"} indent onClick={() => setTab("daybyday")} />
+          <SidebarItem icon={MapPin} label="Landscapes" collapsed={collapsed} active={tab === "landscapes"} indent onClick={() => setTab("landscapes")} />
+          <SidebarItem icon={FileText} label="Quote Builder" collapsed={collapsed} active={tab === "quote"} indent onClick={() => setTab("quote")} />
         </SidebarSection>
 
         <div className="my-1" />
@@ -4875,7 +5426,7 @@ export default function App() {
   useEffect(() => {
     if (!session?.user) return;
     loadOrders();
-    const channel = supabase.channel("orders-changes")
+    const channel = supabase.channel("schthrive-live")
       .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, (payload) => {
         loadOrders();
         if (payload.new?.id) {
@@ -4883,11 +5434,13 @@ export default function App() {
           setTimeout(() => setFlashId((f) => (f === payload.new.id ? null : f)), 1600);
         }
       })
+      .on("postgres_changes", { event: "*", schema: "public", table: "netsuite_orders" }, () => loadNetsuite())
+      .on("postgres_changes", { event: "*", schema: "public", table: "forecasts" }, () => loadForecasts())
       .subscribe();
     // Safety-net refresh every 60s (keeps the wall-mounted TV honest).
-    const poll = setInterval(() => { loadOrders(); loadNetsuite(); }, 60000);
+    const poll = setInterval(() => { loadOrders(); loadNetsuite(); loadForecasts(); }, 60000);
     return () => { supabase.removeChannel(channel); clearInterval(poll); };
-  }, [session, loadOrders, loadNetsuite]);
+  }, [session, loadOrders, loadNetsuite, loadForecasts]);
 
   const handleNewOrder = useCallback(async (partial) => {
     setSubmitting(true);
@@ -5020,7 +5573,7 @@ export default function App() {
         onChangePassword={() => setChangingPassword(true)} onSignOut={signOut} />
 
       <div style={{ flex: 1, minWidth: 0 }}>
-      <main className={`p-6 mx-auto ${["breakdown", "daybyday", "forecast"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
+      <main className={`p-6 mx-auto ${["breakdown", "daybyday", "forecast", "landscapes"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
         {submitted && (
           <div className="sw-rise rounded-2xl p-4 mb-5 flex items-center justify-between gap-4" style={{ background: "var(--green-soft)", border: "1px solid var(--green)" }}>
             <div className="flex items-center gap-3">
@@ -5043,6 +5596,8 @@ export default function App() {
         {tab === "daybyday" && <DayByDayView orders={orders} />}
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuite} />}
         {tab === "forecast" && <ForecastView netsuite={netsuite} profile={profile} staff={staff} />}
+        {tab === "landscapes" && <LandscapesView profile={profile} staff={staff} />}
+        {tab === "quote" && <QuoteBuilderView profile={profile} staff={staff} />}
         {tab === "coach" && <SalesCoachView />}
         {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onResetPassword={resetPassword} plans={payPlans} />}
         {tab === "statuses" && profile?.role === "office" && <SettingsView statusRows={statusRows} onSaveStatus={saveStatusCfg} newCount={newStatusCount} plans={payPlans} staff={staff} onSavePlan={savePayPlan} onAddPlan={addPayPlan} onDeletePlan={deletePayPlan} />}
