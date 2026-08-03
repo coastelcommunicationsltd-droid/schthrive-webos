@@ -1043,7 +1043,6 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
   const [focusFilter, setFocusFilter] = useState("All");   // All | aged | attention
   const [sideCard, setSideCard] = useState("plan");        // which summary card is showing
   const [topView, setTopView] = useState(true);            // headline figures only
-  const [showAcq, setShowAcq] = useState(false);           // split the headline cards
   const [campaignOnly, setCampaignOnly] = useState(false); // campaign-sourced deals only
   const [acqOnly, setAcqOnly] = useState(false);           // acquisitions only
   const [sortKey, setSortKey] = useState("last_updated");
@@ -1485,15 +1484,26 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       if (!mix[nm]) mix[nm] = {};
       mix[nm][b] = (mix[nm][b] || 0) + v;
     };
+    // Split separately: SOV they closed themselves, and GP earned purely
+    // as lead gen — these drive the two segments of the little bar below
+    // each name.
+    const closerSov = {};
+    const leadGenGp = {};
     gpCountable.forEach((o) => {
       const b = bucketOf(o);
       add(o.closer_name, num(o.closer_share), b);
       add(o.lead_gen_name, num(o.lead_gen_share), b);
+      if (o.closer_name) closerSov[o.closer_name] = (closerSov[o.closer_name] || 0) + num(o.contract_value);
+      if (o.lead_gen_name) leadGenGp[o.lead_gen_name] = (leadGenGp[o.lead_gen_name] || 0) + num(o.lead_gen_share);
     });
 
     const rows = people.map((s) => {
       const plan = s.pay_plan_id ? planById[s.pay_plan_id] : null;
-      const monthly = plan && plan.active !== false ? num(plan.target_gp) : 0;
+      const hasPlan = !!(plan && plan.active !== false);
+      const monthly = hasPlan ? num(plan.target_gp) : 0;
+      const sovMonthly = hasPlan
+        ? num(plan.target_cloud_sov) + num(plan.target_connectivity_sov) + num(plan.target_mobile_sov)
+        : 0;
       return {
         name: s.full_name,
         team: s.team,
@@ -1501,6 +1511,11 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         mix: mix[s.full_name] || {},
         target: fullPeriodTarget(monthly, period),
         pace: proRatedTarget(monthly, period),
+        hasPlan,
+        closerSov: closerSov[s.full_name] || 0,
+        sovTarget: fullPeriodTarget(sovMonthly, period),
+        leadGenGp: leadGenGp[s.full_name] || 0,
+        leadGenTarget: fullPeriodTarget(monthly, period),
       };
     });
 
@@ -1508,7 +1523,11 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
     Object.keys(claimed).forEach((nm) => {
       if (!rows.some((r) => r.name === nm)) {
         if (teamScope) return;
-        rows.push({ name: nm, team: null, gp: claimed[nm], mix: mix[nm] || {}, target: 0, pace: 0 });
+        rows.push({
+          name: nm, team: null, gp: claimed[nm], mix: mix[nm] || {}, target: 0, pace: 0,
+          hasPlan: false, closerSov: closerSov[nm] || 0, sovTarget: 0,
+          leadGenGp: leadGenGp[nm] || 0, leadGenTarget: 0,
+        });
       }
     });
 
@@ -1659,15 +1678,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
   return (
     <div>
       {/* Top view strips it back to the two numbers that matter most */}
-      <div className="flex items-center justify-end gap-2 mb-2">
-        <button onClick={() => setShowAcq((v) => !v)}
-          title="Show acquisition alongside the headline figures"
-          className="sw-focus px-2.5 py-1 rounded-lg text-xs"
-          style={showAcq
-            ? { background: "var(--primary)", color: "#fff", fontWeight: 600 }
-            : { background: "var(--surface)", color: "var(--ink-faint)", border: "1px solid var(--border)" }}>
-          ACQ split
-        </button>
+      <div className="flex items-center justify-end mb-2">
         <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
           {[[false, "Full"], [true, "Top view"]].map(([v, lbl]) => (
             <button key={String(v)} onClick={() => setTopView(v)}
@@ -1700,7 +1711,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
               <div key={c.label} className="rounded-xl px-6 py-7" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
                 <div className="flex items-start justify-between gap-3">
                   <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.05em" }}>{c.label}</span>
-                  {showAcq && c.acq && (
+                  {c.acq && (
                     <div className="text-right shrink-0">
                       <div className="sw-mono" style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-soft)" }}>{c.acq.value}</div>
                       <div style={{ fontSize: 10, color: "var(--ink-faint)" }}>{c.acqLabel} · {c.acq.pct.toFixed(0)}%</div>
@@ -1731,14 +1742,14 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         <div>
           <HeroCard label={gpLabel} value={fmtGBP(gpTotal)} accent="#1F7A3D"
             target={targets.gp} fullTarget={targets.full.gp} rawValue={gpTotal}
-            acq={showAcq ? { value: fmtGBP(splits.acqGp), pct: splits.acqPct } : null} acqLabel="ACQ GP"
+            acq={{ value: fmtGBP(splits.acqGp), pct: splits.acqPct }} acqLabel="ACQ GP"
             note={gpWorking.dc > 0 ? `${fmtGBP(gpWorking.claimed)} claimed − ${fmtGBP(gpWorking.dc)} DC` : "Single-counted"} />
           <CampaignBar label="Campaign GP" value={splits.campaignGp} pct={splits.campaignPct} />
         </div>
 
         <div>
           <HeroCard label="SOV" value={fmtGBP(sovTotal)} accent="#4C1D8F"
-            acq={showAcq ? { value: fmtGBP(splits.acqSov), pct: sovTotal ? (splits.acqSov / sovTotal) * 100 : 0 } : null} acqLabel="ACQ SOV"
+            acq={{ value: fmtGBP(splits.acqSov), pct: sovTotal ? (splits.acqSov / sovTotal) * 100 : 0 }} acqLabel="ACQ SOV"
             note={`${productScoped.length} order${productScoped.length === 1 ? "" : "s"}`} />
           <CampaignBar label="Campaign SOV" value={splits.campaignSov} pct={sovTotal ? (splits.campaignSov / sovTotal) * 100 : 0} />
         </div>
@@ -1774,7 +1785,10 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
             targets.people > 0 ? (
               <div className="flex flex-col gap-1.5">
                 {[
-                  ["GP", planVsStatted.gp, targets.full.gp, targets.gp],
+                  // GP uses the agent's own claimed figure — the same
+                  // number shown on the headline card — not a separate
+                  // statted total that can read differently.
+                  ["GP", gpTotal, targets.full.gp, targets.gp],
                   ["Cloud", planVsStatted.cloud, targets.full.cloud, targets.cloud],
                   ["Connectivity", planVsStatted.conn, targets.full.conn, targets.conn],
                   ["Mobile", planVsStatted.mobile, targets.full.mobile, targets.mobile],
@@ -1914,13 +1928,31 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                           {fmtGBP(a.gp)}
                         </span>
                       </div>
-                      {/* What their GP is made of */}
-                      <div className="flex mt-1 rounded-full overflow-hidden" style={{ height: 4, background: "var(--surface-alt)" }}>
-                        {segs.map((s) => (
-                          <div key={s.k} title={`${s.k} ${fmtGBP(s.v)}`}
-                            style={{ width: `${(s.v / total) * 100}%`, background: MIX_COLOURS[s.k] }} />
-                        ))}
-                      </div>
+                      {/* Closer SOV vs target (solid block) then Lead Gen
+                          GP vs target (hollow) — no pay plan means there's
+                          nothing to measure against, shown as a flat red
+                          line rather than a bar that would be meaningless. */}
+                      {a.hasPlan ? (
+                        <div className="flex items-center gap-1 mt-1">
+                          <div className="rounded-full overflow-hidden flex-1" style={{ height: 4, background: "var(--surface-alt)" }}
+                            title={`Closer SOV: ${fmtGBP(a.closerSov)} of ${fmtGBP(a.sovTarget)}`}>
+                            <div style={{
+                              width: `${a.sovTarget > 0 ? Math.min(100, (a.closerSov / a.sovTarget) * 100) : 0}%`,
+                              height: "100%", background: "var(--primary)",
+                            }} />
+                          </div>
+                          <div className="rounded-full flex-1" style={{ height: 4, background: "var(--surface-alt)", border: "1px solid var(--primary)", boxSizing: "border-box" }}
+                            title={`Lead gen GP: ${fmtGBP(a.leadGenGp)} of ${fmtGBP(a.leadGenTarget)}`}>
+                            <div style={{
+                              width: `${a.leadGenTarget > 0 ? Math.min(100, (a.leadGenGp / a.leadGenTarget) * 100) : 0}%`,
+                              height: "100%", background: "var(--primary-soft)",
+                            }} />
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mt-1" style={{ height: 2, background: "var(--red)", opacity: 0.6, borderRadius: 1 }}
+                          title="No pay plan set" />
+                      )}
                     </button>
                   );
                 })}
@@ -4009,73 +4041,78 @@ function DayByDayView({ orders }) {
 /*  PAY PLANS — office-only: monthly targets agents are measured against   */
 /* ---------------------------------------------------------------------- */
 
-function PayPlanRow({ plan, agentCount, onSave, onDelete }) {
+function PayPlanForm({ plan, agentCount, onSave, onDelete }) {
   const [f, setF] = useState({
-    name: plan.name || "",
-    target_gp: plan.target_gp ?? 0,
-    target_cloud_sov: plan.target_cloud_sov ?? 0,
-    target_connectivity_sov: plan.target_connectivity_sov ?? 0,
-    target_mobile_sov: plan.target_mobile_sov ?? 0,
-    active: plan.active !== false,
+    name: plan.name || "", target_gp: plan.target_gp ?? 0,
+    target_cloud_sov: plan.target_cloud_sov ?? 0, target_connectivity_sov: plan.target_connectivity_sov ?? 0,
+    target_mobile_sov: plan.target_mobile_sov ?? 0, active: plan.active !== false,
   });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const dirty = Object.keys(f).some((k) => String(f[k]) !== String(plan[k] ?? (k === "active" ? true : 0)));
 
-  const numField = (key, width = 96) => (
-    <input className="sw-input sw-focus" style={{ width, textAlign: "right" }} value={f[key]}
-      onChange={(e) => setF((p) => ({ ...p, [key]: e.target.value }))} />
+  const Row = ({ label, children }) => (
+    <div style={{ display: "grid", gridTemplateColumns: "150px 1fr", gap: "0.75rem", alignItems: "center" }} className="py-2">
+      <label className="text-xs" style={{ color: "var(--ink-faint)" }}>{label}</label>
+      {children}
+    </div>
+  );
+  const moneyField = (key) => (
+    <div className="relative" style={{ maxWidth: 200 }}>
+      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs" style={{ color: "var(--ink-faint)" }}>£</span>
+      <input className="sw-input sw-focus" style={{ paddingLeft: 20 }} value={f[key]} onChange={(e) => setF((p) => ({ ...p, [key]: e.target.value }))} />
+    </div>
   );
 
   return (
-    <tr style={{ borderTop: "1px solid var(--border)" }}>
-      <td className="px-3 py-2">
-        <input className="sw-input sw-focus" style={{ minWidth: 150 }} value={f.name}
-          onChange={(e) => setF((p) => ({ ...p, name: e.target.value }))} />
-      </td>
-      <td className="px-3 py-2">{numField("target_gp")}</td>
-      <td className="px-3 py-2">{numField("target_cloud_sov")}</td>
-      <td className="px-3 py-2">{numField("target_connectivity_sov")}</td>
-      <td className="px-3 py-2">{numField("target_mobile_sov")}</td>
-      <td className="px-3 py-2 text-center">
-        <span className="text-xs font-semibold px-2 py-1 rounded-full"
-          style={{ background: agentCount ? "var(--primary-soft)" : "var(--surface-alt)", color: agentCount ? "var(--primary)" : "var(--ink-faint)" }}>
-          {agentCount}
+    <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+      <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
+        <input className="sw-input sw-focus" style={{ fontWeight: 600, fontSize: 14, maxWidth: 260 }}
+          value={f.name} onChange={(e) => setF((p) => ({ ...p, name: e.target.value }))} />
+        <span className="text-xs font-semibold px-2 py-1 rounded-full" style={{ background: agentCount ? "var(--primary-soft)" : "var(--surface-alt)", color: agentCount ? "var(--primary)" : "var(--ink-faint)" }}>
+          {agentCount} on this plan
         </span>
-      </td>
-      <td className="px-3 py-2 text-center">
-        <input type="checkbox" checked={f.active} onChange={(e) => setF((p) => ({ ...p, active: e.target.checked }))} />
-      </td>
-      <td className="px-3 py-2">
+      </div>
+
+      <div className="px-4 py-2">
+        <Row label="GP (monthly)">{moneyField("target_gp")}</Row>
+        <Row label="Cloud SOV (monthly)">{moneyField("target_cloud_sov")}</Row>
+        <Row label="Connectivity SOV (monthly)">{moneyField("target_connectivity_sov")}</Row>
+        <Row label="Mobile SOV (monthly)">{moneyField("target_mobile_sov")}</Row>
+        <Row label="Active">
+          <label className="flex items-center gap-2 text-xs" style={{ color: "var(--ink-soft)" }}>
+            <input type="checkbox" checked={f.active} onChange={(e) => setF((p) => ({ ...p, active: e.target.checked }))} />
+            Available to assign, and counted in KPI targets
+          </label>
+        </Row>
+      </div>
+
+      <div className="flex items-center gap-2 px-4 py-3" style={{ borderTop: "1px solid var(--border)", background: "var(--surface-alt)" }}>
         <button disabled={!dirty || saving}
           onClick={async () => {
             setSaving(true);
             await onSave(plan.id, {
-              name: f.name,
-              target_gp: parseFloat(f.target_gp) || 0,
-              target_cloud_sov: parseFloat(f.target_cloud_sov) || 0,
-              target_connectivity_sov: parseFloat(f.target_connectivity_sov) || 0,
-              target_mobile_sov: parseFloat(f.target_mobile_sov) || 0,
-              active: f.active,
+              name: f.name, target_gp: parseFloat(f.target_gp) || 0,
+              target_cloud_sov: parseFloat(f.target_cloud_sov) || 0, target_connectivity_sov: parseFloat(f.target_connectivity_sov) || 0,
+              target_mobile_sov: parseFloat(f.target_mobile_sov) || 0, active: f.active,
             });
-            setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 1500);
+            setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 1600);
           }}
-          className="sw-focus text-xs font-semibold px-2.5 py-1.5 rounded-lg"
-          style={{ background: dirty ? "var(--primary)" : "var(--surface-alt)", color: dirty ? "#fff" : "var(--ink-faint)" }}
-        >{saving ? "..." : "Save"}</button>
-      </td>
-      <td className="px-2 text-center">
-        {saved ? <CheckCircle2 size={14} style={{ color: "var(--green)" }} /> : (
-          agentCount === 0 && (
-            <button onClick={() => onDelete(plan.id, plan.name)} className="sw-focus text-xs" style={{ color: "var(--red)" }} title="Delete this plan">✕</button>
-          )
+          className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg"
+          style={{ background: dirty ? "var(--primary)" : "var(--surface)", color: dirty ? "#fff" : "var(--ink-faint)", border: "1px solid var(--border)" }}>
+          {saving ? "Saving..." : "Save plan"}
+        </button>
+        {saved && <span className="text-xs" style={{ color: "var(--green)" }}>Saved</span>}
+        {agentCount === 0 && (
+          <button onClick={() => onDelete(plan.id, plan.name)} className="sw-focus text-xs ml-auto" style={{ color: "var(--red)" }}>Delete plan</button>
         )}
-      </td>
-    </tr>
+      </div>
+    </div>
   );
 }
 
 function PayPlansView({ plans, staff, onSave, onAdd, onDelete }) {
+  const [selectedId, setSelectedId] = useState(null);
   const [newName, setNewName] = useState("");
   const [adding, setAdding] = useState(false);
 
@@ -4100,54 +4137,68 @@ function PayPlansView({ plans, staff, onSave, onAdd, onDelete }) {
 
   const wd = workdaysInMonth();
   const wdDone = workdaysElapsedInMonth();
+  const selected = (plans || []).find((p) => p.id === selectedId) || null;
 
   return (
     <div>
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         <Target size={18} style={{ color: "var(--primary)" }} />
-        <h2 className="sw-display text-lg font-bold">Pay Plans</h2>
-        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
-          Monthly targets · assign to people on the Admin page
-        </span>
+        <h2 className="sw-display text-lg" style={{ fontWeight: 600 }}>Pay Plans</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Monthly targets · assign to people on the Admin page</span>
       </div>
 
       <p className="text-sm mb-4 p-3 rounded-xl" style={{ background: "var(--primary-soft)", color: "var(--ink-soft)" }}>
-        Targets are monthly and get pro-rated by working day, so nobody is judged against a full month on the 3rd.
-        This month has <b>{wd} working days</b> and <b>{wdDone}</b> have passed — so right now a card turns
-        green at <b>{Math.round((wdDone / wd) * 100)}%</b> of the monthly figure, and amber from 75% of that.
-        Team and office targets are just the totals of everyone in scope.
+        Targets are monthly and pro-rated by working day. This month has <b>{wd} working days</b>, <b>{wdDone}</b> have
+        passed — a card turns green at <b>{Math.round((wdDone / wd) * 100)}%</b> of target, amber from 75% of that.
       </p>
 
-      <div className="rounded-2xl overflow-hidden mb-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr style={{ background: "var(--surface-alt)" }}>
-                {["Plan name", "GP", "Cloud SOV", "Connectivity SOV", "Mobile SOV", "On plan", "Active", "", ""].map((h, i) => (
-                  <th key={i} className="text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {(plans || []).map((p) => (
-                <PayPlanRow key={p.id} plan={p} agentCount={countByPlan[p.id] || 0} onSave={onSave} onDelete={onDelete} />
-              ))}
-              <tr style={{ borderTop: "2px solid var(--border)", background: "var(--surface-alt)" }}>
-                <td className="px-3 py-2">
-                  <input className="sw-input sw-focus" placeholder="New plan name" value={newName}
-                    onChange={(e) => setNewName(e.target.value)} />
-                </td>
-                <td className="px-3 py-2" colSpan={8}>
-                  <button disabled={!newName.trim() || adding}
-                    onClick={async () => { setAdding(true); await onAdd(newName.trim()); setNewName(""); setAdding(false); }}
-                    className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
-                    style={{ background: newName.trim() ? "var(--primary)" : "var(--surface)", color: newName.trim() ? "#fff" : "var(--ink-faint)", border: "1px solid var(--border)" }}>
-                    <Plus size={12} /> {adding ? "Adding..." : "Add plan"}
-                  </button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+      <div style={{ display: "grid", gridTemplateColumns: "260px minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }} className="mb-4">
+
+        {/* LIST */}
+        <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          {(plans || []).map((p) => {
+            const sel = p.id === selectedId;
+            return (
+              <button key={p.id} onClick={() => { setSelectedId(p.id); setAdding(false); }}
+                className="sw-focus w-full text-left px-3 py-2.5"
+                style={{ background: sel ? "var(--primary-soft)" : "transparent", borderBottom: "1px solid var(--border)", opacity: p.active === false ? 0.55 : 1 }}>
+                <div className="text-xs truncate" style={{ color: sel ? "var(--primary)" : "var(--ink)", fontWeight: sel ? 600 : 500 }}>{p.name}</div>
+                <div className="text-xs truncate" style={{ color: "var(--ink-faint)", fontSize: 10.5 }}>{fmtGBP(p.target_gp)} GP · {countByPlan[p.id] || 0} people</div>
+              </button>
+            );
+          })}
+          {(plans || []).length === 0 && (
+            <div className="text-xs text-center py-8" style={{ color: "var(--ink-faint)" }}>No plans yet.</div>
+          )}
+          {adding ? (
+            <div className="p-2 flex items-center gap-1.5" style={{ borderTop: "1px solid var(--border)" }}>
+              <input className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }} placeholder="Plan name" value={newName}
+                onChange={(e) => setNewName(e.target.value)} autoFocus />
+              <button disabled={!newName.trim()}
+                onClick={async () => { await onAdd(newName.trim()); setNewName(""); setAdding(false); }}
+                className="sw-focus text-xs font-semibold px-2.5 py-1.5 rounded-lg shrink-0"
+                style={{ background: newName.trim() ? "var(--primary)" : "var(--surface)", color: newName.trim() ? "#fff" : "var(--ink-faint)" }}>
+                Add
+              </button>
+            </div>
+          ) : (
+            <button onClick={() => { setAdding(true); setSelectedId(null); }}
+              className="sw-focus w-full flex items-center justify-center gap-1.5 py-2 text-xs font-semibold"
+              style={{ color: "var(--primary)", borderTop: "1px solid var(--border)" }}>
+              <Plus size={13} /> Add plan
+            </button>
+          )}
+        </div>
+
+        {/* DETAIL */}
+        <div>
+          {selected ? (
+            <PayPlanForm key={selected.id} plan={selected} agentCount={countByPlan[selected.id] || 0} onSave={onSave} onDelete={onDelete} />
+          ) : (
+            <div className="rounded-xl p-10 text-center" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="text-sm" style={{ color: "var(--ink-faint)" }}>Select a plan from the list to edit its targets.</div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -4156,8 +4207,8 @@ function PayPlansView({ plans, staff, onSave, onAdd, onDelete }) {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "0.75rem" }}>
           {[["GP", officeTotals.gp], ["Cloud SOV", officeTotals.cloud], ["Connectivity SOV", officeTotals.conn], ["Mobile SOV", officeTotals.mobile]].map(([lbl, v]) => (
             <div key={lbl} className="rounded-xl p-3" style={{ background: "var(--surface-alt)" }}>
-              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>{lbl}</div>
-              <div className="sw-display font-bold text-xl">{fmtGBP(v)}</div>
+              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{lbl}</div>
+              <div className="sw-display" style={{ fontSize: 19, fontWeight: 600 }}>{fmtGBP(v)}</div>
             </div>
           ))}
         </div>
@@ -4603,155 +4654,175 @@ function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSave
 
 const ROLE_OPTIONS = ["office", "2ic", "agent"];
 
-function StaffRow({ s, profileForStaff, onSaveStaff, onSaveProfile, onResetPassword, onSetActive, plans }) {
-  const [edit, setEdit] = useState({
-    full_name: s.full_name || "", uin: s.uin || "", email: s.email || "",
-    manager_name: s.manager_name || "", manager_email: s.manager_email || "",
-    team: s.team || "", sells: !!s.sells,
-    pay_plan_id: s.pay_plan_id || "",
-    alt_name: s.alt_name || "",
+function StaffDetailForm({ s, profileForStaff, onSaveStaff, onSaveProfile, onResetPassword, onSetActive, plans }) {
+  const [f, setF] = useState({
+    full_name: s.full_name || "", alt_name: s.alt_name || "", uin: s.uin || "", email: s.email || "",
+    team: s.team || "", sells: !!s.sells, pay_plan_id: s.pay_plan_id || "",
   });
   const [roleEdit, setRoleEdit] = useState(profileForStaff?.role || "");
   const [teamEdit, setTeamEdit] = useState(profileForStaff?.team || s.team || "");
   const [savingStaff, setSavingStaff] = useState(false);
   const [savingRole, setSavingRole] = useState(false);
-  const [saved, setSaved] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [newPw, setNewPw] = useState("");
   const [savingPw, setSavingPw] = useState(false);
+  const [saved, setSaved] = useState("");
 
-  const staffDirty = Object.keys(edit).some((k) => String(edit[k]) !== String(s[k] ?? (k === "sells" ? true : "")));
+  const staffDirty = Object.keys(f).some((k) => String(f[k]) !== String(s[k] ?? (k === "sells" ? true : "")));
   const roleDirty = profileForStaff && (roleEdit !== profileForStaff.role || teamEdit !== (profileForStaff.team || ""));
+  const flash = (m) => { setSaved(m); setTimeout(() => setSaved(""), 1800); };
 
-  const flash = () => { setSaved(true); setTimeout(() => setSaved(false), 1500); };
+  const Row = ({ label, children }) => (
+    <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: "0.75rem", alignItems: "center" }} className="py-2">
+      <label className="text-xs" style={{ color: "var(--ink-faint)" }}>{label}</label>
+      {children}
+    </div>
+  );
 
   return (
-    <tr style={{ borderTop: "1px solid var(--border)", opacity: s.active === false ? 0.55 : 1 }}>
-      <td className="px-3 py-2">
-        <input className="sw-input sw-focus" style={{ minWidth: 130 }} value={edit.full_name} onChange={(e) => setEdit((p) => ({ ...p, full_name: e.target.value }))} />
-        {s.active === false && <div className="text-xs mt-0.5" style={{ color: "var(--ink-faint)", fontSize: 10 }}>Ex employee</div>}
-      </td>
-      <td className="px-3 py-2">
-        <input className="sw-input sw-focus" style={{ minWidth: 120 }} value={edit.alt_name}
-          onChange={(e) => setEdit((p) => ({ ...p, alt_name: e.target.value }))}
-          placeholder="if NetSuite differs" title="A second spelling of this person's name, as NetSuite writes it" />
-      </td>
-      <td className="px-3 py-2"><input className="sw-input sw-focus" style={{ width: 90 }} value={edit.uin} onChange={(e) => setEdit((p) => ({ ...p, uin: e.target.value }))} placeholder="—" /></td>
-      <td className="px-3 py-2"><input className="sw-input sw-focus" style={{ minWidth: 170 }} value={edit.email} onChange={(e) => setEdit((p) => ({ ...p, email: e.target.value }))} /></td>
-      <td className="px-3 py-2"><input className="sw-input sw-focus" style={{ minWidth: 110 }} value={edit.team} onChange={(e) => setEdit((p) => ({ ...p, team: e.target.value }))} list="team-suggestions" /></td>
-      <td className="px-3 py-2 text-center"><input type="checkbox" checked={edit.sells} onChange={(e) => setEdit((p) => ({ ...p, sells: e.target.checked }))} /></td>
-      <td className="px-3 py-2">
-        <select className="sw-input sw-focus" style={{ minWidth: 130 }} value={edit.pay_plan_id || ""}
-          onChange={(e) => setEdit((p) => ({ ...p, pay_plan_id: e.target.value }))}>
-          <option value="">No plan</option>
-          {(plans || []).filter((p) => p.active !== false).map((p) => (
-            <option key={p.id} value={p.id}>{p.name}</option>
-          ))}
-        </select>
-      </td>
-      <td className="px-3 py-2">
-        <button
-          disabled={!staffDirty || savingStaff}
-          onClick={async () => { setSavingStaff(true); await onSaveStaff(s.id, { ...edit, pay_plan_id: edit.pay_plan_id || null }); setSavingStaff(false); flash(); }}
-          className="sw-focus text-xs font-semibold px-2.5 py-1.5 rounded-lg"
-          style={{ background: staffDirty ? "var(--primary)" : "var(--surface-alt)", color: staffDirty ? "#fff" : "var(--ink-faint)" }}
-        >{savingStaff ? "..." : "Save"}</button>
-      </td>
-      <td className="px-3 py-2">
-        {profileForStaff ? (
-          <select className="sw-input sw-focus" style={{ width: 100 }} value={roleEdit} onChange={(e) => setRoleEdit(e.target.value)}>
-            {ROLE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
-          </select>
-        ) : <span className="text-xs" style={{ color: "var(--ink-faint)" }}>not signed in yet</span>}
-      </td>
-      <td className="px-3 py-2">
-        {profileForStaff && (
-          <button
-            disabled={!roleDirty || savingRole}
-            onClick={async () => { setSavingRole(true); await onSaveProfile(profileForStaff.id, { role: roleEdit, team: teamEdit }); setSavingRole(false); flash(); }}
-            className="sw-focus text-xs font-semibold px-2.5 py-1.5 rounded-lg"
-            style={{ background: roleDirty ? "var(--green)" : "var(--surface-alt)", color: roleDirty ? "#fff" : "var(--ink-faint)" }}
-          >{savingRole ? "..." : "Save Role"}</button>
-        )}
-      </td>
-      <td className="px-3 py-2">
-        {s.email && (
-          resetting ? (
-            <div className="flex items-center gap-1">
-              <input className="sw-input sw-focus" style={{ width: 130 }} type="text" placeholder="New password"
-                value={newPw} onChange={(e) => setNewPw(e.target.value)} autoFocus />
-              <button
-                disabled={newPw.length < 8 || savingPw}
-                onClick={async () => {
-                  setSavingPw(true);
-                  const ok = await onResetPassword(s.email, newPw);
-                  setSavingPw(false);
-                  if (ok) { setResetting(false); setNewPw(""); flash(); }
-                }}
-                className="sw-focus text-xs font-semibold px-2 py-1.5 rounded-lg"
-                style={{ background: newPw.length >= 8 ? "var(--primary)" : "var(--surface-alt)", color: newPw.length >= 8 ? "#fff" : "var(--ink-faint)" }}
-              >{savingPw ? "..." : "Set"}</button>
-              <button onClick={() => { setResetting(false); setNewPw(""); }} className="sw-focus text-xs px-1.5 py-1.5 rounded-lg" style={{ color: "var(--ink-soft)" }}>✕</button>
-            </div>
-          ) : (
-            <button onClick={() => { setResetting(true); setNewPw("Welcome2026"); }}
-              className="sw-focus text-xs font-semibold px-2.5 py-1.5 rounded-lg"
-              style={{ background: "var(--surface-alt)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}
-              title="Set a new password for this person">
-              <KeyRound size={11} style={{ display: "inline", marginRight: 3 }} /> Password
-            </button>
-          )
-        )}
-      </td>
-      <td className="px-3 py-2">
+    <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+      <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
+        <div>
+          <div className="text-sm font-semibold">{s.full_name}</div>
+          {s.active === false && <div className="text-xs" style={{ color: "var(--amber)" }}>Ex employee — login locked</div>}
+        </div>
         <button onClick={() => onSetActive(s.id, s.active === false, s.full_name)}
-          className="sw-focus text-xs font-semibold px-2.5 py-1.5 rounded-lg whitespace-nowrap"
+          className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg"
           style={s.active === false
             ? { background: "var(--green-soft)", color: "var(--green)", border: "1px solid var(--green)" }
-            : { background: "var(--surface-alt)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}
-          title={s.active === false ? "Bring back — you'll need to set a password after" : "Mark as a leaver and lock their login"}>
+            : { background: "var(--surface-alt)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>
           {s.active === false ? "Reinstate" : "Mark leaver"}
         </button>
-      </td>
-      <td className="px-2 text-center">{saved && <CheckCircle2 size={14} style={{ color: "var(--green)" }} />}</td>
-    </tr>
+      </div>
+
+      <div className="px-4 py-2" style={{ divide: "y" }}>
+        <Row label="Full name">
+          <input className="sw-input sw-focus" value={f.full_name} onChange={(e) => setF((p) => ({ ...p, full_name: e.target.value }))} />
+        </Row>
+        <Row label="Also known as">
+          <input className="sw-input sw-focus" value={f.alt_name} onChange={(e) => setF((p) => ({ ...p, alt_name: e.target.value }))}
+            placeholder="if NetSuite spells it differently" />
+        </Row>
+        <Row label="Team">
+          <input className="sw-input sw-focus" value={f.team} onChange={(e) => setF((p) => ({ ...p, team: e.target.value }))} list="team-suggestions" />
+        </Row>
+        <Row label="UIN">
+          <input className="sw-input sw-focus" value={f.uin} onChange={(e) => setF((p) => ({ ...p, uin: e.target.value }))} />
+        </Row>
+        <Row label="Email">
+          <input className="sw-input sw-focus" value={f.email} onChange={(e) => setF((p) => ({ ...p, email: e.target.value }))} />
+        </Row>
+        <Row label="Pay plan">
+          <select className="sw-input sw-focus" value={f.pay_plan_id || ""} onChange={(e) => setF((p) => ({ ...p, pay_plan_id: e.target.value }))}>
+            <option value="">No plan</option>
+            {(plans || []).filter((p) => p.active !== false).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </Row>
+        <Row label="Sells">
+          <label className="flex items-center gap-2 text-xs" style={{ color: "var(--ink-soft)" }}>
+            <input type="checkbox" checked={f.sells} onChange={(e) => setF((p) => ({ ...p, sells: e.target.checked }))} />
+            Appears in Closer / Lead Gen pickers
+          </label>
+        </Row>
+      </div>
+
+      <div className="flex items-center gap-2 px-4 py-3" style={{ borderTop: "1px solid var(--border)", background: "var(--surface-alt)" }}>
+        <button disabled={!staffDirty || savingStaff}
+          onClick={async () => { setSavingStaff(true); await onSaveStaff(s.id, { ...f, pay_plan_id: f.pay_plan_id || null }); setSavingStaff(false); flash("Saved"); }}
+          className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg"
+          style={{ background: staffDirty ? "var(--primary)" : "var(--surface)", color: staffDirty ? "#fff" : "var(--ink-faint)", border: "1px solid var(--border)" }}>
+          {savingStaff ? "Saving..." : "Save details"}
+        </button>
+        {saved && <span className="text-xs" style={{ color: "var(--green)" }}>{saved}</span>}
+      </div>
+
+      {/* Role + password — only meaningful once they've signed in at least once */}
+      <div className="px-4 py-3" style={{ borderTop: "1px solid var(--border)" }}>
+        <div className="text-xs font-medium uppercase mb-2" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Access</div>
+        {profileForStaff ? (
+          <div className="flex items-center gap-2 flex-wrap">
+            <select className="sw-input sw-focus" style={{ width: 120 }} value={roleEdit} onChange={(e) => setRoleEdit(e.target.value)}>
+              {ROLE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
+            </select>
+            <button disabled={!roleDirty || savingRole}
+              onClick={async () => { setSavingRole(true); await onSaveProfile(profileForStaff.id, { role: roleEdit, team: teamEdit }); setSavingRole(false); flash("Role saved"); }}
+              className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg"
+              style={{ background: roleDirty ? "var(--green)" : "var(--surface-alt)", color: roleDirty ? "#fff" : "var(--ink-faint)" }}>
+              {savingRole ? "..." : "Save role"}
+            </button>
+
+            <span style={{ width: 1, height: 20, background: "var(--border)" }} />
+
+            {s.email && (
+              resetting ? (
+                <>
+                  <input className="sw-input sw-focus" style={{ width: 140 }} placeholder="New password" value={newPw} onChange={(e) => setNewPw(e.target.value)} autoFocus />
+                  <button disabled={newPw.length < 8 || savingPw}
+                    onClick={async () => { setSavingPw(true); const ok = await onResetPassword(s.email, newPw); setSavingPw(false); if (ok) { setResetting(false); setNewPw(""); flash("Password set"); } }}
+                    className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg"
+                    style={{ background: newPw.length >= 8 ? "var(--primary)" : "var(--surface)", color: newPw.length >= 8 ? "#fff" : "var(--ink-faint)" }}>
+                    Set
+                  </button>
+                  <button onClick={() => { setResetting(false); setNewPw(""); }} className="sw-focus text-xs" style={{ color: "var(--ink-faint)" }}>Cancel</button>
+                </>
+              ) : (
+                <button onClick={() => { setResetting(true); setNewPw("Welcome2026"); }}
+                  className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
+                  style={{ background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>
+                  <KeyRound size={11} /> Reset password
+                </button>
+              )
+            )}
+          </div>
+        ) : (
+          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>Not signed in yet — role and password appear here after their first login.</div>
+        )}
+      </div>
+    </div>
   );
 }
 
-function AddStaffRow({ onAdd }) {
-  const blank = { full_name: "", alt_name: "", uin: "", email: "", manager_name: "", manager_email: "", team: "", sells: true, active: true };
-  const [f, setF] = useState(blank);
+function AddStaffForm({ onAdd, onCancel }) {
+  const [f, setF] = useState({ full_name: "", alt_name: "", uin: "", email: "", team: "", sells: true, active: true });
   const [saving, setSaving] = useState(false);
   const canAdd = f.full_name.trim().length > 0;
+
   return (
-    <tr style={{ borderTop: "2px solid var(--border)", background: "var(--surface-alt)" }}>
-      <td className="px-3 py-2"><input className="sw-input sw-focus" placeholder="Full name" value={f.full_name} onChange={(e) => setF((p) => ({ ...p, full_name: e.target.value }))} /></td>
-      <td className="px-3 py-2"><input className="sw-input sw-focus" style={{ width: 120 }} placeholder="Also known as" value={f.alt_name} onChange={(e) => setF((p) => ({ ...p, alt_name: e.target.value }))} /></td>
-      <td className="px-3 py-2"><input className="sw-input sw-focus" style={{ width: 90 }} placeholder="UIN" value={f.uin} onChange={(e) => setF((p) => ({ ...p, uin: e.target.value }))} /></td>
-      <td className="px-3 py-2"><input className="sw-input sw-focus" placeholder="Email" value={f.email} onChange={(e) => setF((p) => ({ ...p, email: e.target.value }))} /></td>
-      <td className="px-3 py-2"><input className="sw-input sw-focus" placeholder="Team" value={f.team} onChange={(e) => setF((p) => ({ ...p, team: e.target.value }))} list="team-suggestions" /></td>
-      <td className="px-3 py-2 text-center"><input type="checkbox" checked={f.sells} onChange={(e) => setF((p) => ({ ...p, sells: e.target.checked }))} /></td>
-      <td className="px-3 py-2" colSpan={7}>
-        <div className="flex items-center gap-3 flex-wrap">
-          <label className="flex items-center gap-1.5 text-xs cursor-pointer" style={{ color: f.active ? "var(--ink-soft)" : "var(--amber)" }}
-            title="An ex employee still counts toward historical team figures but can't sign in">
-            <input type="checkbox" checked={!f.active} onChange={(e) => setF((p) => ({ ...p, active: !e.target.checked }))} />
-            Ex employee
-          </label>
-          <button
-            disabled={!canAdd || saving}
-            onClick={async () => { setSaving(true); await onAdd(f); setF(blank); setSaving(false); }}
-            className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
-            style={{ background: canAdd ? "var(--primary)" : "var(--surface)", color: canAdd ? "#fff" : "var(--ink-faint)", border: "1px solid var(--border)" }}
-          ><Plus size={12} /> {saving ? "Adding..." : "Add Staff"}</button>
-          {!f.active && (
-            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
-              Name and team are enough — no email needed.
-            </span>
-          )}
+    <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--primary)" }}>
+      <div className="px-4 py-3 text-sm font-semibold" style={{ borderBottom: "1px solid var(--border)" }}>New staff member</div>
+      <div className="px-4 py-2">
+        {[
+          ["Full name", "full_name"], ["Also known as", "alt_name"], ["Team", "team"],
+          ["UIN", "uin"], ["Email", "email"],
+        ].map(([label, key]) => (
+          <div key={key} style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: "0.75rem", alignItems: "center" }} className="py-2">
+            <label className="text-xs" style={{ color: "var(--ink-faint)" }}>{label}</label>
+            <input className="sw-input sw-focus" value={f[key]} onChange={(e) => setF((p) => ({ ...p, [key]: e.target.value }))}
+              list={key === "team" ? "team-suggestions" : undefined} />
+          </div>
+        ))}
+        <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: "0.75rem", alignItems: "center" }} className="py-2">
+          <label className="text-xs" style={{ color: "var(--ink-faint)" }}>Sells</label>
+          <input type="checkbox" checked={f.sells} onChange={(e) => setF((p) => ({ ...p, sells: e.target.checked }))} />
         </div>
-      </td>
-    </tr>
+        <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: "0.75rem", alignItems: "center" }} className="py-2">
+          <label className="text-xs" style={{ color: "var(--ink-faint)" }}>Ex employee</label>
+          <label className="flex items-center gap-1.5 text-xs cursor-pointer" style={{ color: f.active ? "var(--ink-soft)" : "var(--amber)" }}>
+            <input type="checkbox" checked={!f.active} onChange={(e) => setF((p) => ({ ...p, active: !e.target.checked }))} />
+            Adding someone who's already left — name and team is enough
+          </label>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 px-4 py-3" style={{ borderTop: "1px solid var(--border)", background: "var(--surface-alt)" }}>
+        <button onClick={onCancel} className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg" style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>Cancel</button>
+        <button disabled={!canAdd || saving}
+          onClick={async () => { setSaving(true); await onAdd(f); setSaving(false); }}
+          className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
+          style={{ background: canAdd ? "var(--primary)" : "var(--surface)", color: canAdd ? "#fff" : "var(--ink-faint)" }}>
+          <Plus size={12} /> {saving ? "Adding..." : "Add staff"}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -4904,38 +4975,90 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
     return m;
   }, [profiles]);
 
+  const [selectedId, setSelectedId] = useState(null);
+  const [query, setQuery] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  const sorted = useMemo(
+    () => [...staff].sort((a, b) => (a.active === false) - (b.active === false) || String(a.full_name).localeCompare(String(b.full_name))),
+    [staff]
+  );
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return sorted;
+    return sorted.filter((s) => String(s.full_name).toLowerCase().includes(q) || String(s.team || "").toLowerCase().includes(q));
+  }, [sorted, query]);
+
+  const selected = staff.find((s) => s.id === selectedId) || null;
+
   return (
     <div>
       <datalist id="team-suggestions">{teamOptions.map((t) => <option key={t} value={t} />)}</datalist>
       <div className="flex items-center gap-2 mb-4">
         <Users size={18} style={{ color: "var(--primary)" }} />
-        <h2 className="sw-display text-lg font-bold">Staff & Roles</h2>
+        <h2 className="sw-display text-lg" style={{ fontWeight: 600 }}>Staff & Roles</h2>
         <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Office only · changes take effect immediately</span>
       </div>
+
       <AdminIssues staff={staff} netsuite={netsuite} aliases={aliases}
         onAddAlias={onAddAlias} onDeleteAlias={onDeleteAlias} plans={plans} />
 
-      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr style={{ background: "var(--surface-alt)" }}>
-                {["Name", "Also known as", "UIN", "Email", "Team", "Sells", "Pay Plan", "", "Role", "", "Password", "Status", ""].map((h, i) => (
-                  <th key={i} className="text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {staff.map((s) => (
-                <StaffRow key={s.id} s={s} profileForStaff={s.user_id ? profileByUserId[s.user_id] : null} onSaveStaff={onSaveStaff} onSaveProfile={onSaveProfile} onResetPassword={onResetPassword} onSetActive={onSetActive} plans={plans} />
-              ))}
-              <AddStaffRow onAdd={onAddStaff} />
-            </tbody>
-          </table>
+      <div style={{ display: "grid", gridTemplateColumns: "280px minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }}>
+
+        {/* LIST */}
+        <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="p-2" style={{ borderBottom: "1px solid var(--border)" }}>
+            <div className="relative">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: "var(--ink-faint)" }} />
+              <input className="sw-input sw-focus" style={{ paddingLeft: 26, height: 32, fontSize: 12.5 }}
+                placeholder="Search staff..." value={query} onChange={(e) => setQuery(e.target.value)} />
+            </div>
+          </div>
+          <div style={{ maxHeight: "calc(100vh - 320px)", overflowY: "auto" }}>
+            {filtered.map((s) => {
+              const sel = s.id === selectedId;
+              return (
+                <button key={s.id} onClick={() => { setSelectedId(s.id); setAdding(false); }}
+                  className="sw-focus w-full text-left px-3 py-2"
+                  style={{ background: sel ? "var(--primary-soft)" : "transparent", borderBottom: "1px solid var(--border)", opacity: s.active === false ? 0.55 : 1 }}>
+                  <div className="text-xs truncate" style={{ color: sel ? "var(--primary)" : "var(--ink)", fontWeight: sel ? 600 : 500 }}>
+                    {s.full_name}{s.active === false && <span style={{ color: "var(--ink-faint)", fontWeight: 400 }}> · ex</span>}
+                  </div>
+                  <div className="text-xs truncate" style={{ color: "var(--ink-faint)", fontSize: 10.5 }}>{s.team || "No team"}</div>
+                </button>
+              );
+            })}
+            {filtered.length === 0 && (
+              <div className="text-xs text-center py-8" style={{ color: "var(--ink-faint)" }}>No matches.</div>
+            )}
+          </div>
+          <button onClick={() => { setAdding(true); setSelectedId(null); }}
+            className="sw-focus w-full flex items-center justify-center gap-1.5 py-2 text-xs font-semibold"
+            style={{ color: "var(--primary)", borderTop: "1px solid var(--border)" }}>
+            <Plus size={13} /> Add staff
+          </button>
+        </div>
+
+        {/* DETAIL */}
+        <div>
+          {adding && <AddStaffForm onAdd={async (f) => { await onAddStaff(f); setAdding(false); }} onCancel={() => setAdding(false)} />}
+          {!adding && selected && (
+            <StaffDetailForm key={selected.id} s={selected}
+              profileForStaff={selected.user_id ? profileByUserId[selected.user_id] : null}
+              onSaveStaff={onSaveStaff} onSaveProfile={onSaveProfile}
+              onResetPassword={onResetPassword} onSetActive={onSetActive} plans={plans} />
+          )}
+          {!adding && !selected && (
+            <div className="rounded-xl p-10 text-center" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="text-sm" style={{ color: "var(--ink-faint)" }}>Select someone from the list to edit their details.</div>
+            </div>
+          )}
         </div>
       </div>
+
       <p className="text-xs mt-3" style={{ color: "var(--ink-faint)" }}>
-        Adding someone here creates their staff record (name, team, UIN, email) so they're ready to go. Their role/team dropdown appears once they've logged in for the first time — that's when their account links up automatically.
+        Adding someone creates their staff record so they're ready to go. Their role dropdown appears once
+        they've logged in for the first time — that's when their account links up automatically.
       </p>
     </div>
   );
@@ -7085,9 +7208,11 @@ function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSig
     try { return localStorage.getItem(SIDEBAR_KEY) === "collapsed"; } catch (_) { return false; }
   });
   const [mainOpen, setMainOpen] = useState(true);
-  const [submitOpen, setSubmitOpen] = useState(true);
-  const [dashOpen, setDashOpen] = useState(true);
-  const [settingsOpen, setSettingsOpen] = useState(true);
+  // Closed by default, but a section opens itself if you're already on one
+  // of its pages — refreshing shouldn't hide where you are.
+  const [submitOpen, setSubmitOpen] = useState(() => ["new", "landscapes", "quote"].includes(tab));
+  const [dashOpen, setDashOpen] = useState(() => ["breakdown", "distribution"].includes(tab));
+  const [settingsOpen, setSettingsOpen] = useState(() => ["admin", "statuses"].includes(tab));
   const isOffice = profile?.role === "office";
 
   const toggleCollapsed = () => {
