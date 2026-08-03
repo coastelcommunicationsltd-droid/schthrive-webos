@@ -3129,10 +3129,145 @@ function StatusSettingsView({ rows, onSave, newCount }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  COACH SETTINGS — office-only: scenarios and how calls are graded       */
+/* ---------------------------------------------------------------------- */
+
+function CoachScenarioRow({ s, onSave, onDelete }) {
+  const [f, setF] = useState({ label: s.label || "", blurb: s.blurb || "", persona: s.persona || "", active: s.active !== false });
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const dirty = f.label !== s.label || f.blurb !== (s.blurb || "") || f.persona !== s.persona || f.active !== (s.active !== false);
+
+  return (
+    <div style={{ borderTop: "1px solid var(--border)" }}>
+      <div className="flex items-center gap-2 px-3 py-2">
+        <button onClick={() => setOpen((o) => !o)} className="sw-focus flex items-center gap-2 flex-1 text-left">
+          <ChevronDown size={14} style={{ color: "var(--ink-faint)", transform: open ? "rotate(0)" : "rotate(-90deg)", transition: "transform .15s" }} />
+          <div className="min-w-0">
+            <div className="text-sm font-semibold truncate">{f.label || s.key}</div>
+            <div className="text-xs truncate" style={{ color: "var(--ink-faint)" }}>{f.blurb}</div>
+          </div>
+        </button>
+        <label className="flex items-center gap-1.5 text-xs shrink-0" style={{ color: "var(--ink-soft)" }}>
+          <input type="checkbox" checked={f.active} onChange={(e) => setF((p) => ({ ...p, active: e.target.checked }))} /> Active
+        </label>
+        <button disabled={!dirty || saving}
+          onClick={async () => { setSaving(true); await onSave(s.id, f); setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 1500); }}
+          className="sw-focus text-xs font-semibold px-2.5 py-1.5 rounded-lg shrink-0"
+          style={{ background: dirty ? "var(--primary)" : "var(--surface-alt)", color: dirty ? "#fff" : "var(--ink-faint)" }}>
+          {saving ? "..." : "Save"}
+        </button>
+        {saved && <CheckCircle2 size={14} style={{ color: "var(--green)" }} />}
+        <button onClick={() => onDelete(s.id, f.label)} className="sw-focus text-xs px-1.5 shrink-0" style={{ color: "var(--red)" }} title="Delete scenario">✕</button>
+      </div>
+      {open && (
+        <div className="px-3 pb-3" style={{ background: "var(--surface-alt)" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }} className="pt-2">
+            <div><label className="sw-label">Name shown on the picker</label>
+              <input className="sw-input sw-focus" value={f.label} onChange={(e) => setF((p) => ({ ...p, label: e.target.value }))} /></div>
+            <div><label className="sw-label">One-line description</label>
+              <input className="sw-input sw-focus" value={f.blurb} onChange={(e) => setF((p) => ({ ...p, blurb: e.target.value }))} /></div>
+          </div>
+          <label className="sw-label" style={{ marginTop: 8 }}>The character the AI plays</label>
+          <textarea className="sw-input sw-focus" rows={6} value={f.persona} onChange={(e) => setF((p) => ({ ...p, persona: e.target.value }))} />
+          <p className="text-xs mt-1" style={{ color: "var(--ink-faint)" }}>
+            Write it as instructions to the customer, in second person — "You are a business owner who...".
+            The more specific the personality and the more it resists, the more useful the practice.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CoachSettingsView({ scenarios, settings, onSaveScenario, onAddScenario, onDeleteScenario, onSaveSettings }) {
+  const [rubric, setRubric] = useState(settings.rubric || "");
+  const [method, setMethod] = useState(settings.what_good_looks_like || "");
+  const [savingCfg, setSavingCfg] = useState(false);
+  const [savedCfg, setSavedCfg] = useState(false);
+  const [newLabel, setNewLabel] = useState("");
+
+  useEffect(() => {
+    setRubric(settings.rubric || "");
+    setMethod(settings.what_good_looks_like || "");
+  }, [settings]);
+
+  const cfgDirty = rubric !== (settings.rubric || "") || method !== (settings.what_good_looks_like || "");
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-4">
+        <Headphones size={18} style={{ color: "var(--primary)" }} />
+        <h2 className="sw-display text-lg font-bold">Coach Setup</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Scenarios and how calls are graded</span>
+      </div>
+
+      <p className="text-sm mb-4 p-3 rounded-xl" style={{ background: "var(--primary-soft)", color: "var(--ink-soft)" }}>
+        This is what turns generic sales coaching into coaching on <b>your</b> method. The more specifically
+        you describe what good looks like here, the more useful the feedback — and the harsher it can
+        fairly be. Changes apply to the next practice call; nothing needs redeploying.
+      </p>
+
+      {/* What good looks like */}
+      <div className="rounded-2xl p-4 mb-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="flex items-center justify-between mb-2">
+          <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>WHAT GOOD LOOKS LIKE</div>
+          <div className="flex items-center gap-2">
+            {savedCfg && <CheckCircle2 size={15} style={{ color: "var(--green)" }} />}
+            <button disabled={!cfgDirty || savingCfg}
+              onClick={async () => { setSavingCfg(true); await onSaveSettings({ rubric, what_good_looks_like: method }); setSavingCfg(false); setSavedCfg(true); setTimeout(() => setSavedCfg(false), 1600); }}
+              className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg"
+              style={{ background: cfgDirty ? "var(--primary)" : "var(--surface-alt)", color: cfgDirty ? "#fff" : "var(--ink-faint)" }}>
+              {savingCfg ? "Saving..." : "Save"}
+            </button>
+          </div>
+        </div>
+        <p className="text-xs mb-2" style={{ color: "var(--ink-faint)" }}>
+          Your discovery framework, objection handling, tone, closing. This is judged against on every turn
+          and in the end-of-call review.
+        </p>
+        <textarea className="sw-input sw-focus" rows={12} value={method} onChange={(e) => setMethod(e.target.value)}
+          style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12 }} />
+
+        <div className="sw-display font-bold text-sm mt-4 mb-2" style={{ color: "var(--ink-soft)" }}>SCORING SCALE</div>
+        <p className="text-xs mb-2" style={{ color: "var(--ink-faint)" }}>
+          Keep the six keywords — the app colours the badges from them — but change what earns each one.
+        </p>
+        <textarea className="sw-input sw-focus" rows={9} value={rubric} onChange={(e) => setRubric(e.target.value)}
+          style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12 }} />
+      </div>
+
+      {/* Scenarios */}
+      <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="px-3 py-2 flex items-center justify-between" style={{ background: "var(--surface-alt)" }}>
+          <span className="text-xs font-bold uppercase" style={{ color: "var(--ink-soft)" }}>Scenarios</span>
+          <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{scenarios.length}</span>
+        </div>
+        {scenarios.map((s) => (
+          <CoachScenarioRow key={s.id} s={s} onSave={onSaveScenario} onDelete={onDeleteScenario} />
+        ))}
+        <div className="flex items-center gap-2 px-3 py-2" style={{ borderTop: "2px solid var(--border)", background: "var(--surface-alt)" }}>
+          <input className="sw-input sw-focus" style={{ maxWidth: 260 }} placeholder="New scenario name"
+            value={newLabel} onChange={(e) => setNewLabel(e.target.value)} />
+          <button disabled={!newLabel.trim()}
+            onClick={async () => { await onAddScenario(newLabel.trim()); setNewLabel(""); }}
+            className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
+            style={{ background: newLabel.trim() ? "var(--primary)" : "var(--surface)", color: newLabel.trim() ? "#fff" : "var(--ink-faint)", border: "1px solid var(--border)" }}>
+            <Plus size={12} /> Add scenario
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /*  SETTINGS — office-only, holds Statuses and Pay Plans                   */
 /* ---------------------------------------------------------------------- */
 
-function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSavePlan, onAddPlan, onDeletePlan }) {
+function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSavePlan, onAddPlan, onDeletePlan,
+                       coachScenarios, coachSettings, onSaveCoachScenario, onAddCoachScenario, onDeleteCoachScenario, onSaveCoachSettings }) {
   const [section, setSection] = useState("statuses");
   return (
     <div>
@@ -3140,6 +3275,7 @@ function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSave
         {[
           { key: "statuses", label: "Order Statuses", icon: Palette, badge: newCount },
           { key: "payplans", label: "Pay Plans", icon: Target, badge: 0 },
+          { key: "coach", label: "Coach Setup", icon: Headphones, badge: 0 },
         ].map((s) => (
           <button key={s.key} onClick={() => setSection(s.key)}
             className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5"
@@ -3151,9 +3287,13 @@ function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSave
           </button>
         ))}
       </div>
-      {section === "statuses"
-        ? <StatusSettingsView rows={statusRows} onSave={onSaveStatus} newCount={newCount} />
-        : <PayPlansView plans={plans} staff={staff} onSave={onSavePlan} onAdd={onAddPlan} onDelete={onDeletePlan} />}
+      {section === "statuses" && <StatusSettingsView rows={statusRows} onSave={onSaveStatus} newCount={newCount} />}
+      {section === "payplans" && <PayPlansView plans={plans} staff={staff} onSave={onSavePlan} onAdd={onAddPlan} onDelete={onDeletePlan} />}
+      {section === "coach" && (
+        <CoachSettingsView scenarios={coachScenarios} settings={coachSettings}
+          onSaveScenario={onSaveCoachScenario} onAddScenario={onAddCoachScenario}
+          onDeleteScenario={onDeleteCoachScenario} onSaveSettings={onSaveCoachSettings} />
+      )}
     </div>
   );
 }
@@ -3369,6 +3509,28 @@ function SalesCoachView() {
   const [typed, setTyped] = useState("");
   const [history, setHistory] = useState([]);
   const [openSession, setOpenSession] = useState(null);
+  const [scenarios, setScenarios] = useState([]);
+  const [coachCfg, setCoachCfg] = useState({ rubric: "", what_good_looks_like: "" });
+
+  // Scenarios and the grading rubric are managed in Settings, not in code.
+  useEffect(() => {
+    supabase.from("coach_scenarios").select("*").eq("active", true).order("sort_order")
+      .then(({ data }) => {
+        if (data && data.length) {
+          setScenarios(data);
+          setScenario((cur) => (data.some((s) => s.key === cur) ? cur : data[0].key));
+        } else {
+          setScenarios(COACH_SCENARIOS);
+        }
+      });
+    supabase.from("coach_settings").select("*").eq("id", 1).maybeSingle()
+      .then(({ data }) => { if (data) setCoachCfg(data); });
+  }, []);
+
+  const activeScenario = useMemo(
+    () => (scenarios || []).find((s) => s.key === scenario) || null,
+    [scenarios, scenario]
+  );
 
   const loadHistory = useCallback(async () => {
     const { data } = await supabase
@@ -3403,14 +3565,19 @@ function SalesCoachView() {
         Authorization: `Bearer ${token}`,
         apikey: SUPABASE_ANON_KEY,
       },
-      body: JSON.stringify({ mode, scenario, history }),
+      body: JSON.stringify({
+        mode, scenario, history,
+        persona: activeScenario?.persona || null,
+        rubric: coachCfg.rubric || null,
+        method: coachCfg.what_good_looks_like || null,
+      }),
     });
     if (!res.ok) {
       const t = await res.text();
       throw new Error(`Coach unavailable (${res.status}). ${t.slice(0, 160)}`);
     }
     return res.json();
-  }, [scenario]);
+  }, [scenario, activeScenario, coachCfg]);
 
   const say = useCallback((text) => {
     if (!speakBack || typeof window === "undefined" || !window.speechSynthesis) return;
@@ -3582,7 +3749,7 @@ function SalesCoachView() {
         <>
           <div className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--ink-soft)" }}>Choose a scenario</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "0.6rem" }} className="mb-4">
-            {COACH_SCENARIOS.map((s) => (
+            {(scenarios.length ? scenarios : COACH_SCENARIOS).map((s) => (
               <button key={s.key} onClick={() => setScenario(s.key)}
                 className="sw-focus rounded-xl p-3 text-left"
                 style={scenario === s.key
@@ -3606,7 +3773,7 @@ function SalesCoachView() {
           <div className="flex items-center gap-2 mb-3 flex-wrap">
             <span className="text-xs font-semibold px-2.5 py-1 rounded-full"
               style={{ background: "var(--primary-soft)", color: "var(--primary)" }}>
-              {COACH_SCENARIOS.find((s) => s.key === scenario)?.label}
+              {(scenarios.length ? scenarios : COACH_SCENARIOS).find((s) => s.key === scenario)?.label}
             </span>
             {status !== "ended" && (
               <span className="text-xs flex items-center gap-1" style={{ color: recogRef.current ? "var(--green)" : "var(--ink-faint)" }}>
@@ -3748,7 +3915,7 @@ function SalesCoachView() {
           <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
             {history.map((h) => {
               const isOpen = openSession === h.id;
-              const scen = COACH_SCENARIOS.find((s) => s.key === h.scenario);
+              const scen = (scenarios.length ? scenarios : COACH_SCENARIOS).find((s) => s.key === h.scenario);
               return (
                 <div key={h.id} style={{ borderTop: "1px solid var(--border)" }}>
                   <button onClick={() => setOpenSession(isOpen ? null : h.id)}
@@ -5242,6 +5409,8 @@ export default function App() {
   const [statusRows, setStatusRows] = useState([]);
   const [payPlans, setPayPlans] = useState([]);
   const [forecasts, setForecasts] = useState([]);
+  const [coachScenarios, setCoachScenarios] = useState([]);
+  const [coachSettings, setCoachSettings] = useState({ rubric: "", what_good_looks_like: "" });
   const [allProfiles, setAllProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("dashboard");
@@ -5310,6 +5479,49 @@ export default function App() {
     setForecasts(data || []);
   }, []);
   useEffect(() => { if (session?.user) loadForecasts(); }, [session, loadForecasts]);
+
+  // Sales Coach scenarios and grading, editable in Settings
+  const loadCoachCfg = useCallback(async () => {
+    const [{ data: sc }, { data: st }] = await Promise.all([
+      supabase.from("coach_scenarios").select("*").order("sort_order"),
+      supabase.from("coach_settings").select("*").eq("id", 1).maybeSingle(),
+    ]);
+    setCoachScenarios(sc || []);
+    if (st) setCoachSettings(st);
+  }, []);
+  useEffect(() => { if (session?.user) loadCoachCfg(); }, [session, loadCoachCfg]);
+
+  const saveCoachScenario = useCallback(async (id, patch) => {
+    const { error } = await supabase.from("coach_scenarios").update(patch).eq("id", id);
+    if (error) { setToast(`Couldn't save scenario: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    loadCoachCfg();
+  }, [loadCoachCfg]);
+
+  const addCoachScenario = useCallback(async (label) => {
+    const key = label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 40) || `scenario_${Date.now()}`;
+    const { error } = await supabase.from("coach_scenarios").insert({
+      key, label,
+      blurb: "Describe the situation in a few words",
+      persona: "You are ... (describe the customer the agent will be speaking to, in second person)",
+      sort_order: 900,
+    });
+    if (error) { setToast(`Couldn't add: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    loadCoachCfg();
+  }, [loadCoachCfg]);
+
+  const deleteCoachScenario = useCallback(async (id, label) => {
+    const { error } = await supabase.from("coach_scenarios").delete().eq("id", id);
+    if (error) { setToast(`Couldn't delete: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    setToast(`Scenario "${label}" deleted`); setTimeout(() => setToast(""), 2500);
+    loadCoachCfg();
+  }, [loadCoachCfg]);
+
+  const saveCoachSettings = useCallback(async (patch) => {
+    const { error } = await supabase.from("coach_settings").update(patch).eq("id", 1);
+    if (error) { setToast(`Couldn't save: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    setToast("Coach setup saved"); setTimeout(() => setToast(""), 2500);
+    loadCoachCfg();
+  }, [loadCoachCfg]);
 
   // Pay plans — monthly targets the KPI cards are measured against
   const loadPayPlans = useCallback(async () => {
@@ -5600,7 +5812,10 @@ export default function App() {
         {tab === "quote" && <QuoteBuilderView profile={profile} staff={staff} />}
         {tab === "coach" && <SalesCoachView />}
         {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onResetPassword={resetPassword} plans={payPlans} />}
-        {tab === "statuses" && profile?.role === "office" && <SettingsView statusRows={statusRows} onSaveStatus={saveStatusCfg} newCount={newStatusCount} plans={payPlans} staff={staff} onSavePlan={savePayPlan} onAddPlan={addPayPlan} onDeletePlan={deletePayPlan} />}
+        {tab === "statuses" && profile?.role === "office" && <SettingsView statusRows={statusRows} onSaveStatus={saveStatusCfg} newCount={newStatusCount} plans={payPlans} staff={staff} onSavePlan={savePayPlan} onAddPlan={addPayPlan} onDeletePlan={deletePayPlan}
+          coachScenarios={coachScenarios} coachSettings={coachSettings}
+          onSaveCoachScenario={saveCoachScenario} onAddCoachScenario={addCoachScenario}
+          onDeleteCoachScenario={deleteCoachScenario} onSaveCoachSettings={saveCoachSettings} />}
       </main>
 
       {selected && <OrderDrawer order={selected} ns={selected.document_number ? netsuite.find((n) => String(n.document_number) === String(selected.document_number)) : null} onClose={() => setSelected(null)} canEdit={canEditOrder(selected)} onSave={saveOrder} saving={savingEdit} onRemove={removeOrder} />}
