@@ -6,7 +6,7 @@ import {
   Loader2, Users, Eye, EyeOff, ArrowLeft, LogIn, KeyRound, Palette, MapPin,
   BarChart3, CalendarDays, Target, Headphones, Phone,
   ChevronDown, ClipboardList, LayoutDashboard, Settings as SettingsIcon,
-  PanelLeftClose, PanelLeftOpen,
+  PanelLeftClose, PanelLeftOpen, History,
 } from "lucide-react";
 
 /* ====================================================================== */
@@ -1852,9 +1852,20 @@ function TVBoard({ orders, netsuite }) {
     .filter((a) => a.gp > 0)
     .sort((a, b) => b.gp - a.gp).slice(0, 12);
 
-  // Pipeline still comes from Lilac submissions — that's where the
-  // Lilac Submitted / Processing / Billed / Closed Won stages live.
-  const statusCounts = STATUS_PIPELINE.map((s) => ({ status: s, n: (orders || []).filter((o) => o.order_status === s).length }));
+  // Order pipeline — NetSuite statuses, the same measure the Claimed page
+  // shows, rather than the old Lilac submission stages. Top six by volume
+  // so the panel stays readable on a wall.
+  const statusCounts = useMemo(() => {
+    const m = {};
+    ns.forEach((r) => {
+      const s = (r.order_status || "Unknown").trim() || "Unknown";
+      m[s] = (m[s] || 0) + 1;
+    });
+    return Object.keys(m)
+      .map((status) => ({ status, n: m[status] }))
+      .sort((a, b) => b.n - a.n)
+      .slice(0, 6);
+  }, [ns]);
 
   // Where we're selling — by postcode area, from the Lilac submissions
   const areaBoxes = useMemo(() => {
@@ -1935,14 +1946,17 @@ function TVBoard({ orders, netsuite }) {
               </div>
             ))}
           </div>
-          <div className="sw-display font-bold text-sm mb-2" style={{ color: "var(--ink-soft)" }}>ORDER PIPELINE</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "0.5rem" }}>
+          <div className="sw-display font-bold text-sm mb-2" style={{ color: "var(--ink-soft)" }}>ORDER PIPELINE <span style={{ color: "var(--ink-faint)", fontWeight: 400 }}>· NetSuite</span></div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "0.5rem" }}>
             {statusCounts.map((s) => (
               <div key={s.status} className="rounded-lg p-2 text-center" style={{ background: "var(--surface-alt)" }}>
                 <div className="sw-display font-bold text-xl">{s.n}</div>
-                <div className="text-xs" style={{ color: "var(--ink-soft)" }}>{s.status}</div>
+                <div className="text-xs leading-tight" style={{ color: "var(--ink-soft)" }} title={s.status}>{s.status}</div>
               </div>
             ))}
+            {statusCounts.length === 0 && (
+              <div className="text-xs text-center py-3" style={{ color: "var(--ink-faint)", gridColumn: "span 3" }}>No NetSuite data yet.</div>
+            )}
           </div>
         </div>
 
@@ -3224,6 +3238,18 @@ function SalesCoachView() {
   const [error, setError] = useState("");
   const [speakBack, setSpeakBack] = useState(true);
   const [typed, setTyped] = useState("");
+  const [history, setHistory] = useState([]);
+  const [openSession, setOpenSession] = useState(null);
+
+  const loadHistory = useCallback(async () => {
+    const { data } = await supabase
+      .from("coach_sessions")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(40);
+    setHistory(data || []);
+  }, []);
+  useEffect(() => { loadHistory(); }, [loadHistory]);
 
   const recogRef = useRef(null);
   const scrollRef = useRef(null);
@@ -3364,13 +3390,38 @@ function SalesCoachView() {
     if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.cancel();
     setStatus("thinking");
     try {
-      const r = await callCoach("summary", turnsRef.current.map(({ role, text }) => ({ role, text })));
+      const finalTurns = turnsRef.current;
+      const r = await callCoach("summary", finalTurns.map(({ role, text }) => ({ role, text })));
       setSummary(r);
+
+      // Keep the call so it can be looked back on — and so managers can
+      // see progress over time rather than one call in isolation.
+      const agentTurns = finalTurns.filter((t) => t.role === "agent" && t.score);
+      const tally = agentTurns.reduce((m, t) => { m[t.score] = (m[t.score] || 0) + 1; return m; }, {});
+      const pts = agentTurns.reduce((s, t) => s + (SCORE_POINTS[t.score] ?? 0), 0);
+      if (agentTurns.length > 0) {
+        const { data: sess } = await supabase.auth.getSession();
+        await supabase.from("coach_sessions").insert({
+          user_id: sess?.session?.user?.id || null,
+          user_name: sess?.session?.user?.email || null,
+          scenario,
+          grade: r.grade || null,
+          headline: r.headline || null,
+          strengths: r.strengths || [],
+          improvements: r.improvements || [],
+          moment: r.moment || null,
+          points: pts,
+          turn_count: agentTurns.length,
+          tally,
+          transcript: finalTurns,
+        });
+        loadHistory();
+      }
     } catch (e) {
       setError(e && e.message ? String(e.message) : String(e));
     }
     setStatus("ended");
-  }, [callCoach, stopListening]);
+  }, [callCoach, stopListening, scenario, loadHistory]);
 
   // ---- running score --------------------------------------------------
   const scored = turns.filter((t) => t.role === "agent" && t.score);
@@ -3555,6 +3606,612 @@ function SalesCoachView() {
           )}
         </div>
       )}
+
+      {/* Previous practice calls — yours, plus your team's if you manage one */}
+      {history.length > 0 && status === "idle" && (
+        <div className="mt-6">
+          <div className="flex items-center gap-2 mb-3">
+            <History size={16} style={{ color: "var(--ink-soft)" }} />
+            <h3 className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>PREVIOUS CALLS</h3>
+            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{history.length} kept</span>
+          </div>
+
+          <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            {history.map((h) => {
+              const isOpen = openSession === h.id;
+              const scen = COACH_SCENARIOS.find((s) => s.key === h.scenario);
+              return (
+                <div key={h.id} style={{ borderTop: "1px solid var(--border)" }}>
+                  <button onClick={() => setOpenSession(isOpen ? null : h.id)}
+                    className="sw-focus w-full flex items-center gap-3 px-4 py-3 text-left">
+                    <span className="sw-display font-bold text-lg rounded-lg px-2.5 py-0.5 shrink-0"
+                      style={{ background: "var(--primary-soft)", color: "var(--primary)" }}>{h.grade || "—"}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-semibold truncate">{h.headline || "Practice call"}</div>
+                      <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                        {scen?.label || h.scenario} · {fmtDate(h.created_at)} · {h.turn_count} turns
+                        {h.user_name ? ` · ${h.user_name}` : ""}
+                      </div>
+                    </div>
+                    <span className="sw-mono text-xs font-bold shrink-0 px-2 py-1 rounded-full"
+                      style={{ background: (h.points ?? 0) >= 0 ? "var(--green-soft)" : "var(--red-soft)", color: (h.points ?? 0) >= 0 ? "var(--green)" : "var(--red)" }}>
+                      {(h.points ?? 0) > 0 ? "+" : ""}{h.points ?? 0}
+                    </span>
+                    <ChevronDown size={15} className="shrink-0" style={{ color: "var(--ink-faint)", transform: isOpen ? "rotate(180deg)" : "none", transition: "transform .15s" }} />
+                  </button>
+
+                  {isOpen && (
+                    <div className="px-4 pb-4" style={{ background: "var(--surface-alt)" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "0.6rem" }} className="pt-3 mb-3">
+                        <div className="rounded-xl p-3" style={{ background: "var(--green-soft)" }}>
+                          <div className="text-xs font-bold uppercase mb-1.5" style={{ color: "var(--green)" }}>What worked</div>
+                          {(h.strengths || []).map((s, i) => <div key={i} className="text-xs mb-1">• {s}</div>)}
+                        </div>
+                        <div className="rounded-xl p-3" style={{ background: "var(--amber-soft)" }}>
+                          <div className="text-xs font-bold uppercase mb-1.5" style={{ color: "var(--amber)" }}>Work on this</div>
+                          {(h.improvements || []).map((s, i) => <div key={i} className="text-xs mb-1">• {s}</div>)}
+                        </div>
+                      </div>
+                      {h.moment && (
+                        <div className="rounded-xl p-3 mb-3" style={{ background: "var(--surface)" }}>
+                          <div className="text-xs font-bold uppercase mb-1" style={{ color: "var(--ink-soft)" }}>Turning point</div>
+                          <div className="text-xs">{h.moment}</div>
+                        </div>
+                      )}
+                      <div className="rounded-xl p-3" style={{ background: "var(--surface)", maxHeight: 260, overflowY: "auto" }}>
+                        <div className="text-xs font-bold uppercase mb-2" style={{ color: "var(--ink-soft)" }}>Transcript</div>
+                        {(h.transcript || []).map((t, i) => (
+                          <div key={i} className="flex items-start gap-2 mb-2">
+                            <span className="text-xs font-bold shrink-0 px-1.5 py-0.5 rounded"
+                              style={t.role === "agent" ? { background: "var(--primary-soft)", color: "var(--primary)" } : { background: "var(--surface-alt)", color: "var(--ink-soft)" }}>
+                              {t.role === "agent" ? "YOU" : "THEM"}
+                            </span>
+                            <div className="flex-1">
+                              <div className="text-xs">{t.text}</div>
+                              {t.score && (
+                                <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                                  <ScoreBadge score={t.score} />
+                                  {t.note && <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{t.note}</span>}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  FORECASTING                                                            */
+/* ---------------------------------------------------------------------- */
+
+// The pillars actually used on the forecast sheet.
+const PILLARS = [
+  "ACQ Cloud", "In Life Cloud", "Digital Voice",
+  "Future Mobile", "SME Mobile",
+  "BTNet", "Broadband", "Broadband Triple", "Ultra",
+  "DV4B", "BADR", "Net Security", "CCS", "Other",
+];
+
+// ...rolled up into the columns the summary reports on, matching the
+// existing forecast sheet (Cloud / Mobile / BTNet / BB / DV4B / Security).
+const PILLAR_GROUPS = ["Cloud", "Mobile", "BTNet", "Broadband", "DV4B", "Security"];
+const PILLAR_TO_GROUP = {
+  "ACQ Cloud": "Cloud", "In Life Cloud": "Cloud", "Digital Voice": "Cloud",
+  "Future Mobile": "Mobile", "SME Mobile": "Mobile",
+  "BTNet": "BTNet",
+  "Broadband": "Broadband", "Broadband Triple": "Broadband", "Ultra": "Broadband",
+  "DV4B": "DV4B",
+  "BADR": "Security", "Net Security": "Security", "CCS": "Security",
+};
+const groupForPillar = (p) => PILLAR_TO_GROUP[String(p || "").trim()] || "Other";
+
+const FORECAST_STATUSES = ["Open", "Won", "Lost", "Pushed"];
+const VISIT_MODES = ["Visit", "Teams", "Neither"];
+
+// The office double-count: 18% comes off the combined GP to give the
+// figure that actually lands.
+const DC_RATE = 0.18;
+
+function mondayOf(d) {
+  const x = new Date(d);
+  const day = (x.getDay() + 6) % 7;
+  x.setDate(x.getDate() - day);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+function isoDateStr(d) {
+  const x = new Date(d);
+  return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+}
+
+function ForecastCell({ value, money = true, bold, tone, highlight }) {
+  const empty = !value;
+  return (
+    <td className="px-2 py-1.5 sw-mono whitespace-nowrap"
+      style={{
+        fontSize: 12, textAlign: "center",
+        fontWeight: bold ? 700 : 500,
+        color: empty ? "var(--ink-faint)" : (tone || "var(--ink)"),
+        borderLeft: "1px solid var(--border)",
+        background: highlight ? "var(--primary-soft)" : undefined,
+      }}>
+      {money ? fmtGBP(value) : (value || 0).toLocaleString("en-GB")}
+    </td>
+  );
+}
+
+function ForecastView({ netsuite, profile, staff }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [week, setWeek] = useState(() => isoDateStr(mondayOf(new Date())));
+  const [view, setView] = useState("summary");   // summary | detail
+  const [teamFilter, setTeamFilter] = useState("All");
+  const [agentFilter, setAgentFilter] = useState("All");
+  const [adding, setAdding] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [toast, setToastLocal] = useState("");
+  const { sellers } = useStaff();
+
+  const blankRow = {
+    business_name: "", opp_id: "", pillar: "ACQ Cloud", agent_name: "", lead_gen_name: "",
+    sov: "", units: "", gp: "", forecast_date: isoDateStr(new Date()),
+    next_step: "", signpost_date: "", sr_raised: false, visit_or_teams: "Teams",
+    contract_out: false, proposal: "", previously_forecasted: false, notes: "",
+  };
+  const [draft, setDraft] = useState(blankRow);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase.from("forecasts").select("*").order("forecast_week", { ascending: false });
+    setRows(data || []);
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  // Weeks that actually have forecasts, newest first, plus this week
+  const weekOptions = useMemo(() => {
+    const s = new Set(rows.map((r) => r.forecast_week).filter(Boolean));
+    s.add(isoDateStr(mondayOf(new Date())));
+    return Array.from(s).sort().reverse();
+  }, [rows]);
+
+  const agentOptions = useMemo(() => {
+    const s = new Set();
+    rows.forEach((r) => { if (r.agent_name) s.add(r.agent_name); if (r.lead_gen_name) s.add(r.lead_gen_name); });
+    return Array.from(s).sort();
+  }, [rows]);
+
+  // Everything for the selected week, after filters
+  const weekRows = useMemo(() => rows.filter((r) => {
+    if (r.forecast_week !== week) return false;
+    if (teamFilter !== "All" && r.agent_team !== teamFilter && r.lead_gen_team !== teamFilter) return false;
+    if (agentFilter !== "All" && r.agent_name !== agentFilter && r.lead_gen_name !== agentFilter) return false;
+    return true;
+  }), [rows, week, teamFilter, agentFilter]);
+
+  // ---- Summary: one line per team, pillar SOV/units across ------------
+  const summary = useMemo(() => {
+    const byTeam = {};
+    const ensure = (t) => {
+      if (!byTeam[t]) {
+        byTeam[t] = { team: t, gp: 0, leads: {}, pillars: {} };
+        PILLAR_GROUPS.forEach((p) => { byTeam[t].pillars[p] = { sov: 0, units: 0 }; byTeam[t].leads[p] = 0; });
+        byTeam[t].pillars.Other = { sov: 0, units: 0 };
+        byTeam[t].leads.Other = 0;
+      }
+      return byTeam[t];
+    };
+
+    weekRows.forEach((r) => {
+      const team = r.agent_team || "Unassigned";
+      const t = ensure(team);
+      const g = groupForPillar(r.pillar);
+      t.gp += num(r.gp);
+      if (!t.pillars[g]) { t.pillars[g] = { sov: 0, units: 0 }; t.leads[g] = 0; }
+      t.pillars[g].sov += num(r.sov);
+      t.pillars[g].units += num(r.units);
+      // A "lead" is a forecast someone else generated for this agent
+      if (r.lead_gen_name) t.leads[g] += 1;
+    });
+
+    const teams = Object.keys(byTeam).map((k) => byTeam[k]).sort((a, b) => b.gp - a.gp);
+    const gpSum = teams.reduce((s, t) => s + t.gp, 0);
+    const dc = -(gpSum * DC_RATE);
+    return { teams, gpSum, dc, grand: gpSum + dc };
+  }, [weekRows]);
+
+  // ---- Accuracy: forecast vs what NetSuite actually shows -------------
+  const accuracy = useMemo(() => {
+    const matched = weekRows.filter((r) => r.matched_at);
+    const forecastGp = weekRows.reduce((s, r) => s + num(r.gp), 0);
+    const actualGp = matched.reduce((s, r) => s + num(r.actual_gp), 0);
+    const forecastSov = weekRows.reduce((s, r) => s + num(r.sov), 0);
+    const actualSov = matched.reduce((s, r) => s + num(r.actual_sov), 0);
+    return {
+      lines: weekRows.length,
+      landed: matched.length,
+      hitRate: weekRows.length ? (matched.length / weekRows.length) * 100 : 0,
+      forecastGp, actualGp, forecastSov, actualSov,
+      gpVariance: actualGp - forecastGp,
+    };
+  }, [weekRows]);
+
+  const addForecast = async () => {
+    if (!draft.business_name.trim() || !draft.agent_name) {
+      setToastLocal("Business name and agent are both needed.");
+      setTimeout(() => setToastLocal(""), 3000);
+      return;
+    }
+    setSaving(true);
+    const agentStaff = findStaff(sellers, draft.agent_name);
+    const lgStaff = draft.lead_gen_name ? findStaff(sellers, draft.lead_gen_name) : null;
+    const wk = new Date(week);
+    const { error } = await supabase.from("forecasts").insert({
+      forecast_week: week,
+      weeknum: weekNumber(wk),
+      agent_name: draft.agent_name,
+      agent_id: agentStaff?.user_id || null,
+      agent_team: agentStaff?.team || null,
+      lead_gen_name: draft.lead_gen_name || null,
+      lead_gen_id: lgStaff?.user_id || null,
+      lead_gen_team: lgStaff?.team || null,
+      forecast_date: draft.forecast_date || null,
+      pillar: draft.pillar,
+      business_name: draft.business_name.trim(),
+      opp_id: draft.opp_id.trim() || null,
+      sov: parseFloat(draft.sov) || 0,
+      units: parseFloat(draft.units) || 0,
+      gp: parseFloat(draft.gp) || 0,
+      previously_forecasted: draft.previously_forecasted,
+      next_step: draft.next_step || null,
+      signpost_date: draft.signpost_date || null,
+      sr_raised: draft.sr_raised,
+      visit_or_teams: draft.visit_or_teams,
+      contract_out: draft.contract_out,
+      proposal: draft.proposal || null,
+      notes: draft.notes || null,
+    });
+    setSaving(false);
+    if (error) {
+      setToastLocal(`Couldn't save: ${error.message}`);
+      setTimeout(() => setToastLocal(""), 5000);
+      return;
+    }
+    setDraft(blankRow);
+    setAdding(false);
+    load();
+  };
+
+  const runMatch = async () => {
+    setSaving(true);
+    const { data, error } = await supabase.rpc("match_forecasts");
+    setSaving(false);
+    setToastLocal(error ? `Match failed: ${error.message}` : `Matched ${data?.total ?? 0} forecast${data?.total === 1 ? "" : "s"} against NetSuite`);
+    setTimeout(() => setToastLocal(""), 4000);
+    load();
+  };
+
+  const updateRow = async (id, patch) => {
+    const { error } = await supabase.from("forecasts").update(patch).eq("id", id);
+    if (error) { setToastLocal(`Couldn't update: ${error.message}`); setTimeout(() => setToastLocal(""), 4000); return; }
+    load();
+  };
+
+  const weekLabel = (w) => {
+    const d = new Date(w);
+    const isThis = w === isoDateStr(mondayOf(new Date()));
+    return `w/c ${d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}${isThis ? " (this week)" : ""}`;
+  };
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <TrendingUp size={18} style={{ color: "var(--primary)" }} />
+        <h2 className="sw-display text-lg font-bold">Forecasting</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+          What we expect to land · cross-referenced against NetSuite
+        </span>
+        <div className="ml-auto flex items-center gap-2">
+          <select className="sw-input sw-focus" style={{ width: 190 }} value={week} onChange={(e) => setWeek(e.target.value)}>
+            {weekOptions.map((w) => <option key={w} value={w}>{weekLabel(w)}</option>)}
+          </select>
+          <button onClick={runMatch} disabled={saving}
+            className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold"
+            style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>
+            {saving ? "..." : "Re-check vs NetSuite"}
+          </button>
+          <button onClick={() => setAdding((a) => !a)}
+            className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold text-white flex items-center gap-1"
+            style={{ background: "var(--primary)" }}>
+            <Plus size={13} /> Add forecast
+          </button>
+        </div>
+      </div>
+
+      {toast && (
+        <div className="rounded-xl p-2.5 mb-3 text-xs font-semibold"
+          style={{ background: toast.startsWith("Couldn't") || toast.startsWith("Match failed") ? "var(--red-soft)" : "var(--green-soft)", color: toast.startsWith("Couldn't") || toast.startsWith("Match failed") ? "var(--red)" : "var(--green)" }}>
+          {toast}
+        </div>
+      )}
+
+      {/* Add form */}
+      {adding && (
+        <div className="rounded-2xl p-4 mb-4" style={{ background: "var(--surface)", border: "1px solid var(--primary)" }}>
+          <div className="sw-display font-bold text-sm mb-3">New forecast line — {weekLabel(week)}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "0.6rem" }}>
+            <div><label className="sw-label">Business name *</label>
+              <input className="sw-input sw-focus" value={draft.business_name} onChange={(e) => setDraft((d) => ({ ...d, business_name: e.target.value }))} /></div>
+            <div><label className="sw-label">Agent *</label>
+              <select className="sw-input sw-focus" value={draft.agent_name} onChange={(e) => setDraft((d) => ({ ...d, agent_name: e.target.value }))}>
+                <option value="">Select...</option>
+                {sellers.map((s) => <option key={s.full_name} value={s.full_name}>{s.full_name}</option>)}
+              </select></div>
+            <div><label className="sw-label">Lead Gen</label>
+              <select className="sw-input sw-focus" value={draft.lead_gen_name} onChange={(e) => setDraft((d) => ({ ...d, lead_gen_name: e.target.value }))}>
+                <option value="">None</option>
+                {sellers.map((s) => <option key={s.full_name} value={s.full_name}>{s.full_name}</option>)}
+              </select></div>
+            <div><label className="sw-label">Pillar</label>
+              <select className="sw-input sw-focus" value={draft.pillar} onChange={(e) => setDraft((d) => ({ ...d, pillar: e.target.value }))}>
+                {PILLARS.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select></div>
+            <div><label className="sw-label">SOV (£)</label>
+              <input className="sw-input sw-focus" value={draft.sov} onChange={(e) => setDraft((d) => ({ ...d, sov: e.target.value }))} /></div>
+            <div><label className="sw-label">GP (£)</label>
+              <input className="sw-input sw-focus" value={draft.gp} onChange={(e) => setDraft((d) => ({ ...d, gp: e.target.value }))} /></div>
+            <div><label className="sw-label">Units</label>
+              <input className="sw-input sw-focus" value={draft.units} onChange={(e) => setDraft((d) => ({ ...d, units: e.target.value }))} /></div>
+            <div><label className="sw-label">Opp ID</label>
+              <input className="sw-input sw-focus" value={draft.opp_id} onChange={(e) => setDraft((d) => ({ ...d, opp_id: e.target.value }))} placeholder="if known" /></div>
+            <div><label className="sw-label">Expected date</label>
+              <input className="sw-input sw-focus" type="date" value={draft.forecast_date} onChange={(e) => setDraft((d) => ({ ...d, forecast_date: e.target.value }))} /></div>
+            <div><label className="sw-label">Signpost date</label>
+              <input className="sw-input sw-focus" type="date" value={draft.signpost_date} onChange={(e) => setDraft((d) => ({ ...d, signpost_date: e.target.value }))} /></div>
+            <div><label className="sw-label">Visit or Teams</label>
+              <select className="sw-input sw-focus" value={draft.visit_or_teams} onChange={(e) => setDraft((d) => ({ ...d, visit_or_teams: e.target.value }))}>
+                {VISIT_MODES.map((v) => <option key={v} value={v}>{v}</option>)}
+              </select></div>
+            <div><label className="sw-label">Next step</label>
+              <input className="sw-input sw-focus" value={draft.next_step} onChange={(e) => setDraft((d) => ({ ...d, next_step: e.target.value }))} /></div>
+            <div><label className="sw-label">Proposal</label>
+              <input className="sw-input sw-focus" value={draft.proposal} onChange={(e) => setDraft((d) => ({ ...d, proposal: e.target.value }))} /></div>
+            <div style={{ gridColumn: "span 2" }}><label className="sw-label">Notes</label>
+              <input className="sw-input sw-focus" value={draft.notes} onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))} /></div>
+          </div>
+          <div className="flex items-center gap-4 mt-3 flex-wrap">
+            <label className="flex items-center gap-1.5 text-xs cursor-pointer"><input type="checkbox" checked={draft.previously_forecasted} onChange={(e) => setDraft((d) => ({ ...d, previously_forecasted: e.target.checked }))} /> Previously forecasted</label>
+            <label className="flex items-center gap-1.5 text-xs cursor-pointer"><input type="checkbox" checked={draft.sr_raised} onChange={(e) => setDraft((d) => ({ ...d, sr_raised: e.target.checked }))} /> SR raised</label>
+            <label className="flex items-center gap-1.5 text-xs cursor-pointer"><input type="checkbox" checked={draft.contract_out} onChange={(e) => setDraft((d) => ({ ...d, contract_out: e.target.checked }))} /> Contract out</label>
+            <div className="ml-auto flex gap-2">
+              <button onClick={() => { setAdding(false); setDraft(blankRow); }} className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold" style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>Cancel</button>
+              <button onClick={addForecast} disabled={saving} className="sw-focus px-4 py-2 rounded-lg text-xs font-semibold text-white" style={{ background: "var(--primary)" }}>{saving ? "Saving..." : "Add forecast"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Headline accuracy */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "0.75rem" }} className="mb-4">
+        <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast GP</div>
+          <div className="sw-display font-bold text-xl">{fmtGBP(summary.gpSum)}</div>
+          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{accuracy.lines} lines</div>
+        </div>
+        <div className="rounded-2xl p-3.5" style={{ background: "var(--primary-soft)", border: "1px solid var(--primary)" }}>
+          <div className="text-xs font-semibold uppercase" style={{ color: "var(--primary)" }}>After DC (−18%)</div>
+          <div className="sw-display font-bold text-xl" style={{ color: "var(--primary)" }}>{fmtGBP(summary.grand)}</div>
+          <div className="text-xs" style={{ color: "var(--ink-soft)" }}>DC {fmtGBP(summary.dc)}</div>
+        </div>
+        <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Landed</div>
+          <div className="sw-display font-bold text-xl" style={{ color: accuracy.hitRate >= 70 ? "var(--green)" : accuracy.hitRate >= 40 ? "var(--amber)" : "var(--red)" }}>
+            {accuracy.landed}/{accuracy.lines}
+          </div>
+          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{accuracy.hitRate.toFixed(0)}% hit rate</div>
+        </div>
+        <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Actual GP</div>
+          <div className="sw-display font-bold text-xl">{fmtGBP(accuracy.actualGp)}</div>
+          <div className="text-xs" style={{ color: accuracy.gpVariance >= 0 ? "var(--green)" : "var(--red)" }}>
+            {accuracy.gpVariance >= 0 ? "+" : ""}{fmtGBP(accuracy.gpVariance)} vs forecast
+          </div>
+        </div>
+        <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast SOV</div>
+          <div className="sw-display font-bold text-xl">{fmtGBP(accuracy.forecastSov)}</div>
+          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>actual {fmtGBP(accuracy.actualSov)}</div>
+        </div>
+      </div>
+
+      {/* View + filters */}
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        {[["summary", "Summary"], ["detail", "All forecasts"]].map(([k, lbl]) => (
+          <button key={k} onClick={() => setView(k)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold"
+            style={view === k ? { background: "var(--primary)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>
+            {lbl}
+          </button>
+        ))}
+        <span className="mx-1" style={{ width: 1, height: 20, background: "var(--border)" }} />
+        <button onClick={() => setTeamFilter("All")} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold"
+          style={teamFilter === "All" ? { background: "var(--ink)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>All teams</button>
+        {SELLING_TEAMS.map((t) => (
+          <button key={t} onClick={() => setTeamFilter(t)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold"
+            style={teamFilter === t ? { background: "var(--ink)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>{t}</button>
+        ))}
+        <select className="sw-input sw-focus" style={{ width: 180 }} value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)}>
+          <option value="All">All agents</option>
+          {agentOptions.map((a) => <option key={a} value={a}>{a}</option>)}
+        </select>
+      </div>
+
+      {/* SUMMARY */}
+      {view === "summary" && (
+        <>
+          <div className="rounded-2xl overflow-hidden mb-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="overflow-x-auto">
+              <table className="w-full" style={{ borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: "var(--primary)" }}>
+                    <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "#fff", position: "sticky", left: 0, background: "var(--primary)" }}>Team</th>
+                    <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>GP</th>
+                    {PILLAR_GROUPS.map((p) => (
+                      <React.Fragment key={p}>
+                        <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff" }}>{p} SOV</th>
+                        <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "rgba(255,255,255,0.7)" }}>Units</th>
+                      </React.Fragment>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {summary.teams.map((t) => (
+                    <tr key={t.team} style={{ borderTop: "1px solid var(--border)" }}>
+                      <td className="px-3 py-1.5 text-sm font-semibold" style={{ position: "sticky", left: 0, background: "var(--surface)" }}>{t.team}</td>
+                      <ForecastCell value={t.gp} bold highlight />
+                      {PILLAR_GROUPS.map((p) => (
+                        <React.Fragment key={p}>
+                          <ForecastCell value={(t.pillars[p] || {}).sov || 0} />
+                          <ForecastCell value={(t.pillars[p] || {}).units || 0} money={false} />
+                        </React.Fragment>
+                      ))}
+                    </tr>
+                  ))}
+                  {/* DC line — 18% off the combined GP */}
+                  <tr style={{ borderTop: "2px solid var(--border)", background: "var(--red-soft)" }}>
+                    <td className="px-3 py-1.5 text-sm font-semibold" style={{ position: "sticky", left: 0, background: "var(--red-soft)", color: "var(--red)" }}>
+                      DC <span className="text-xs" style={{ fontWeight: 400 }}>(−18%)</span>
+                    </td>
+                    <ForecastCell value={summary.dc} bold tone="var(--red)" highlight />
+                    {PILLAR_GROUPS.map((p) => (
+                      <React.Fragment key={p}><ForecastCell value={0} /><ForecastCell value={0} money={false} /></React.Fragment>
+                    ))}
+                  </tr>
+                  <tr style={{ borderTop: "2px solid var(--ink)", background: "var(--ink)" }}>
+                    <td className="px-3 py-2 text-sm font-bold" style={{ position: "sticky", left: 0, background: "var(--ink)", color: "#fff" }}>Grand Total</td>
+                    <td className="px-2 py-2 sw-mono font-bold text-center" style={{ fontSize: 13, color: "#fff", background: "#3B1370" }}>{fmtGBP(summary.grand)}</td>
+                    {PILLAR_GROUPS.map((p) => {
+                      const sov = summary.teams.reduce((s, t) => s + ((t.pillars[p] || {}).sov || 0), 0);
+                      const units = summary.teams.reduce((s, t) => s + ((t.pillars[p] || {}).units || 0), 0);
+                      return (
+                        <React.Fragment key={p}>
+                          <td className="px-2 py-2 sw-mono font-bold text-center" style={{ fontSize: 12, color: "#fff", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>{fmtGBP(sov)}</td>
+                          <td className="px-2 py-2 sw-mono font-bold text-center" style={{ fontSize: 12, color: "rgba(255,255,255,0.75)", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>{units.toLocaleString("en-GB")}</td>
+                        </React.Fragment>
+                      );
+                    })}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Leads generated, by pillar */}
+          <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="overflow-x-auto">
+              <table className="w-full" style={{ borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: "var(--surface-alt)" }}>
+                    <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "var(--ink-soft)" }}>Leads passed in</th>
+                    {PILLAR_GROUPS.map((p) => (
+                      <th key={p} className="px-2 py-2 text-center text-xs font-bold" style={{ color: "var(--ink-soft)" }}>{p}</th>
+                    ))}
+                    <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "var(--ink-soft)" }}>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {summary.teams.map((t) => {
+                    const total = Object.keys(t.leads).reduce((s, p) => s + (t.leads[p] || 0), 0);
+                    return (
+                      <tr key={t.team} style={{ borderTop: "1px solid var(--border)" }}>
+                        <td className="px-3 py-1.5 text-sm font-semibold">{t.team}</td>
+                        {PILLAR_GROUPS.map((p) => <ForecastCell key={p} value={t.leads[p] || 0} money={false} />)}
+                        <ForecastCell value={total} money={false} bold highlight />
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <p className="text-xs mt-3" style={{ color: "var(--ink-faint)" }}>
+            A "lead passed in" counts any forecast line where a Lead Gen is named — so the person who
+            sourced it gets credit alongside the closer.
+          </p>
+        </>
+      )}
+
+      {/* DETAIL */}
+      {view === "detail" && (
+        <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm" style={{ borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: "var(--surface-alt)" }}>
+                  {["Business", "Agent", "Lead Gen", "Pillar", "SOV", "GP", "Units", "Expected", "Next step", "Status", "vs NetSuite"].map((h) => (
+                    <th key={h} className="text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide whitespace-nowrap" style={{ color: "var(--ink-soft)" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {weekRows.map((r) => {
+                  const gpDiff = r.matched_at ? num(r.actual_gp) - num(r.gp) : null;
+                  return (
+                    <tr key={r.id} style={{ borderTop: "1px solid var(--border)" }}>
+                      <td className="px-3 py-2">
+                        <div className="font-medium">{r.business_name}</div>
+                        {r.opp_id && <div className="text-xs sw-mono" style={{ color: "var(--ink-faint)" }}>{r.opp_id}</div>}
+                      </td>
+                      <td className="px-3 py-2 text-xs">{r.agent_name}{r.agent_team ? <span style={{ color: "var(--ink-faint)" }}> · {r.agent_team}</span> : null}</td>
+                      <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-soft)" }}>{r.lead_gen_name || "—"}</td>
+                      <td className="px-3 py-2 text-xs">{r.pillar}</td>
+                      <td className="px-3 py-2 sw-mono text-xs">{fmtGBP(r.sov)}</td>
+                      <td className="px-3 py-2 sw-mono text-xs font-semibold">{fmtGBP(r.gp)}</td>
+                      <td className="px-3 py-2 sw-mono text-xs">{num(r.units) || "—"}</td>
+                      <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-faint)" }}>{r.forecast_date ? fmtDate(r.forecast_date) : "—"}</td>
+                      <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-soft)" }}>{r.next_step || "—"}</td>
+                      <td className="px-3 py-2">
+                        <select className="sw-input sw-focus" style={{ width: 96, fontSize: 11, padding: "4px 6px" }}
+                          value={r.status || "Open"} onChange={(e) => updateRow(r.id, { status: e.target.value })}>
+                          {FORECAST_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                      </td>
+                      <td className="px-3 py-2">
+                        {r.matched_at ? (
+                          <div>
+                            <div className="text-xs font-semibold" style={{ color: "var(--green)" }}>
+                              Landed · {fmtGBP(r.actual_gp)}
+                            </div>
+                            <div className="text-xs" style={{ color: Math.abs(gpDiff || 0) < 1 ? "var(--ink-faint)" : (gpDiff || 0) < 0 ? "var(--red)" : "var(--amber)" }}>
+                              {Math.abs(gpDiff || 0) < 1 ? "matches forecast" : `${(gpDiff || 0) > 0 ? "+" : ""}${fmtGBP(gpDiff || 0)} vs forecast`}
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-xs" style={{ color: "var(--ink-faint)" }}>not seen yet</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {weekRows.length === 0 && (
+                  <tr><td colSpan={11} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                    {loading ? "Loading..." : "No forecasts for this week yet."}
+                  </td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -3618,7 +4275,7 @@ function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSig
     });
   };
 
-  const dashboardsActive = ["daybyday", "breakdown"].includes(tab);
+  const dashboardsActive = ["daybyday", "breakdown", "forecast"].includes(tab);
   const settingsActive = ["admin", "statuses"].includes(tab);
 
   return (
@@ -3644,6 +4301,7 @@ function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSig
         <SidebarSection icon={LayoutDashboard} label="Dashboards" collapsed={collapsed} open={dashOpen} onToggle={() => setDashOpen((o) => !o)} childActive={dashboardsActive}>
           <SidebarItem icon={CalendarDays} label="Day by Day" collapsed={collapsed} active={tab === "daybyday"} indent onClick={() => setTab("daybyday")} />
           <SidebarItem icon={BarChart3} label="Sales Breakdown" collapsed={collapsed} active={tab === "breakdown"} indent onClick={() => setTab("breakdown")} />
+          <SidebarItem icon={TrendingUp} label="Forecasting" collapsed={collapsed} active={tab === "forecast"} indent onClick={() => setTab("forecast")} />
           <SidebarItem icon={Radio} label="TV Mode" collapsed={collapsed} active={false} indent href="#tv" onClick={() => setTimeout(() => window.location.reload(), 0)} />
         </SidebarSection>
 
@@ -4012,7 +4670,7 @@ export default function App() {
         onChangePassword={() => setChangingPassword(true)} onSignOut={signOut} />
 
       <div style={{ flex: 1, minWidth: 0 }}>
-      <main className={`p-6 mx-auto ${tab === "breakdown" || tab === "daybyday" ? "max-w-none" : "max-w-6xl"}`}>
+      <main className={`p-6 mx-auto ${["breakdown", "daybyday", "forecast"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
         {submitted && (
           <div className="sw-rise rounded-2xl p-4 mb-5 flex items-center justify-between gap-4" style={{ background: "var(--green-soft)", border: "1px solid var(--green)" }}>
             <div className="flex items-center gap-3">
@@ -4034,6 +4692,7 @@ export default function App() {
         {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} />}
         {tab === "daybyday" && <DayByDayView orders={orders} />}
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuite} />}
+        {tab === "forecast" && <ForecastView netsuite={netsuite} profile={profile} staff={staff} />}
         {tab === "coach" && <SalesCoachView />}
         {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onResetPassword={resetPassword} plans={payPlans} />}
         {tab === "statuses" && profile?.role === "office" && <SettingsView statusRows={statusRows} onSaveStatus={saveStatusCfg} newCount={newStatusCount} plans={payPlans} staff={staff} onSavePlan={savePayPlan} onAddPlan={addPayPlan} onDeletePlan={deletePayPlan} />}
