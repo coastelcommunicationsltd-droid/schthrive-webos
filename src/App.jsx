@@ -1394,6 +1394,10 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         )}
       </div>
 
+      {/* List on the left, analytics pinned on the right so they stay in
+          view while the order list scrolls. */}
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.9fr) minmax(320px, 1fr)", gap: "0.75rem", alignItems: "start" }}>
+
       <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -1488,11 +1492,11 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
             </tbody>
           </table>
         </div>
+        <div className="flex items-center gap-1.5 px-4 py-2.5 text-xs" style={{ color: "var(--ink-faint)", borderTop: "1px solid var(--border)" }}><RefreshCw size={11} /> Live — updates as orders change</div>
       </div>
-      <div className="flex items-center gap-1.5 mt-3 mb-5 text-xs" style={{ color: "var(--ink-faint)" }}><RefreshCw size={11} /> Live — updates as orders change</div>
 
-      {/* ---- Trends and quality ---------------------------------------- */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: "0.75rem" }} className="mb-3">
+      {/* Analytics column — sticks while the list scrolls */}
+      <div style={{ position: "sticky", top: 12, maxHeight: "calc(100vh - 24px)", overflowY: "auto" }} className="flex flex-col gap-3 pr-0.5">
         <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <div className="flex items-baseline justify-between mb-3">
             <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>GP — LAST SIX MONTHS</div>
@@ -1521,7 +1525,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "0.75rem" }} className="mb-3">
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
         <RateCard label="Cancellation rate" pct={analytics.cancelRate} count={analytics.cancelled} of={analytics.nsTotal}
           colour={analytics.cancelRate > 15 ? "var(--red)" : analytics.cancelRate > 8 ? "var(--amber)" : "var(--green)"}
           hint="NetSuite orders with a cease, cancel, lost or reject status" />
@@ -1570,6 +1574,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
             })}
           </div>
         )}
+      </div>
       </div>
     </div>
   );
@@ -3087,8 +3092,9 @@ function DayByDayView({ orders }) {
   const [team, setTeam] = useState("All");
   const [agent, setAgent] = useState("All");
   const [product, setProduct] = useState(null);
-  const [byTeam, setByTeam] = useState(true);      // split the table by team
-  const [byProduct, setByProduct] = useState(false); // show sub-products
+  const [open, setOpen] = useState({});          // any row key -> expanded
+
+  const toggle = (k) => setOpen((o) => ({ ...o, [k]: !o[k] }));
 
   const agentOptions = useMemo(() => {
     const s = new Set();
@@ -3106,87 +3112,88 @@ function DayByDayView({ orders }) {
 
   const tagsOf = (o) => String(o.item_name_grouped || o.product_group_2 || "")
     .split(/\s*\+\s*/).map((t) => t.trim()).filter(Boolean);
-
   const groupOfTag = (tag) => {
     const g = DBD_GROUPS.find((x) => x.tags.includes(tag));
     return g ? g.key : null;
   };
 
-  // Per team: GP plus each group's SOV, split Mon–Fri, with the sub-product
-  // breakdown carried alongside so it can be revealed on demand.
+  const blank = () => ({ week: [0, 0, 0, 0, 0], month: 0 });
+  const addTo = useCallback((bucket, d, v) => {
+    const dt = new Date(d);
+    bucket.month += v;
+    if (dt >= wkStart) {
+      const i = (dt.getDay() + 6) % 7;
+      if (i >= 0 && i < 5) bucket.week[i] += v;
+    }
+  }, [wkStart]);
+
   const data = useMemo(() => {
-    const blank = () => ({ week: [0, 0, 0, 0, 0], month: 0 });
     const teams = {};
     const ensure = (t) => {
       if (!teams[t]) {
-        teams[t] = { team: t, gp: blank(), groups: {}, subs: {} };
+        teams[t] = { team: t, gp: blank(), totalSov: blank(), groups: {}, subs: {} };
         DBD_GROUPS.forEach((g) => { teams[t].groups[g.key] = blank(); teams[t].subs[g.key] = {}; });
       }
       return teams[t];
-    };
-    const add = (bucket, d, v) => {
-      const dt = new Date(d);
-      bucket.month += v;
-      if (dt >= wkStart) {
-        const i = (dt.getDay() + 6) % 7;
-        if (i >= 0 && i < 5) bucket.week[i] += v;
-      }
     };
 
     filtered.forEach((o) => {
       const t = ensure(o.closer_team || "Unassigned");
       const d = o.submission_date;
-      add(t.gp, d, num(o.gp_office != null ? o.gp_office : o.sales_agent_gp));
+      addTo(t.gp, d, num(o.gp_office != null ? o.gp_office : o.sales_agent_gp));
 
-      const tags = tagsOf(o);
       const sov = num(o.contract_value);
-      // Split the deal's SOV evenly across the products on it, so a
-      // multi-product order isn't counted in full against each one.
-      const scored = tags.filter((tg) => groupOfTag(tg));
-      if (!scored.length) return;
-      const share = sov / scored.length;
-      scored.forEach((tg) => {
+      addTo(t.totalSov, d, sov);
+
+      const tags = tagsOf(o).filter((tg) => groupOfTag(tg));
+      if (!tags.length) return;
+      // Split a multi-product deal's SOV evenly so nothing is double counted
+      const share = sov / tags.length;
+      tags.forEach((tg) => {
         const gk = groupOfTag(tg);
         if (product && product !== gk) return;
-        add(t.groups[gk], d, share);
+        addTo(t.groups[gk], d, share);
         if (!t.subs[gk][tg]) t.subs[gk][tg] = blank();
-        add(t.subs[gk][tg], d, share);
+        addTo(t.subs[gk][tg], d, share);
       });
     });
 
     return Object.keys(teams).map((k) => teams[k]).sort((a, b) => b.gp.month - a.gp.month);
-  }, [filtered, wkStart, product]);
+  }, [filtered, addTo, product]);
 
-  const chartItems = useMemo(() => DBD_GROUPS.map((g) => ({
-    name: g.label,
-    value: data.reduce((s, t) => s + t.groups[g.key].month, 0),
-  })).filter((i) => i.value > 0), [data]);
-
-  const totalsRow = useMemo(() => {
-    const blank = () => ({ week: [0, 0, 0, 0, 0], month: 0 });
-    const out = { gp: blank(), groups: {}, subs: {} };
+  const totals = useMemo(() => {
+    const out = { gp: blank(), totalSov: blank(), groups: {}, subs: {} };
     DBD_GROUPS.forEach((g) => { out.groups[g.key] = blank(); out.subs[g.key] = {}; });
+    const merge = (dst, src) => {
+      dst.month += src.month;
+      src.week.forEach((v, i) => { dst.week[i] += v; });
+    };
     data.forEach((t) => {
-      out.gp.month += t.gp.month;
-      t.gp.week.forEach((v, i) => { out.gp.week[i] += v; });
+      merge(out.gp, t.gp);
+      merge(out.totalSov, t.totalSov);
       DBD_GROUPS.forEach((g) => {
-        out.groups[g.key].month += t.groups[g.key].month;
-        t.groups[g.key].week.forEach((v, i) => { out.groups[g.key].week[i] += v; });
+        merge(out.groups[g.key], t.groups[g.key]);
         Object.keys(t.subs[g.key]).forEach((s) => {
           if (!out.subs[g.key][s]) out.subs[g.key][s] = blank();
-          out.subs[g.key][s].month += t.subs[g.key][s].month;
-          t.subs[g.key][s].week.forEach((v, i) => { out.subs[g.key][s].week[i] += v; });
+          merge(out.subs[g.key][s], t.subs[g.key][s]);
         });
       });
     });
     return out;
   }, [data]);
 
-  const Row = ({ label, bucket, bold, tone, indent, onToggle, isOpen, accent }) => {
+  const chartItems = useMemo(() => DBD_GROUPS.map((g) => ({
+    name: g.label,
+    value: totals.groups[g.key].month,
+  })).filter((i) => i.value > 0), [totals]);
+
+  /* One line of the table. `onToggle` makes it clickable. */
+  const Row = ({ label, bucket, bold, tone, depth = 0, onToggle, isOpen, accent }) => {
     const weekTotal = bucket.week.reduce((s, v) => s + v, 0);
     return (
       <tr style={{ borderTop: "1px solid var(--border)" }}>
-        <td className="px-3 py-1.5 whitespace-nowrap" style={{ position: "sticky", left: 0, background: "var(--surface)", paddingLeft: indent ? 34 : 12 }}>
+        <td className="px-3 py-1.5 whitespace-nowrap"
+          style={{ position: "sticky", left: 0, background: "var(--surface)", paddingLeft: 12 + depth * 20 }}>
           {onToggle ? (
             <button onClick={onToggle} className="sw-focus flex items-center gap-1.5 text-left">
               <ChevronDown size={12} style={{ color: "var(--ink-faint)", transform: isOpen ? "rotate(0)" : "rotate(-90deg)", transition: "transform .15s" }} />
@@ -3194,7 +3201,7 @@ function DayByDayView({ orders }) {
               <span style={{ fontSize: 12, fontWeight: bold ? 700 : 600, color: tone || "var(--ink-soft)" }}>{label}</span>
             </button>
           ) : (
-            <span style={{ fontSize: 12, fontWeight: bold ? 700 : 600, color: tone || "var(--ink-soft)" }}>{label}</span>
+            <span style={{ fontSize: 12, fontWeight: bold ? 700 : 600, color: tone || "var(--ink-soft)", paddingLeft: onToggle === undefined && depth ? 18 : 0 }}>{label}</span>
           )}
         </td>
         <ForecastCell value={bucket.month} bold highlight />
@@ -3204,6 +3211,25 @@ function DayByDayView({ orders }) {
     );
   };
 
+  /* Cloud / Connectivity / Mobile, each expanding to its own products. */
+  const GroupRows = ({ scopeKey, src, depth }) => (
+    <>
+      {DBD_GROUPS.map((g) => {
+        const k = `${scopeKey}_${g.key}`;
+        const subs = Object.keys(src.subs[g.key]).sort();
+        return (
+          <React.Fragment key={g.key}>
+            <Row label={`${g.label} SOV`} bucket={src.groups[g.key]} accent={g.accent} depth={depth}
+              isOpen={!!open[k]} onToggle={subs.length ? () => toggle(k) : undefined} />
+            {open[k] && subs.map((s) => (
+              <Row key={s} label={s} bucket={src.subs[g.key][s]} depth={depth + 1} tone="var(--ink-faint)" />
+            ))}
+          </React.Fragment>
+        );
+      })}
+    </>
+  );
+
   return (
     <div>
       <div className="flex items-center gap-3 mb-3 flex-wrap">
@@ -3212,16 +3238,6 @@ function DayByDayView({ orders }) {
         <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
           Claimed Lilac Boxes · w/c {fmtDate(wkStart)}
         </span>
-        <div className="ml-auto flex items-center gap-1.5">
-          <span className="text-xs font-semibold uppercase" style={{ color: "var(--ink-faint)" }}>Break down by</span>
-          {[["team", byTeam, setByTeam], ["product", byProduct, setByProduct]].map(([lbl, on, setOn]) => (
-            <button key={lbl} onClick={() => setOn(!on)}
-              className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold capitalize"
-              style={on ? { background: "var(--primary)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>
-              {lbl}
-            </button>
-          ))}
-        </div>
       </div>
 
       <ReportFilters team={team} setTeam={setTeam} agent={agent} setAgent={setAgent} agentOptions={agentOptions}
@@ -3234,7 +3250,6 @@ function DayByDayView({ orders }) {
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(280px, 1fr)", gap: "0.75rem", alignItems: "start" }}>
 
-        {/* Table */}
         <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <div className="overflow-x-auto">
             <table className="w-full" style={{ borderCollapse: "collapse" }}>
@@ -3249,41 +3264,35 @@ function DayByDayView({ orders }) {
                 </tr>
               </thead>
               <tbody>
-                {/* All teams always leads */}
+                {/* All teams */}
                 <tr style={{ background: "var(--ink)" }}>
                   <td colSpan={8} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "#fff", position: "sticky", left: 0, background: "var(--ink)" }}>
                     All teams
                   </td>
                 </tr>
-                <Row label="GP" bucket={totalsRow.gp} bold tone="var(--green)" />
-                {DBD_GROUPS.map((g) => (
-                  <React.Fragment key={g.key}>
-                    <Row label={`${g.label} SOV`} bucket={totalsRow.groups[g.key]} accent={g.accent} />
-                    {byProduct && Object.keys(totalsRow.subs[g.key]).sort().map((s) => (
-                      <Row key={s} label={s} bucket={totalsRow.subs[g.key][s]} indent tone="var(--ink-faint)" />
-                    ))}
-                  </React.Fragment>
-                ))}
+                <Row label="GP" bucket={totals.gp} bold tone="var(--green)" />
+                <Row label="Total SOV" bucket={totals.totalSov} bold tone="var(--primary)" />
+                <GroupRows scopeKey="all" src={totals} depth={0} />
 
-                {/* Then each team, if asked for */}
-                {byTeam && data.map((t) => (
-                  <React.Fragment key={t.team}>
-                    <tr style={{ background: "var(--surface-alt)", borderTop: "2px solid var(--border)" }}>
-                      <td colSpan={8} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "var(--primary)", position: "sticky", left: 0, background: "var(--surface-alt)" }}>
-                        {t.team}
-                      </td>
-                    </tr>
-                    <Row label="GP" bucket={t.gp} bold tone="var(--green)" />
-                    {DBD_GROUPS.map((g) => (
-                      <React.Fragment key={g.key}>
-                        <Row label={`${g.label} SOV`} bucket={t.groups[g.key]} accent={g.accent} />
-                        {byProduct && Object.keys(t.subs[g.key]).sort().map((s) => (
-                          <Row key={s} label={s} bucket={t.subs[g.key][s]} indent tone="var(--ink-faint)" />
-                        ))}
-                      </React.Fragment>
-                    ))}
-                  </React.Fragment>
-                ))}
+                {/* Per team — GP and Total SOV, expanding into products */}
+                {data.length > 0 && (
+                  <tr style={{ background: "var(--surface-alt)", borderTop: "2px solid var(--border)" }}>
+                    <td colSpan={8} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "var(--primary)", position: "sticky", left: 0, background: "var(--surface-alt)" }}>
+                      By team
+                    </td>
+                  </tr>
+                )}
+                {data.map((t) => {
+                  const tk = `team_${t.team}`;
+                  return (
+                    <React.Fragment key={t.team}>
+                      <Row label={t.team} bucket={t.gp} bold tone="var(--ink)"
+                        isOpen={!!open[tk]} onToggle={() => toggle(tk)} />
+                      <Row label="Total SOV" bucket={t.totalSov} depth={1} tone="var(--primary)" />
+                      {open[tk] && <GroupRows scopeKey={tk} src={t} depth={1} />}
+                    </React.Fragment>
+                  );
+                })}
 
                 {data.length === 0 && (
                   <tr><td colSpan={8} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
@@ -3295,7 +3304,7 @@ function DayByDayView({ orders }) {
           </div>
         </div>
 
-        {/* Charts, stacked beside the table */}
+        {/* Charts beside the table */}
         <div className="flex flex-col gap-3">
           <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
             <div className="sw-display font-bold text-xs mb-2" style={{ color: "var(--ink-soft)" }}>SOV SHARE — THIS MONTH</div>
@@ -3313,8 +3322,9 @@ function DayByDayView({ orders }) {
       </div>
 
       <p className="text-xs mt-3" style={{ color: "var(--ink-faint)" }}>
-        DV4B counts within Cloud; BT Net, Broadband and Security within Connectivity. Orders covering
-        several products split their SOV evenly across them, so nothing is counted twice.
+        Click a team or a product to open it up. DV4B counts within Cloud; BT Net, Broadband and Security
+        within Connectivity. Orders covering several products split their SOV evenly across them, so the
+        product rows always add up to Total SOV.
       </p>
     </div>
   );
