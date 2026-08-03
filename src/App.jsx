@@ -1396,7 +1396,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
 
       {/* List on the left, analytics pinned on the right so they stay in
           view while the order list scrolls. */}
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.9fr) minmax(320px, 1fr)", gap: "0.75rem", alignItems: "start" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px", gap: "0.75rem", alignItems: "start" }}>
 
       <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="overflow-x-auto">
@@ -1500,30 +1500,16 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <div className="flex items-baseline justify-between mb-3">
             <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>GP — LAST SIX MONTHS</div>
-            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>claimed vs statted</span>
+            <span className="text-xs" style={{ color: analytics.accuracy >= 90 ? "var(--green)" : analytics.accuracy >= 70 ? "var(--amber)" : "var(--red)" }}>
+              {analytics.accuracy.toFixed(0)}% of forecast
+            </span>
           </div>
           <LineChart series={[
+            { name: "Forecast", colour: "#9C74DC", points: analytics.months.map((m, i) => ({ label: m, value: analytics.forecastGp[i] })) },
             { name: "Claimed", colour: "#4C1D8F", points: analytics.months.map((m, i) => ({ label: m, value: analytics.claimedGp[i] })) },
             { name: "Statted", colour: "#1F7A3D", points: analytics.months.map((m, i) => ({ label: m, value: analytics.stattedGp[i] })) },
           ]} />
         </div>
-
-        <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="flex items-baseline justify-between mb-3">
-            <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>FORECAST VS ACTUAL</div>
-            <span className="text-xs" style={{ color: analytics.accuracy >= 90 ? "var(--green)" : analytics.accuracy >= 70 ? "var(--amber)" : "var(--red)" }}>
-              {analytics.accuracy.toFixed(0)}% delivered
-            </span>
-          </div>
-          <ClusteredColumns groups={analytics.months.map((m, i) => ({
-            label: m,
-            bars: [
-              { name: "Forecast", value: analytics.forecastGp[i], colour: "#9C74DC" },
-              { name: "Statted", value: analytics.stattedGp[i], colour: "#1F7A3D" },
-            ],
-          }))} />
-        </div>
-      </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
         <RateCard label="Cancellation rate" pct={analytics.cancelRate} count={analytics.cancelled} of={analytics.nsTotal}
@@ -1574,6 +1560,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
             })}
           </div>
         )}
+      </div>
       </div>
       </div>
     </div>
@@ -4511,6 +4498,32 @@ function ForecastCell({ value, money = true, bold, tone, highlight }) {
   );
 }
 
+/* One line of the forecast breakdown. Clickable when it has children. */
+function FcRow({ label, v, sov, units, lines, bold, tone, depth = 0, onToggle, isOpen }) {
+  return (
+    <tr style={{ borderTop: "1px solid var(--border)" }}>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={{ paddingLeft: 12 + depth * 20 }}>
+        {onToggle ? (
+          <button onClick={onToggle} className="sw-focus flex items-center gap-1.5 text-left">
+            <ChevronDown size={12} style={{ color: "var(--ink-faint)", transform: isOpen ? "rotate(0)" : "rotate(-90deg)", transition: "transform .15s" }} />
+            <span style={{ fontSize: 12, fontWeight: bold ? 700 : 600, color: tone || "var(--ink-soft)" }}>{label}</span>
+          </button>
+        ) : (
+          <span style={{ fontSize: 12, fontWeight: bold ? 700 : 600, color: tone || "var(--ink-soft)", paddingLeft: depth ? 18 : 0 }}>{label}</span>
+        )}
+      </td>
+      {v == null
+        ? <td className="px-2 py-1.5" style={{ borderLeft: "1px solid var(--border)", background: "var(--primary-soft)" }} />
+        : <ForecastCell value={v} bold={bold} tone={tone} highlight />}
+      {sov == null
+        ? <td className="px-2 py-1.5" style={{ borderLeft: "1px solid var(--border)" }} />
+        : <ForecastCell value={sov} tone={tone} />}
+      <ForecastCell value={units || 0} money={false} tone={tone} />
+      <ForecastCell value={lines || 0} money={false} tone={tone} />
+    </tr>
+  );
+}
+
 function ForecastView({ netsuite, profile, staff }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -4519,7 +4532,7 @@ function ForecastView({ netsuite, profile, staff }) {
   const [teamFilter, setTeamFilter] = useState("All");
   const [agentFilter, setAgentFilter] = useState("All");
   const [pillarFilter, setPillarFilter] = useState(null);   // set by clicking the treemap
-  const [sidePanel, setSidePanel] = useState("agent");      // agent | product
+  const [fcOpen, setFcOpen] = useState({});                 // expanded rows
   const [adding, setAdding] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToastLocal] = useState("");
@@ -4629,6 +4642,62 @@ function ForecastView({ netsuite, profile, staff }) {
     return { teams, agents, gpSum, dc: dcTotal, grand: gpSum + dcTotal };
   }, [weekRows]);
 
+  // ---- Hierarchical breakdown: all teams, then each team -------------
+  // Same shape as Day by Day: totals first, opened up on demand.
+  const breakdown = useMemo(() => {
+    const node = () => ({ gp: 0, sov: 0, units: 0, lines: 0, subs: {} });
+    const shell = () => {
+      const o = { gp: 0, sov: 0, units: 0, lines: 0, groups: {} };
+      PILLAR_GROUPS.forEach((g) => { o.groups[g] = node(); });
+      o.groups.Other = node();
+      return o;
+    };
+
+    const all = shell();
+    const teams = {};
+
+    weekRows.forEach((r) => {
+      const gp = num(r.gp), sov = num(r.sov), units = num(r.units);
+      const hasLg = !!(r.lead_gen_name && String(r.lead_gen_name).trim());
+      const closerGp = hasLg ? gp * CLOSER_SPLIT : gp;
+      const lgGp = hasLg ? gp * LEADGEN_SPLIT : 0;
+      const g = groupForPillar(r.pillar);
+      const pillar = String(r.pillar || "Other").trim() || "Other";
+
+      const bump = (o, gpv) => {
+        o.gp += gpv; o.sov += sov; o.units += units; o.lines += 1;
+        if (!o.groups[g]) o.groups[g] = node();
+        const gn = o.groups[g];
+        gn.gp += gpv; gn.sov += sov; gn.units += units; gn.lines += 1;
+        if (!gn.subs[pillar]) gn.subs[pillar] = { gp: 0, sov: 0, units: 0, lines: 0 };
+        const sn = gn.subs[pillar];
+        sn.gp += gpv; sn.sov += sov; sn.units += units; sn.lines += 1;
+      };
+
+      // The closer's team carries the SOV and units for the deal
+      const ct = r.agent_team || "Unassigned";
+      if (!teams[ct]) teams[ct] = { team: ct, ...shell() };
+      bump(teams[ct], closerGp);
+      bump(all, closerGp);
+
+      // A lead gen on another team adds their GP share only
+      if (hasLg) {
+        const lt = r.lead_gen_team || "Unassigned";
+        if (!teams[lt]) teams[lt] = { team: lt, ...shell() };
+        teams[lt].gp += lgGp;
+        if (!teams[lt].groups[g]) teams[lt].groups[g] = node();
+        teams[lt].groups[g].gp += lgGp;
+        all.gp += lgGp;
+        all.groups[g].gp += lgGp;
+      }
+    });
+
+    return {
+      all,
+      teams: Object.keys(teams).map((k) => teams[k]).sort((a, b) => b.gp - a.gp),
+    };
+  }, [weekRows]);
+
   // ---- Accuracy: forecast vs what NetSuite actually shows -------------
   // Two different questions, both worth answering:
   //   * did the forecasts land?          -> matched lines
@@ -4705,18 +4774,6 @@ function ForecastView({ netsuite, profile, staff }) {
     return Object.keys(m).map((name) => ({ name, value: m[name] }));
   }, [baseRows, pillarFilter]);
 
-  // Product breakdown for the side panel — GP and SOV per pillar group
-  const productPanelRows = useMemo(() => {
-    const m = {};
-    weekRows.forEach((r) => {
-      const g = groupForPillar(r.pillar);
-      if (!m[g]) m[g] = { name: g, gp: 0, sov: 0, lines: 0 };
-      m[g].gp += num(r.gp);
-      m[g].sov += num(r.sov);
-      m[g].lines += 1;
-    });
-    return Object.keys(m).map((k) => m[k]).sort((a, b) => b.gp - a.gp);
-  }, [weekRows]);
 
   const addForecast = async () => {
     if (!draft.business_name.trim() || !draft.agent_name) {
@@ -4950,157 +5007,130 @@ function ForecastView({ netsuite, profile, staff }) {
       {/* SUMMARY */}
       {view === "summary" && (
         <>
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2.2fr) minmax(260px, 1fr)", gap: "0.75rem" }} className="mb-4">
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px", gap: "0.75rem", alignItems: "start" }} className="mb-4">
+
+          {/* Expandable breakdown — all teams first, then each team */}
           <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
             <div className="overflow-x-auto">
               <table className="w-full" style={{ borderCollapse: "collapse" }}>
                 <thead>
                   <tr style={{ background: "var(--primary)" }}>
-                    <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "#fff", position: "sticky", left: 0, background: "var(--primary)" }}>Team</th>
+                    <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "#fff" }}>Metric</th>
                     <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>GP</th>
-                    {PILLAR_GROUPS.map((p) => (
-                      <React.Fragment key={p}>
-                        <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff" }}>{p} SOV</th>
-                        <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "rgba(255,255,255,0.7)" }}>Units</th>
-                      </React.Fragment>
-                    ))}
+                    <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff" }}>SOV</th>
+                    <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "rgba(255,255,255,0.75)" }}>Units</th>
+                    <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "rgba(255,255,255,0.75)" }}>Lines</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {summary.teams.map((t) => (
-                    <tr key={t.team} style={{ borderTop: "1px solid var(--border)" }}>
-                      <td className="px-3 py-1.5 text-sm font-semibold" style={{ position: "sticky", left: 0, background: "var(--surface)" }}>{t.team}</td>
-                      <ForecastCell value={t.gp} bold highlight />
-                      {PILLAR_GROUPS.map((p) => (
-                        <React.Fragment key={p}>
-                          <ForecastCell value={(t.pillars[p] || {}).sov || 0} />
-                          <ForecastCell value={(t.pillars[p] || {}).units || 0} money={false} />
-                        </React.Fragment>
-                      ))}
+                  {/* All teams */}
+                  <tr style={{ background: "var(--ink)" }}>
+                    <td colSpan={5} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "#fff" }}>All teams</td>
+                  </tr>
+                  <FcRow label="GP" v={breakdown.all.gp} sov={null} bold tone="var(--green)" />
+                  <FcRow label="Total SOV" v={null} sov={breakdown.all.sov} units={breakdown.all.units} lines={breakdown.all.lines} bold tone="var(--primary)" />
+                  {PILLAR_GROUPS.map((g) => {
+                    const k = `all_${g.key || g}`;
+                    const node = breakdown.all.groups[g];
+                    if (!node || (!node.gp && !node.sov)) return null;
+                    const subs = Object.keys(node.subs).sort();
+                    return (
+                      <React.Fragment key={g}>
+                        <FcRow label={g} v={node.gp} sov={node.sov} units={node.units} lines={node.lines}
+                          isOpen={!!fcOpen[k]} onToggle={subs.length ? () => setFcOpen((o) => ({ ...o, [k]: !o[k] })) : undefined} />
+                        {fcOpen[k] && subs.map((s) => (
+                          <FcRow key={s} label={s} v={node.subs[s].gp} sov={node.subs[s].sov}
+                            units={node.subs[s].units} lines={node.subs[s].lines} depth={2} tone="var(--ink-faint)" />
+                        ))}
+                      </React.Fragment>
+                    );
+                  })}
+
+                  {/* Per team */}
+                  {breakdown.teams.length > 0 && (
+                    <tr style={{ background: "var(--surface-alt)", borderTop: "2px solid var(--border)" }}>
+                      <td colSpan={5} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "var(--primary)" }}>By team</td>
                     </tr>
-                  ))}
-                  {/* DC line — 18% off the combined GP */}
+                  )}
+                  {breakdown.teams.map((t) => {
+                    const tk = `team_${t.team}`;
+                    return (
+                      <React.Fragment key={t.team}>
+                        <FcRow label={t.team} v={t.gp} sov={t.sov} units={t.units} lines={t.lines} bold
+                          isOpen={!!fcOpen[tk]} onToggle={() => setFcOpen((o) => ({ ...o, [tk]: !o[tk] }))} />
+                        {fcOpen[tk] && PILLAR_GROUPS.map((g) => {
+                          const k = `${tk}_${g}`;
+                          const node = t.groups[g];
+                          if (!node || (!node.gp && !node.sov)) return null;
+                          const subs = Object.keys(node.subs).sort();
+                          return (
+                            <React.Fragment key={g}>
+                              <FcRow label={g} v={node.gp} sov={node.sov} units={node.units} lines={node.lines} depth={1}
+                                isOpen={!!fcOpen[k]} onToggle={subs.length ? () => setFcOpen((o) => ({ ...o, [k]: !o[k] })) : undefined} />
+                              {fcOpen[k] && subs.map((s) => (
+                                <FcRow key={s} label={s} v={node.subs[s].gp} sov={node.subs[s].sov}
+                                  units={node.subs[s].units} lines={node.subs[s].lines} depth={2} tone="var(--ink-faint)" />
+                              ))}
+                            </React.Fragment>
+                          );
+                        })}
+                      </React.Fragment>
+                    );
+                  })}
+
+                  {/* Double count and the figure that actually lands */}
                   <tr style={{ borderTop: "2px solid var(--border)", background: "var(--red-soft)" }}>
-                    <td className="px-3 py-1.5 text-sm font-semibold" style={{ position: "sticky", left: 0, background: "var(--red-soft)", color: "var(--red)" }}>
-                      DC <span className="text-xs" style={{ fontWeight: 400 }}>(lead-gen overlap)</span>
+                    <td className="px-3 py-1.5 text-xs font-semibold" style={{ color: "var(--red)" }}>
+                      DC <span style={{ fontWeight: 400 }}>(lead-gen overlap)</span>
                     </td>
                     <ForecastCell value={summary.dc} bold tone="var(--red)" highlight />
-                    {PILLAR_GROUPS.map((p) => (
-                      <React.Fragment key={p}><ForecastCell value={0} /><ForecastCell value={0} money={false} /></React.Fragment>
-                    ))}
+                    <ForecastCell value={0} />
+                    <ForecastCell value={0} money={false} />
+                    <ForecastCell value={0} money={false} />
                   </tr>
-                  <tr style={{ borderTop: "2px solid var(--ink)", background: "var(--ink)" }}>
-                    <td className="px-3 py-2 text-sm font-bold" style={{ position: "sticky", left: 0, background: "var(--ink)", color: "#fff" }}>Grand Total</td>
+                  <tr style={{ background: "var(--ink)" }}>
+                    <td className="px-3 py-2 text-sm font-bold" style={{ color: "#fff" }}>Grand Total</td>
                     <td className="px-2 py-2 sw-mono font-bold text-center" style={{ fontSize: 13, color: "#fff", background: "#3B1370" }}>{fmtGBP(summary.grand)}</td>
-                    {PILLAR_GROUPS.map((p) => {
-                      const sov = summary.teams.reduce((s, t) => s + ((t.pillars[p] || {}).sov || 0), 0);
-                      const units = summary.teams.reduce((s, t) => s + ((t.pillars[p] || {}).units || 0), 0);
-                      return (
-                        <React.Fragment key={p}>
-                          <td className="px-2 py-2 sw-mono font-bold text-center" style={{ fontSize: 12, color: "#fff", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>{fmtGBP(sov)}</td>
-                          <td className="px-2 py-2 sw-mono font-bold text-center" style={{ fontSize: 12, color: "rgba(255,255,255,0.75)", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>{units.toLocaleString("en-GB")}</td>
-                        </React.Fragment>
-                      );
-                    })}
+                    <td className="px-2 py-2 sw-mono font-bold text-center" style={{ fontSize: 12, color: "#fff" }}>{fmtGBP(breakdown.all.sov)}</td>
+                    <td className="px-2 py-2 sw-mono text-center" style={{ fontSize: 12, color: "rgba(255,255,255,0.75)" }}>{breakdown.all.units.toLocaleString("en-GB")}</td>
+                    <td className="px-2 py-2 sw-mono text-center" style={{ fontSize: 12, color: "rgba(255,255,255,0.75)" }}>{breakdown.all.lines}</td>
                   </tr>
                 </tbody>
               </table>
             </div>
           </div>
 
-          {/* Side panel — agents or products, spanning both tables */}
-          <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)", gridRow: "span 2", alignSelf: "start" }}>
-            <div className="flex" style={{ background: "var(--primary)" }}>
-              {[["agent", "By Agent"], ["product", "By Product"]].map(([k, lbl]) => (
-                <button key={k} onClick={() => setSidePanel(k)}
-                  className="sw-focus flex-1 px-3 py-2 text-xs font-bold uppercase"
-                  style={sidePanel === k
-                    ? { background: "#3B1370", color: "#fff" }
-                    : { background: "transparent", color: "rgba(255,255,255,0.65)" }}>
-                  {lbl}
-                </button>
-              ))}
+          {/* Charts, pinned beside the table */}
+          <div style={{ position: "sticky", top: 12, maxHeight: "calc(100vh - 24px)", overflowY: "auto" }} className="flex flex-col gap-3 pr-0.5">
+            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="flex items-baseline justify-between mb-2">
+                <span className="sw-display font-bold text-xs" style={{ color: "var(--ink-soft)" }}>GP BY PILLAR</span>
+                {pillarFilter && <button onClick={() => setPillarFilter(null)} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>Clear</button>}
+              </div>
+              <ProductTreemap items={pillarChartItems} height={150} selected={pillarFilter} onSelect={setPillarFilter} />
             </div>
-
-            {sidePanel === "agent" ? (
-              <div style={{ maxHeight: 640, overflowY: "auto" }}>
-                <table className="w-full" style={{ borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr style={{ background: "var(--surface-alt)", position: "sticky", top: 0 }}>
-                      <th className="px-2 py-1.5 text-left text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Agent</th>
-                      <th className="px-2 py-1.5 text-center text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>GP</th>
-                      <th className="px-2 py-1.5 text-center text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>SOV</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {summary.agents.map((a) => (
-                      <tr key={a.name} style={{ borderTop: "1px solid var(--border)", cursor: "pointer", background: agentFilter === a.name ? "var(--primary-soft)" : undefined }}
-                        onClick={() => setAgentFilter(agentFilter === a.name ? "All" : a.name)}
-                        title="Click to filter the page to this agent">
-                        <td className="px-2 py-1 text-xs font-semibold truncate" style={{ color: agentFilter === a.name ? "var(--primary)" : "var(--ink)", maxWidth: 140 }}>{a.name}</td>
-                        <td className="px-2 py-1 sw-mono text-center" style={{ fontSize: 11.5, fontWeight: 700, borderLeft: "1px solid var(--border)" }}>{fmtGBP(a.gp)}</td>
-                        <td className="px-2 py-1 sw-mono text-center" style={{ fontSize: 11, color: "var(--ink-soft)", borderLeft: "1px solid var(--border)" }}>{fmtGBP(a.sov)}</td>
-                      </tr>
-                    ))}
-                    {summary.agents.length === 0 && (
-                      <tr><td colSpan={3} className="px-3 py-8 text-center text-xs" style={{ color: "var(--ink-faint)" }}>No forecasts this week.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div style={{ maxHeight: 640, overflowY: "auto" }}>
-                <table className="w-full" style={{ borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr style={{ background: "var(--surface-alt)", position: "sticky", top: 0 }}>
-                      <th className="px-2 py-1.5 text-left text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Product</th>
-                      <th className="px-2 py-1.5 text-center text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>GP</th>
-                      <th className="px-2 py-1.5 text-center text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>SOV</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {productPanelRows.map((p) => (
-                      <tr key={p.name} style={{ borderTop: "1px solid var(--border)", cursor: "pointer", background: pillarFilter === p.name ? "var(--primary-soft)" : undefined }}
-                        onClick={() => setPillarFilter(pillarFilter === p.name ? null : p.name)}
-                        title="Click to filter the page to this product">
-                        <td className="px-2 py-1 text-xs font-semibold truncate" style={{ color: pillarFilter === p.name ? "var(--primary)" : "var(--ink)", maxWidth: 140 }}>{p.name}</td>
-                        <td className="px-2 py-1 sw-mono text-center" style={{ fontSize: 11.5, fontWeight: 700, borderLeft: "1px solid var(--border)" }}>{fmtGBP(p.gp)}</td>
-                        <td className="px-2 py-1 sw-mono text-center" style={{ fontSize: 11, color: "var(--ink-soft)", borderLeft: "1px solid var(--border)" }}>{fmtGBP(p.sov)}</td>
-                      </tr>
-                    ))}
-                    {productPanelRows.length === 0 && (
-                      <tr><td colSpan={3} className="px-3 py-8 text-center text-xs" style={{ color: "var(--ink-faint)" }}>No forecasts this week.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
-          {/* Leads generated, by pillar — column 1, under the team table */}
-          <div className="rounded-2xl overflow-hidden" style={{ gridColumn: 1, background: "var(--surface)", border: "1px solid var(--border)" }}>
-            <div className="overflow-x-auto">
-              <table className="w-full" style={{ borderCollapse: "collapse" }}>
-                <thead>
-                  <tr style={{ background: "var(--surface-alt)" }}>
-                    <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "var(--ink-soft)" }}>Leads passed in</th>
-                    {PILLAR_GROUPS.map((p) => (
-                      <th key={p} className="px-2 py-2 text-center text-xs font-bold" style={{ color: "var(--ink-soft)" }}>{p}</th>
-                    ))}
-                    <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "var(--ink-soft)" }}>Total</th>
-                  </tr>
-                </thead>
+            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="sw-display font-bold text-xs mb-2" style={{ color: "var(--ink-soft)" }}>GP BY AGENT</div>
+              <ProductBars items={agentChartItems} height={190}
+                selected={agentFilter === "All" ? null : agentFilter}
+                onSelect={(name) => setAgentFilter(name && name !== agentFilter ? name : "All")} />
+            </div>
+            <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="px-3 py-2 text-xs font-bold uppercase" style={{ background: "var(--surface-alt)", color: "var(--ink-soft)" }}>Leads passed in</div>
+              <table className="w-full">
                 <tbody>
                   {summary.teams.map((t) => {
                     const total = Object.keys(t.leads).reduce((s, p) => s + (t.leads[p] || 0), 0);
                     return (
                       <tr key={t.team} style={{ borderTop: "1px solid var(--border)" }}>
-                        <td className="px-3 py-1.5 text-sm font-semibold">{t.team}</td>
-                        {PILLAR_GROUPS.map((p) => <ForecastCell key={p} value={t.leads[p] || 0} money={false} />)}
-                        <ForecastCell value={total} money={false} bold highlight />
+                        <td className="px-3 py-1.5 text-xs font-semibold truncate">{t.team}</td>
+                        <td className="px-3 py-1.5 sw-mono text-xs font-bold text-right">{total}</td>
                       </tr>
                     );
                   })}
+                  {summary.teams.length === 0 && (
+                    <tr><td className="px-3 py-4 text-xs text-center" style={{ color: "var(--ink-faint)" }}>None this week.</td></tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -5108,16 +5138,9 @@ function ForecastView({ netsuite, profile, staff }) {
         </div>
 
           <p className="text-xs mb-3" style={{ color: "var(--ink-faint)" }}>
-            A "lead passed in" counts any forecast line where a Lead Gen is named — so the person who
-            sourced it gets credit alongside the closer.
+            Click a team or pillar to open it up. GP splits 80% to the closer and 50% to the lead gen where
+            there is one, with the 30% overlap coming off as DC — so the Grand Total is what actually lands.
           </p>
-
-          {/* Treemap and agent ranking cross-filter each other */}
-          <ReportCharts
-            treemapItems={pillarChartItems} treemapTitle="FORECAST GP BY PILLAR"
-            productSelected={pillarFilter} onProductSelect={setPillarFilter}
-            barItems={agentChartItems} barTitle="FORECAST GP BY AGENT"
-            agentSelected={agentFilter} onAgentSelect={setAgentFilter} />
         </>
       )}
 
