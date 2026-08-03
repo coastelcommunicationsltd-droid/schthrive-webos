@@ -711,6 +711,35 @@ function DashboardView({ orders, netsuite, onOpenOrder, flashId, profile, loadin
   }).length, [scoped, nsFor]);
   const dirtyCount = useMemo(() => scoped.filter((o) => o.dirty_order === "Yes").length, [scoped]);
   const notStattedCount = useMemo(() => scoped.filter(isNotStatted).length, [scoped]);
+
+  // ---- SOV by product category, straight from NetSuite ---------------
+  // Excludes anything flagged NSOV. Connectivity groups Broadband, BT Net
+  // and Security together, which is how the office thinks about it.
+  const nsSovCards = useMemo(() => {
+    const from = periodStart(period);
+    const rows = (netsuite || []).filter((r) => {
+      if (r.count_sov === false) return false;
+      const cfg = r.order_status ? statusCfg[r.order_status] : null;
+      if (cfg && cfg.count_sov === false) return false;
+      if (!from) return true;
+      return r.order_date && new Date(r.order_date + "T00:00:00").getTime() >= from.getTime();
+    });
+    const bucket = (r) => {
+      const s = [r.prod_for_gs, r.product_group_2, r.item_name_grouped].join(" ").toLowerCase();
+      if (/mobile|\bsim\b|airtime|handset/.test(s)) return "mobile";
+      if (/cloud|dv4|voice/.test(s)) return "cloud";
+      if (/broadband|bt ?net|btnet|security|badr|connectivity|fttp|fttc|ethernet|pstn|line/.test(s)) return "connectivity";
+      return "other";
+    };
+    const totals = { cloud: 0, connectivity: 0, mobile: 0, other: 0, all: 0 };
+    rows.forEach((r) => {
+      const v = num(r.contract_value);
+      totals[bucket(r)] += v;
+      totals.all += v;
+    });
+    return totals;
+  }, [netsuite, period, statusCfg]);
+
   const gpLabel = isOffice && scope !== "office" ? `GP · ${scope}` : is2ic && profile?.team ? `GP · ${profile.team}` : "GP · Office";
   const periodLabel = useMemo(() => {
     const s = periodStart(period);
@@ -746,12 +775,42 @@ function DashboardView({ orders, netsuite, onOpenOrder, flashId, profile, loadin
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: "0.75rem" }} className="mb-6">
-        <KPICard icon={TrendingUp} label={gpLabel} value={fmtGBP(gpTotal)} sub="Single-counted GP" accent="#1F7A3D" />
-        <KPICard icon={Wallet} label="SOV" value={fmtGBP(sovTotal)} sub={`${scoped.length} orders`} accent="#4C1D8F" />
-        <KPICard icon={Radio} label="Active Orders" value={activeOrders} sub="Not yet Closed Won" accent="#205EA6" />
-        <KPICard icon={Clock} label="Not Statted" value={notStattedCount} sub="No NetSuite match 12h+" accent="#B3660E" />
-        <KPICard icon={AlertTriangle} label="Dirty Orders" value={dirtyCount} sub="Flagged for review" accent="#C0392B" />
+      {/* Two rows of five units. The original five cards occupy the first
+          three units (GP and SOV taking one and a half each on row one),
+          with the NetSuite SOV breakdown filling the last two units. */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(10, minmax(0, 1fr))", gap: "0.75rem" }} className="mb-6">
+        {/* Row 1 — first three units */}
+        <div style={{ gridColumn: "span 3" }}>
+          <KPICard icon={TrendingUp} label={gpLabel} value={fmtGBP(gpTotal)} sub="Single-counted GP" accent="#1F7A3D" />
+        </div>
+        <div style={{ gridColumn: "span 3" }}>
+          <KPICard icon={Wallet} label="SOV" value={fmtGBP(sovTotal)} sub={`${scoped.length} orders`} accent="#4C1D8F" />
+        </div>
+        {/* Row 1 — last two units */}
+        <div style={{ gridColumn: "span 2" }}>
+          <KPICard icon={Radio} label="Cloud SOV" value={fmtGBP(nsSovCards.cloud)} sub="NetSuite" accent="#5E2CA8" />
+        </div>
+        <div style={{ gridColumn: "span 2" }}>
+          <KPICard icon={Radio} label="Connectivity SOV" value={fmtGBP(nsSovCards.connectivity)} sub="BB · BTNet · Security" accent="#205EA6" />
+        </div>
+
+        {/* Row 2 — first three units */}
+        <div style={{ gridColumn: "span 2" }}>
+          <KPICard icon={Radio} label="Active Orders" value={activeOrders} sub="Not yet complete" accent="#205EA6" />
+        </div>
+        <div style={{ gridColumn: "span 2" }}>
+          <KPICard icon={Clock} label="Not Statted" value={notStattedCount} sub="No NetSuite match 12h+" accent="#B3660E" />
+        </div>
+        <div style={{ gridColumn: "span 2" }}>
+          <KPICard icon={AlertTriangle} label="Dirty Orders" value={dirtyCount} sub="Flagged for review" accent="#C0392B" />
+        </div>
+        {/* Row 2 — last two units */}
+        <div style={{ gridColumn: "span 2" }}>
+          <KPICard icon={Radio} label="Mobile SOV" value={fmtGBP(nsSovCards.mobile)} sub="NetSuite" accent="#8659CE" />
+        </div>
+        <div style={{ gridColumn: "span 2" }}>
+          <KPICard icon={Wallet} label="Total SOV" value={fmtGBP(nsSovCards.all)} sub="NetSuite · excl. NSOV" accent="#1F7A3D" />
+        </div>
       </div>
 
       <div className="flex flex-col md:flex-row md:items-center gap-3 mb-4 p-3 rounded-2xl" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
@@ -848,16 +907,12 @@ function DashboardView({ orders, netsuite, onOpenOrder, flashId, profile, loadin
                         <>
                           <StatusPill status={live} ngp={ngp} />
                           <div className="text-xs mt-1" style={{ color: "var(--ink-faint)" }}>
-                            {n ? (
-                              <>
-                                {(ngp || nsov) && (
-                                  <span className="font-semibold" style={{ color: ngp ? "var(--red)" : "var(--amber)" }}>
-                                    {ngp ? "NGP" : ""}{ngp && nsov ? " · " : ""}{nsov ? "NSOV" : ""}
-                                    {" · "}
-                                  </span>
-                                )}
-                                <span>via {o.order_status}</span>
-                              </>
+                            {n && n.order_status ? (
+                              (ngp || nsov) ? (
+                                <span className="font-semibold" style={{ color: ngp ? "var(--red)" : "var(--amber)" }}>
+                                  {ngp ? "NGP" : ""}{ngp && nsov ? " · " : ""}{nsov ? "NSOV" : ""}
+                                </span>
+                              ) : null
                             ) : isNotStatted(o) ? (
                               <span style={{ color: "var(--amber)" }}>Not Statted</span>
                             ) : (
@@ -958,9 +1013,6 @@ function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove }) 
             status={ns && ns.order_status ? ns.order_status : order.order_status}
             ngp={!!ns && ns.count_gp === false}
           />
-          {ns && (
-            <span className="text-xs ml-2" style={{ color: "var(--ink-faint)" }}>via {order.order_status}</span>
-          )}
         </div>
 
         {/* Deal value + GP — editable by office / 2ic / closer */}
@@ -1018,6 +1070,42 @@ function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove }) 
             <div><div className="text-xs" style={{ color: "var(--ink-faint)" }}>Last Updated</div><div className="text-sm">{fmtDate(order.last_updated)}</div></div>
           </div>
         </div>
+
+        {/* Cross-reference: what NetSuite actually statted vs what was claimed.
+            NetSuite GP excludes any NGP line; SOV comes off the Closer line. */}
+        {ns && (() => {
+          const nsGp = ns.count_gp === false ? 0 : num(ns.gp_office);
+          const nsSov = ns.count_sov === false ? 0 : num(ns.contract_value);
+          const gpDiff = nsGp - num(order.sales_agent_gp);
+          const sovDiff = nsSov - num(order.contract_value);
+          const diffStyle = (d) => ({ color: Math.abs(d) < 0.5 ? "var(--green)" : d < 0 ? "var(--red)" : "var(--amber)" });
+          const diffText = (d) => (Math.abs(d) < 0.5 ? "Matches" : `${d > 0 ? "+" : ""}${fmtGBP(d)}`);
+          return (
+            <div className="rounded-xl mb-5 p-4" style={{ background: "var(--surface-alt)", border: "1px solid var(--border)" }}>
+              <div className="text-xs font-semibold uppercase tracking-wide mb-3" style={{ color: "var(--ink-soft)" }}>
+                NetSuite Cross-Reference
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <div className="text-xs" style={{ color: "var(--ink-faint)" }}>NetSuite GP</div>
+                  <div className="sw-mono font-semibold text-lg">{fmtGBP(nsGp)}</div>
+                  <div className="text-xs mt-0.5" style={diffStyle(gpDiff)}>
+                    {diffText(gpDiff)} <span style={{ color: "var(--ink-faint)" }}>vs claimed {fmtGBP(order.sales_agent_gp)}</span>
+                  </div>
+                  {ns.count_gp === false && <div className="text-xs mt-0.5" style={{ color: "var(--red)" }}>Excluded — NGP status</div>}
+                </div>
+                <div>
+                  <div className="text-xs" style={{ color: "var(--ink-faint)" }}>NetSuite SOV</div>
+                  <div className="sw-mono font-semibold text-lg">{fmtGBP(nsSov)}</div>
+                  <div className="text-xs mt-0.5" style={diffStyle(sovDiff)}>
+                    {diffText(sovDiff)} <span style={{ color: "var(--ink-faint)" }}>vs claimed {fmtGBP(order.contract_value)}</span>
+                  </div>
+                  {ns.count_sov === false && <div className="text-xs mt-0.5" style={{ color: "var(--amber)" }}>Excluded — NSOV status</div>}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         <h4 className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--ink-soft)" }}>Order Details</h4>
         <div className="rounded-xl overflow-hidden mb-4" style={{ border: "1px solid var(--border)" }}>
@@ -1598,23 +1686,19 @@ function TVBoard({ orders, netsuite }) {
   const officeGpTotal = sumGp(gpRows);
   const sovPeriod = sumSov(sovRows);
 
-  // The second card shows the next level down from whatever's selected,
-  // so "GP This Week" doesn't sit there confusingly when you're on YTD.
-  const SUB = { day: null, wtd: "day", mtd: "wtd", qtd: "mtd", ytd: "qtd", all: "ytd" };
-  const SUB_LABEL = { day: "Today", wtd: "This Week", mtd: "This Month", qtd: "This Quarter", ytd: "This Year" };
-  const subKey = SUB[period];
-  const subFrom = subKey ? periodStart(subKey) : null;
-  const subRows = subFrom
-    ? gpRows.filter((r) => r.order_date && new Date(r.order_date + "T00:00:00").getTime() >= subFrom.getTime())
-    : [];
-  const gpSub = sumGp(subRows);
+  // Acquisition GP — new business rather than renewals/upgrades.
+  // NetSuite puts the deal type in "Class (Item): Name" (column J),
+  // which syncs into class_name.
+  const acqRows = gpRows.filter((r) => /acquisition/i.test(String(r.class_name || "")));
+  const acqGp = sumGp(acqRows);
   const gpToday = sumGp(gpRows.filter(todayNs));
 
   // Sales by Product Group 2 — bigger box means more GP
   const productBoxes = useMemo(() => {
     const map = {};
     gpRows.forEach((r) => {
-      const key = (r.product_group_2 || "Unspecified").trim() || "Unspecified";
+      // "Prod for GS" is the reporting grouping NetSuite already maintains
+      const key = (r.prod_for_gs || r.product_group_2 || "Unspecified").trim() || "Unspecified";
       map[key] = (map[key] || 0) + num(r.gp_office);
     });
     const items = Object.entries(map)
@@ -1720,7 +1804,7 @@ function TVBoard({ orders, netsuite }) {
           span 2 of those same 4 columns underneath. */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "0.75rem" }}>
         <TVStat label={`Office GP · ${periodLabelFor(period)}`} value={fmtGBP(officeGpTotal)} accent="#1F7A3D" />
-        <TVStat label={subKey ? `GP · ${SUB_LABEL[subKey]}` : "GP · Today"} value={fmtGBP(subKey ? gpSub : officeGpTotal)} accent="#4C1D8F" />
+        <TVStat label={`ACQ GP · ${periodLabelFor(period)}`} value={fmtGBP(acqGp)} accent="#4C1D8F" />
         <TVStat label="GP Today" value={fmtGBP(gpToday)} accent="#205EA6" />
         <TVStat label={`SOV · ${periodLabelFor(period)}`} value={fmtGBP(sovPeriod)} accent="#B3660E" />
 
