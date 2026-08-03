@@ -537,6 +537,144 @@ function HealthItem({ label, value, colour, hint }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  CHARTS — small SVG primitives, no chart library needed                 */
+/* ---------------------------------------------------------------------- */
+
+// Month-on-month line. series: [{name, colour, points:[{label, value}]}]
+function LineChart({ series, height = 190, money = true }) {
+  const [hover, setHover] = useState(null);
+  const labels = series[0]?.points.map((p) => p.label) || [];
+  const all = series.flatMap((s) => s.points.map((p) => p.value));
+  const max = Math.max(1, ...all);
+  const W = 100, H = 100;                     // drawn in a 0-100 viewBox
+  const x = (i) => (labels.length <= 1 ? 50 : (i / (labels.length - 1)) * W);
+  const y = (v) => H - (v / max) * (H - 8);
+
+  if (!labels.length) {
+    return <div className="text-xs text-center py-12" style={{ color: "var(--ink-faint)" }}>Not enough history yet.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ position: "relative", height }}>
+        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height: "100%", overflow: "visible" }}>
+          {[0.25, 0.5, 0.75, 1].map((f) => (
+            <line key={f} x1="0" x2={W} y1={H - f * (H - 8)} y2={H - f * (H - 8)}
+              stroke="var(--border)" strokeWidth="0.4" vectorEffect="non-scaling-stroke" />
+          ))}
+          {series.map((s) => (
+            <g key={s.name}>
+              <polyline
+                points={s.points.map((p, i) => `${x(i)},${y(p.value)}`).join(" ")}
+                fill="none" stroke={s.colour} strokeWidth="2" vectorEffect="non-scaling-stroke"
+                strokeLinejoin="round" strokeLinecap="round" />
+              {s.points.map((p, i) => (
+                <circle key={i} cx={x(i)} cy={y(p.value)} r={hover === i ? 3.5 : 2.2}
+                  fill={s.colour} stroke="var(--surface)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+              ))}
+            </g>
+          ))}
+          {labels.map((_, i) => (
+            <rect key={i} x={x(i) - (W / labels.length) / 2} y="0" width={W / labels.length} height={H}
+              fill="transparent" onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)} />
+          ))}
+        </svg>
+      </div>
+
+      <div className="flex justify-between mt-1">
+        {labels.map((l, i) => (
+          <span key={i} style={{ fontSize: 10, color: hover === i ? "var(--ink)" : "var(--ink-faint)", fontWeight: hover === i ? 700 : 400 }}>{l}</span>
+        ))}
+      </div>
+
+      <div className="flex items-center gap-3 mt-2 flex-wrap">
+        {series.map((s) => (
+          <span key={s.name} className="flex items-center gap-1.5 text-xs" style={{ color: "var(--ink-soft)" }}>
+            <span style={{ width: 9, height: 3, borderRadius: 2, background: s.colour, display: "inline-block" }} />
+            {s.name}
+            {hover !== null && (
+              <b style={{ color: "var(--ink)" }}>
+                {money ? fmtGBP(s.points[hover]?.value) : (s.points[hover]?.value ?? 0).toLocaleString("en-GB")}
+              </b>
+            )}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Side-by-side columns per group. groups: [{label, bars:[{name, value, colour}]}]
+function ClusteredColumns({ groups, height = 190, money = true }) {
+  const [hover, setHover] = useState(null);
+  const max = Math.max(1, ...groups.flatMap((g) => g.bars.map((b) => b.value)));
+  const legend = groups[0]?.bars || [];
+
+  if (!groups.length) {
+    return <div className="text-xs text-center py-12" style={{ color: "var(--ink-faint)" }}>Nothing to compare yet.</div>;
+  }
+
+  return (
+    <div>
+      <div className="flex items-end gap-1" style={{ height }}>
+        {groups.map((g, gi) => (
+          <div key={g.label} className="flex-1 flex flex-col justify-end" style={{ height: "100%" }}
+            onMouseEnter={() => setHover(gi)} onMouseLeave={() => setHover(null)}>
+            <div className="flex items-end justify-center gap-0.5" style={{ height: "100%" }}>
+              {g.bars.map((b) => (
+                <div key={b.name} title={`${g.label} · ${b.name}: ${money ? fmtGBP(b.value) : b.value}`}
+                  style={{
+                    width: `${70 / g.bars.length}%`,
+                    height: `${Math.max(1, (b.value / max) * 100)}%`,
+                    background: b.colour,
+                    borderRadius: "3px 3px 0 0",
+                    opacity: hover === null || hover === gi ? 1 : 0.4,
+                    transition: "opacity .15s",
+                  }} />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-1 mt-1">
+        {groups.map((g, gi) => (
+          <span key={g.label} className="flex-1 text-center" style={{ fontSize: 10, color: hover === gi ? "var(--ink)" : "var(--ink-faint)", fontWeight: hover === gi ? 700 : 400 }}>{g.label}</span>
+        ))}
+      </div>
+      <div className="flex items-center gap-3 mt-2 flex-wrap">
+        {legend.map((b) => (
+          <span key={b.name} className="flex items-center gap-1.5 text-xs" style={{ color: "var(--ink-soft)" }}>
+            <span style={{ width: 9, height: 9, borderRadius: 2, background: b.colour, display: "inline-block" }} />
+            {b.name}
+            {hover !== null && (
+              <b style={{ color: "var(--ink)" }}>
+                {money ? fmtGBP(groups[hover].bars.find((x) => x.name === b.name)?.value || 0) : (groups[hover].bars.find((x) => x.name === b.name)?.value || 0)}
+              </b>
+            )}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// A percentage with a short explanation — used for cancellation / rejection.
+function RateCard({ label, pct, count, of, colour, hint }) {
+  return (
+    <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }} title={hint}>
+      <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>{label}</div>
+      <div className="flex items-baseline gap-2 mt-1">
+        <span className="sw-display font-bold" style={{ fontSize: 24, color: colour }}>{pct.toFixed(1)}%</span>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{count} of {of}</span>
+      </div>
+      <div className="rounded-full mt-2" style={{ height: 4, background: "var(--surface-alt)" }}>
+        <div className="rounded-full" style={{ width: Math.min(100, pct) + "%", height: "100%", background: colour }} />
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /*  GENERIC FORM CONTROLS                                                  */
 /* ---------------------------------------------------------------------- */
 
@@ -1046,6 +1184,89 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
     return totals;
   }, [netsuite, period, statusCfg, isOffice, is2ic, scope, profile, agentFilter, productFilter]);
 
+  // ---- Month-on-month, rates and top deals ---------------------------
+  // These look at the last six months rather than the period toggle —
+  // the point is the trend, which one month can't show.
+  const analytics = useMemo(() => {
+    const teamScope = isOffice && scope !== "office" ? scope : (is2ic ? profile?.team : null);
+    const monthKeys = [];
+    const base = new Date();
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(base.getFullYear(), base.getMonth() - i, 1);
+      monthKeys.push({
+        key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
+        label: d.toLocaleDateString("en-GB", { month: "short" }),
+      });
+    }
+    const idx = {};
+    monthKeys.forEach((m, i) => { idx[m.key] = i; });
+    const monthOf = (dstr) => {
+      if (!dstr) return null;
+      const d = new Date(dstr);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    };
+
+    const inScope = (closerTeam, refTeam, closerName, refName) => {
+      if (teamScope && closerTeam !== teamScope && refTeam !== teamScope) return false;
+      if (agentFilter !== "All" && closerName !== agentFilter && refName !== agentFilter) return false;
+      return true;
+    };
+
+    const claimedGp = new Array(6).fill(0);
+    const stattedGp = new Array(6).fill(0);
+    const forecastGp = new Array(6).fill(0);
+
+    (orders || []).forEach((o) => {
+      if (o.removed_at) return;
+      if (!inScope(o.closer_team, o.lead_gen_team, o.closer_name, o.lead_gen_name)) return;
+      const i = idx[monthOf(o.submission_date)];
+      if (i === undefined) return;
+      claimedGp[i] += num(o.gp_office != null ? o.gp_office : o.sales_agent_gp);
+    });
+
+    let cancelled = 0, nsTotal = 0, ngpCountAll = 0;
+    (netsuite || []).forEach((n) => {
+      if (!inScope(n.closer_team, n.referrer_team, n.closer_name, n.referrer_name)) return;
+      const i = idx[monthOf(n.order_date ? n.order_date + "T00:00:00" : null)];
+      if (i !== undefined && n.count_gp !== false) stattedGp[i] += num(n.gp_office);
+      nsTotal += 1;
+      if (/cease|cancel|lost|reject/i.test(String(n.order_status || ""))) cancelled += 1;
+      if (n.count_gp === false) ngpCountAll += 1;
+    });
+
+    (forecasts || []).forEach((f) => {
+      if (!inScope(f.agent_team, f.lead_gen_team, f.agent_name, f.lead_gen_name)) return;
+      const i = idx[monthOf(f.forecast_date || f.forecast_week)];
+      if (i === undefined) return;
+      forecastGp[i] += num(f.gp);
+    });
+
+    // Top deals in the period on screen
+    const top = [...productScoped]
+      .map((o) => ({
+        company: o.company_name,
+        agent: o.closer_name,
+        sov: num(o.contract_value),
+        gp: num(o.gp_office != null ? o.gp_office : o.sales_agent_gp),
+      }))
+      .sort((a, b) => b.gp - a.gp)
+      .slice(0, 5);
+
+    // Forecast accuracy across the six months
+    const fcTotal = forecastGp.reduce((s, v) => s + v, 0);
+    const stTotal = stattedGp.reduce((s, v) => s + v, 0);
+
+    return {
+      months: monthKeys.map((m) => m.label),
+      claimedGp, stattedGp, forecastGp, top,
+      cancelled, nsTotal, ngpCountAll,
+      cancelRate: nsTotal ? (cancelled / nsTotal) * 100 : 0,
+      rejectRate: nsTotal ? (ngpCountAll / nsTotal) * 100 : 0,
+      accuracy: fcTotal ? (stTotal / fcTotal) * 100 : 0,
+      avgDeal: productScoped.length ? productScoped.reduce((s, o) => s + num(o.gp_office != null ? o.gp_office : o.sales_agent_gp), 0) / productScoped.length : 0,
+    };
+  }, [orders, netsuite, forecasts, productScoped, isOffice, is2ic, scope, profile, agentFilter]);
+
   const gpLabel = agentFilter !== "All"
     ? `GP · ${agentFilter.split(" ")[0]}`
     : isOffice && scope !== "office" ? `GP · ${scope}`
@@ -1268,7 +1489,88 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
           </table>
         </div>
       </div>
-      <div className="flex items-center gap-1.5 mt-3 text-xs" style={{ color: "var(--ink-faint)" }}><RefreshCw size={11} /> Live — updates as orders change</div>
+      <div className="flex items-center gap-1.5 mt-3 mb-5 text-xs" style={{ color: "var(--ink-faint)" }}><RefreshCw size={11} /> Live — updates as orders change</div>
+
+      {/* ---- Trends and quality ---------------------------------------- */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: "0.75rem" }} className="mb-3">
+        <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="flex items-baseline justify-between mb-3">
+            <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>GP — LAST SIX MONTHS</div>
+            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>claimed vs statted</span>
+          </div>
+          <LineChart series={[
+            { name: "Claimed", colour: "#4C1D8F", points: analytics.months.map((m, i) => ({ label: m, value: analytics.claimedGp[i] })) },
+            { name: "Statted", colour: "#1F7A3D", points: analytics.months.map((m, i) => ({ label: m, value: analytics.stattedGp[i] })) },
+          ]} />
+        </div>
+
+        <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="flex items-baseline justify-between mb-3">
+            <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>FORECAST VS ACTUAL</div>
+            <span className="text-xs" style={{ color: analytics.accuracy >= 90 ? "var(--green)" : analytics.accuracy >= 70 ? "var(--amber)" : "var(--red)" }}>
+              {analytics.accuracy.toFixed(0)}% delivered
+            </span>
+          </div>
+          <ClusteredColumns groups={analytics.months.map((m, i) => ({
+            label: m,
+            bars: [
+              { name: "Forecast", value: analytics.forecastGp[i], colour: "#9C74DC" },
+              { name: "Statted", value: analytics.stattedGp[i], colour: "#1F7A3D" },
+            ],
+          }))} />
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "0.75rem" }} className="mb-3">
+        <RateCard label="Cancellation rate" pct={analytics.cancelRate} count={analytics.cancelled} of={analytics.nsTotal}
+          colour={analytics.cancelRate > 15 ? "var(--red)" : analytics.cancelRate > 8 ? "var(--amber)" : "var(--green)"}
+          hint="NetSuite orders with a cease, cancel, lost or reject status" />
+        <RateCard label="Rejection rate" pct={analytics.rejectRate} count={analytics.ngpCountAll} of={analytics.nsTotal}
+          colour={analytics.rejectRate > 15 ? "var(--red)" : analytics.rejectRate > 8 ? "var(--amber)" : "var(--green)"}
+          hint="Orders flagged NGP — statted but not counting toward GP" />
+        <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>Average deal</div>
+          <div className="sw-display font-bold mt-1" style={{ fontSize: 24 }}>{fmtGBP(analytics.avgDeal)}</div>
+          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>GP per order, this period</div>
+        </div>
+        <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>Forecast accuracy</div>
+          <div className="sw-display font-bold mt-1" style={{ fontSize: 24, color: analytics.accuracy >= 90 ? "var(--green)" : analytics.accuracy >= 70 ? "var(--amber)" : "var(--red)" }}>
+            {analytics.accuracy.toFixed(0)}%
+          </div>
+          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>statted against forecast, 6 months</div>
+        </div>
+      </div>
+
+      {/* Top deals */}
+      <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="sw-display font-bold text-sm mb-3" style={{ color: "var(--ink-soft)" }}>TOP 5 DEALS — THIS PERIOD</div>
+        {analytics.top.length === 0 ? (
+          <div className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>No deals in this period yet.</div>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {analytics.top.map((d, i) => {
+              const max = analytics.top[0].gp || 1;
+              return (
+                <div key={i} className="flex items-center gap-3">
+                  <span className="sw-mono text-xs font-bold shrink-0" style={{ color: "var(--ink-faint)", width: 14 }}>{i + 1}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-xs font-semibold truncate">{d.company}</span>
+                      <span className="sw-mono text-xs font-bold shrink-0" style={{ color: "var(--green)" }}>{fmtGBP(d.gp)}</span>
+                    </div>
+                    <div className="rounded-full mt-1" style={{ height: 4, background: "var(--surface-alt)" }}>
+                      <div className="rounded-full" style={{ width: `${(d.gp / max) * 100}%`, height: "100%", background: PRODUCT_SHADES[i % PRODUCT_SHADES.length] }} />
+                    </div>
+                  </div>
+                  <span className="text-xs shrink-0 truncate" style={{ color: "var(--ink-faint)", width: 110 }}>{d.agent}</span>
+                  <span className="sw-mono text-xs shrink-0" style={{ color: "var(--ink-soft)", width: 78, textAlign: "right" }}>{fmtGBP(d.sov)} SOV</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -2785,7 +3087,8 @@ function DayByDayView({ orders }) {
   const [team, setTeam] = useState("All");
   const [agent, setAgent] = useState("All");
   const [product, setProduct] = useState(null);
-  const [expanded, setExpanded] = useState({});   // {teamName_groupKey: true}
+  const [byTeam, setByTeam] = useState(true);      // split the table by team
+  const [byProduct, setByProduct] = useState(false); // show sub-products
 
   const agentOptions = useMemo(() => {
     const s = new Set();
@@ -2861,14 +3164,19 @@ function DayByDayView({ orders }) {
 
   const totalsRow = useMemo(() => {
     const blank = () => ({ week: [0, 0, 0, 0, 0], month: 0 });
-    const out = { gp: blank(), groups: {} };
-    DBD_GROUPS.forEach((g) => { out.groups[g.key] = blank(); });
+    const out = { gp: blank(), groups: {}, subs: {} };
+    DBD_GROUPS.forEach((g) => { out.groups[g.key] = blank(); out.subs[g.key] = {}; });
     data.forEach((t) => {
       out.gp.month += t.gp.month;
       t.gp.week.forEach((v, i) => { out.gp.week[i] += v; });
       DBD_GROUPS.forEach((g) => {
         out.groups[g.key].month += t.groups[g.key].month;
         t.groups[g.key].week.forEach((v, i) => { out.groups[g.key].week[i] += v; });
+        Object.keys(t.subs[g.key]).forEach((s) => {
+          if (!out.subs[g.key][s]) out.subs[g.key][s] = blank();
+          out.subs[g.key][s].month += t.subs[g.key][s].month;
+          t.subs[g.key][s].week.forEach((v, i) => { out.subs[g.key][s].week[i] += v; });
+        });
       });
     });
     return out;
@@ -2898,95 +3206,115 @@ function DayByDayView({ orders }) {
 
   return (
     <div>
-      <div className="flex items-center gap-3 mb-4 flex-wrap">
+      <div className="flex items-center gap-3 mb-3 flex-wrap">
         <CalendarDays size={18} style={{ color: "var(--primary)" }} />
         <h2 className="sw-display text-lg font-bold">Day by Day</h2>
         <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
-          Claimed Lilac Boxes · week commencing {fmtDate(wkStart)}
+          Claimed Lilac Boxes · w/c {fmtDate(wkStart)}
         </span>
+        <div className="ml-auto flex items-center gap-1.5">
+          <span className="text-xs font-semibold uppercase" style={{ color: "var(--ink-faint)" }}>Break down by</span>
+          {[["team", byTeam, setByTeam], ["product", byProduct, setByProduct]].map(([lbl, on, setOn]) => (
+            <button key={lbl} onClick={() => setOn(!on)}
+              className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold capitalize"
+              style={on ? { background: "var(--primary)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>
+              {lbl}
+            </button>
+          ))}
+        </div>
       </div>
 
       <ReportFilters team={team} setTeam={setTeam} agent={agent} setAgent={setAgent} agentOptions={agentOptions}
         right={product && (
           <button onClick={() => setProduct(null)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1"
-            style={{ background: "var(--primary)", color: "#fff" }}>{product} <X size={12} /></button>
+            style={{ background: "var(--primary)", color: "#fff" }}>
+            {DBD_GROUPS.find((g) => g.key === product)?.label} <X size={12} />
+          </button>
         )} />
 
-      <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-        <div className="overflow-x-auto">
-          <table className="w-full" style={{ borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ background: "var(--primary)" }}>
-                <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "#fff", position: "sticky", left: 0, background: "var(--primary)" }}>Team</th>
-                <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Month</th>
-                {DAY_NAMES.map((d) => (
-                  <th key={d} className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff" }}>{d.slice(0, 3)}</th>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(280px, 1fr)", gap: "0.75rem", alignItems: "start" }}>
+
+        {/* Table */}
+        <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="overflow-x-auto">
+            <table className="w-full" style={{ borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: "var(--primary)" }}>
+                  <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "#fff", position: "sticky", left: 0, background: "var(--primary)" }}>Metric</th>
+                  <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Month</th>
+                  {DAY_NAMES.map((d) => (
+                    <th key={d} className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff" }}>{d.slice(0, 3)}</th>
+                  ))}
+                  <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Week</th>
+                </tr>
+              </thead>
+              <tbody>
+                {/* All teams always leads */}
+                <tr style={{ background: "var(--ink)" }}>
+                  <td colSpan={8} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "#fff", position: "sticky", left: 0, background: "var(--ink)" }}>
+                    All teams
+                  </td>
+                </tr>
+                <Row label="GP" bucket={totalsRow.gp} bold tone="var(--green)" />
+                {DBD_GROUPS.map((g) => (
+                  <React.Fragment key={g.key}>
+                    <Row label={`${g.label} SOV`} bucket={totalsRow.groups[g.key]} accent={g.accent} />
+                    {byProduct && Object.keys(totalsRow.subs[g.key]).sort().map((s) => (
+                      <Row key={s} label={s} bucket={totalsRow.subs[g.key][s]} indent tone="var(--ink-faint)" />
+                    ))}
+                  </React.Fragment>
                 ))}
-                <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Week</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.map((t) => (
-                <React.Fragment key={t.team}>
-                  <tr style={{ background: "var(--surface-alt)", borderTop: "2px solid var(--border)" }}>
-                    <td colSpan={8} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "var(--primary)", position: "sticky", left: 0, background: "var(--surface-alt)" }}>
-                      {t.team}
-                    </td>
-                  </tr>
-                  <Row label="GP" bucket={t.gp} bold tone="var(--green)" />
-                  {DBD_GROUPS.map((g) => {
-                    const k = `${t.team}_${g.key}`;
-                    const open = !!expanded[k];
-                    const subs = Object.keys(t.subs[g.key]).sort();
-                    return (
+
+                {/* Then each team, if asked for */}
+                {byTeam && data.map((t) => (
+                  <React.Fragment key={t.team}>
+                    <tr style={{ background: "var(--surface-alt)", borderTop: "2px solid var(--border)" }}>
+                      <td colSpan={8} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "var(--primary)", position: "sticky", left: 0, background: "var(--surface-alt)" }}>
+                        {t.team}
+                      </td>
+                    </tr>
+                    <Row label="GP" bucket={t.gp} bold tone="var(--green)" />
+                    {DBD_GROUPS.map((g) => (
                       <React.Fragment key={g.key}>
-                        <Row label={`${g.label} SOV`} bucket={t.groups[g.key]} accent={g.accent}
-                          isOpen={open} onToggle={subs.length ? () => setExpanded((e) => ({ ...e, [k]: !e[k] })) : undefined} />
-                        {open && subs.map((s) => (
+                        <Row label={`${g.label} SOV`} bucket={t.groups[g.key]} accent={g.accent} />
+                        {byProduct && Object.keys(t.subs[g.key]).sort().map((s) => (
                           <Row key={s} label={s} bucket={t.subs[g.key][s]} indent tone="var(--ink-faint)" />
                         ))}
                       </React.Fragment>
-                    );
-                  })}
-                </React.Fragment>
-              ))}
+                    ))}
+                  </React.Fragment>
+                ))}
 
-              {data.length > 0 && (
-                <>
-                  <tr style={{ background: "var(--ink)", borderTop: "2px solid var(--ink)" }}>
-                    <td colSpan={8} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "#fff", position: "sticky", left: 0, background: "var(--ink)" }}>
-                      All teams
-                    </td>
-                  </tr>
-                  <Row label="GP" bucket={totalsRow.gp} bold tone="var(--green)" />
-                  {DBD_GROUPS.map((g) => (
-                    <Row key={g.key} label={`${g.label} SOV`} bucket={totalsRow.groups[g.key]} accent={g.accent} />
-                  ))}
-                </>
-              )}
+                {data.length === 0 && (
+                  <tr><td colSpan={8} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                    Nothing claimed this month yet.
+                  </td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
 
-              {data.length === 0 && (
-                <tr><td colSpan={8} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
-                  Nothing claimed this month yet.
-                </td></tr>
-              )}
-            </tbody>
-          </table>
+        {/* Charts, stacked beside the table */}
+        <div className="flex flex-col gap-3">
+          <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="sw-display font-bold text-xs mb-2" style={{ color: "var(--ink-soft)" }}>SOV SHARE — THIS MONTH</div>
+            <ProductTreemap items={chartItems} height={150}
+              selected={product ? DBD_GROUPS.find((g) => g.key === product)?.label : null}
+              onSelect={(name) => setProduct(name ? (DBD_GROUPS.find((g) => g.label === name)?.key || null) : null)} />
+          </div>
+          <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="sw-display font-bold text-xs mb-2" style={{ color: "var(--ink-soft)" }}>SOV BY PRODUCT</div>
+            <ProductBars items={chartItems} height={150}
+              selected={product ? DBD_GROUPS.find((g) => g.key === product)?.label : null}
+              onSelect={(name) => setProduct(name ? (DBD_GROUPS.find((g) => g.label === name)?.key || null) : null)} />
+          </div>
         </div>
       </div>
 
-      <ReportCharts
-        treemapItems={chartItems} treemapTitle="SOV THIS MONTH — SHARE"
-        productSelected={product ? DBD_GROUPS.find((g) => g.key === product)?.label : null}
-        onProductSelect={(name) => setProduct(name ? (DBD_GROUPS.find((g) => g.label === name)?.key || null) : null)}
-        barItems={chartItems} barTitle="SOV THIS MONTH — BY PRODUCT"
-        agentSelected={product ? DBD_GROUPS.find((g) => g.key === product)?.label : "All"}
-        onAgentSelect={(name) => setProduct(name && name !== "All" ? (DBD_GROUPS.find((g) => g.label === name)?.key || null) : null)} />
-
       <p className="text-xs mt-3" style={{ color: "var(--ink-faint)" }}>
-        DV4B counts within Cloud; BT Net, Broadband and Security within Connectivity. Click a product row
-        to break it down. Orders covering several products split their SOV evenly across them, so nothing
-        is counted twice.
+        DV4B counts within Cloud; BT Net, Broadband and Security within Connectivity. Orders covering
+        several products split their SOV evenly across them, so nothing is counted twice.
       </p>
     </div>
   );
