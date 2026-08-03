@@ -965,6 +965,8 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
   const [dataView, setDataView] = useState("claimed");   // forecast | claimed | statted
   const [productFilter, setProductFilter] = useState("All");
   const [focusFilter, setFocusFilter] = useState("All");   // All | aged | attention
+  const [sideCard, setSideCard] = useState("plan");        // which summary card is showing
+  const [topView, setTopView] = useState(false);           // headline figures only
   const [sortKey, setSortKey] = useState("last_updated");
   const [sortDir, setSortDir] = useState("desc");
   const role = profile?.role || "agent";
@@ -1318,6 +1320,50 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
     return totals;
   }, [netsuite, period, statusCfg, isOffice, is2ic, scope, profile, agentFilter, productFilter]);
 
+  // ---- Ranked agents: claimed against each person's own target --------
+  // Replaces the agent dropdown — the ranking is the selector.
+  const agentRanking = useMemo(() => {
+    const planById = {};
+    (payPlans || []).forEach((p) => { planById[p.id] = p; });
+
+    // Who's in scope: the team being viewed, or the whole office
+    const teamScope = isOffice && scope !== "office" ? scope : (is2ic ? profile?.team : null);
+    const people = (staff || []).filter((s) => {
+      if (s.sells === false || s.active === false) return false;
+      if (teamScope) return s.team === teamScope;
+      return !!s.team;
+    });
+
+    // Claimed GP per person, using their own share of each deal
+    const claimed = {};
+    gpCountable.forEach((o) => {
+      if (o.closer_name) claimed[o.closer_name] = (claimed[o.closer_name] || 0) + num(o.closer_share);
+      if (o.lead_gen_name) claimed[o.lead_gen_name] = (claimed[o.lead_gen_name] || 0) + num(o.lead_gen_share);
+    });
+
+    const rows = people.map((s) => {
+      const plan = s.pay_plan_id ? planById[s.pay_plan_id] : null;
+      const monthly = plan && plan.active !== false ? num(plan.target_gp) : 0;
+      return {
+        name: s.full_name,
+        team: s.team,
+        gp: claimed[s.full_name] || 0,
+        target: fullPeriodTarget(monthly, period),
+        pace: proRatedTarget(monthly, period),
+      };
+    });
+
+    // Anyone with figures who isn't on the staff list still deserves a row
+    Object.keys(claimed).forEach((nm) => {
+      if (!rows.some((r) => r.name === nm)) {
+        if (teamScope) return;
+        rows.push({ name: nm, team: null, gp: claimed[nm], target: 0, pace: 0 });
+      }
+    });
+
+    return rows.filter((r) => r.gp > 0 || r.target > 0).sort((a, b) => b.gp - a.gp);
+  }, [staff, payPlans, gpCountable, isOffice, is2ic, scope, profile, period]);
+
   // ---- Pay plan measured against what NetSuite actually statted -------
   // The KPI cards use claimed GP; this asks the harder question — has the
   // work landed against what the plan expects by now?
@@ -1450,24 +1496,71 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
     return `since ${s.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: period === "ytd" ? "numeric" : undefined })}`;
   }, [period]);
 
+  const SIDE_CARDS = [
+    { key: "plan", label: "Pay plan" },
+    { key: "rates", label: "Quality" },
+    { key: "deal", label: "Avg deal" },
+    { key: "accuracy", label: "Accuracy" },
+  ];
+
   return (
     <div>
-      {/* Headline figures. GP and SOV lead; product SOV sits beside them;
-          the health counts are a quiet strip rather than competing cards. */}
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.15fr) minmax(0, 1fr)", gap: "0.75rem" }} className="mb-3">
-
-        {/* Hero pair */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
-          <HeroCard
-            label={gpLabel} value={fmtGBP(gpTotal)} accent="#1F7A3D"
-            target={targets.gp} rawValue={gpTotal}
-            note={gpWorking.dc > 0 ? `${fmtGBP(gpWorking.claimed)} claimed − ${fmtGBP(gpWorking.dc)} DC` : "Single-counted"} />
-          <HeroCard
-            label="SOV" value={fmtGBP(sovTotal)} accent="#4C1D8F"
-            note={`${productScoped.length} order${productScoped.length === 1 ? "" : "s"}`} />
+      {/* Top view strips it back to the two numbers that matter most */}
+      <div className="flex items-center justify-end mb-2">
+        <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+          {[[false, "Full"], [true, "Top view"]].map(([v, lbl]) => (
+            <button key={String(v)} onClick={() => setTopView(v)}
+              className="sw-focus px-2.5 py-1 text-xs"
+              style={topView === v
+                ? { background: "var(--surface-alt)", color: "var(--ink)", fontWeight: 600 }
+                : { background: "transparent", color: "var(--ink-faint)" }}>
+              {lbl}
+            </button>
+          ))}
         </div>
+      </div>
 
-        {/* Product SOV, from NetSuite */}
+      {topView ? (
+        /* Just GP and SOV, given room to breathe */
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }} className="mb-3">
+          {[
+            { label: gpLabel, value: fmtGBP(gpTotal), target: targets.gp, raw: gpTotal,
+              note: gpWorking.dc > 0 ? `${fmtGBP(gpWorking.claimed)} claimed − ${fmtGBP(gpWorking.dc)} DC` : "Single-counted GP" },
+            { label: "SOV", value: fmtGBP(sovTotal), target: null, raw: 0,
+              note: `${productScoped.length} order${productScoped.length === 1 ? "" : "s"} · ${periodLabelFor(period)}` },
+          ].map((c) => {
+            const tone = c.target ? paceTone(c.raw, c.target) : null;
+            const pct = c.target ? Math.round((c.raw / c.target) * 100) : 0;
+            return (
+              <div key={c.label} className="rounded-xl px-6 py-7" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+                <div className="flex items-baseline justify-between">
+                  <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.05em" }}>{c.label}</span>
+                  {tone && <span className="text-xs font-semibold" style={{ color: tone.fg }}>{pct}% of pace</span>}
+                </div>
+                <div className="sw-display" style={{ fontSize: 46, fontWeight: 600, letterSpacing: "-0.03em", lineHeight: 1.05, marginTop: 10 }}>
+                  {c.value}
+                </div>
+                {tone && (
+                  <div className="rounded-full mt-4" style={{ height: 3, background: "var(--surface-alt)" }}>
+                    <div className="rounded-full" style={{ width: `${Math.min(100, pct)}%`, height: "100%", background: tone.fg, transition: "width .3s" }} />
+                  </div>
+                )}
+                <div className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>{c.note}</div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+      /* Headline row */
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) minmax(0,1.1fr) minmax(260px,1.15fr)", gap: "0.75rem" }} className="mb-3">
+
+        <HeroCard label={gpLabel} value={fmtGBP(gpTotal)} accent="#1F7A3D"
+          target={targets.gp} rawValue={gpTotal}
+          note={gpWorking.dc > 0 ? `${fmtGBP(gpWorking.claimed)} claimed − ${fmtGBP(gpWorking.dc)} DC` : "Single-counted"} />
+
+        <HeroCard label="SOV" value={fmtGBP(sovTotal)} accent="#4C1D8F"
+          note={`${productScoped.length} order${productScoped.length === 1 ? "" : "s"}`} />
+
         <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <div className="flex items-baseline justify-between mb-2.5">
             <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>SOV by product</span>
@@ -1480,9 +1573,101 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
             <MiniStat label="Total" value={nsSovCards.all} bold />
           </div>
         </div>
-      </div>
 
-      {/* Health — a quiet line, not a card */}
+        {/* One switchable card rather than four competing ones */}
+        <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="flex items-center gap-1 mb-2.5 flex-wrap">
+            {SIDE_CARDS.map((c) => (
+              <button key={c.key} onClick={() => setSideCard(c.key)}
+                className="sw-focus text-xs px-2 py-0.5 rounded"
+                style={sideCard === c.key
+                  ? { background: "var(--primary-soft)", color: "var(--primary)", fontWeight: 600 }
+                  : { color: "var(--ink-faint)" }}>
+                {c.label}
+              </button>
+            ))}
+          </div>
+
+          {sideCard === "plan" && (
+            targets.people > 0 ? (
+              <div className="flex flex-col gap-1.5">
+                {[
+                  ["GP", planVsStatted.gp, targets.full.gp, targets.gp],
+                  ["Cloud", planVsStatted.cloud, targets.full.cloud, targets.cloud],
+                  ["Connectivity", planVsStatted.conn, targets.full.conn, targets.conn],
+                  ["Mobile", planVsStatted.mobile, targets.full.mobile, targets.mobile],
+                ].map(([label, actual, full, pace]) => {
+                  const tone = paceTone(actual, pace);
+                  const pct = full > 0 ? Math.round((actual / full) * 100) : 0;
+                  const pacePct = full > 0 ? Math.min(100, (pace / full) * 100) : 0;
+                  return (
+                    <div key={label}>
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{label}</span>
+                        <span className="sw-mono text-xs" style={{ color: "var(--ink-faint)" }}>
+                          <b style={{ color: tone ? tone.fg : "var(--ink)" }}>{fmtGBP(actual)}</b>
+                          {full > 0 ? ` / ${fmtGBP(full)}` : ""}
+                        </span>
+                      </div>
+                      <div className="rounded-full mt-1" style={{ height: 4, background: "var(--surface-alt)", position: "relative" }}>
+                        <div className="rounded-full" style={{ width: `${Math.min(100, pct)}%`, height: "100%", background: tone ? tone.fg : "var(--ink-faint)" }} />
+                        {pacePct > 0 && pacePct < 100 && (
+                          <div style={{ position: "absolute", left: `${pacePct}%`, top: -1, bottom: -1, width: 2, background: "var(--ink)", opacity: 0.4 }} />
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-xs py-4 text-center" style={{ color: "var(--ink-faint)" }}>No pay plan set for this view.</div>
+            )
+          )}
+
+          {sideCard === "rates" && (
+            <div className="flex flex-col gap-3">
+              {[
+                ["Cancellation", analytics.cancelRate, analytics.cancelled, "NetSuite orders ceased, cancelled or lost"],
+                ["Rejection", analytics.rejectRate, analytics.ngpCountAll, "Statted but flagged NGP"],
+              ].map(([label, pct, count, hint]) => {
+                const colour = pct > 15 ? "var(--red)" : pct > 8 ? "var(--amber)" : "var(--green)";
+                return (
+                  <div key={label} title={hint}>
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{label}</span>
+                      <span className="sw-display" style={{ fontSize: 18, fontWeight: 600, color: "var(--ink)" }}>{pct.toFixed(1)}%</span>
+                    </div>
+                    <div className="rounded-full mt-1" style={{ height: 4, background: "var(--surface-alt)" }}>
+                      <div className="rounded-full" style={{ width: `${Math.min(100, pct)}%`, height: "100%", background: colour }} />
+                    </div>
+                    <div className="text-xs mt-0.5" style={{ color: "var(--ink-faint)" }}>{count} of {analytics.nsTotal}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {sideCard === "deal" && (
+            <div>
+              <div className="sw-display" style={{ fontSize: 27, fontWeight: 600, letterSpacing: "-0.025em" }}>{fmtGBP(analytics.avgDeal)}</div>
+              <div className="text-xs mt-1" style={{ color: "var(--ink-faint)" }}>Average GP per order, {periodLabelFor(period).toLowerCase()}</div>
+            </div>
+          )}
+
+          {sideCard === "accuracy" && (
+            <div>
+              <div className="sw-display" style={{ fontSize: 27, fontWeight: 600, letterSpacing: "-0.025em",
+                color: analytics.accuracy >= 90 ? "var(--green)" : analytics.accuracy >= 70 ? "var(--amber)" : "var(--red)" }}>
+                {analytics.accuracy.toFixed(0)}%
+              </div>
+              <div className="text-xs mt-1" style={{ color: "var(--ink-faint)" }}>Statted against forecast, last six months</div>
+            </div>
+          )}
+        </div>
+      </div>
+      )}
+
+      {/* Health */}
       <div className="flex items-center gap-5 flex-wrap mb-4 px-1">
         <HealthItem label="active" value={activeOrders} colour="var(--blue)" hint="Not yet complete" />
         <HealthItem label="not statted" value={notStattedCount} colour="var(--amber)" hint="No NetSuite match after 12h" />
@@ -1496,6 +1681,99 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         </button>
       </div>
 
+      {/* Ranked team on the left, orders on the right */}
+      <div style={{ display: "grid", gridTemplateColumns: "300px minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }}>
+
+        {/* LEFT */}
+        <div style={{ position: "sticky", top: 12, maxHeight: "calc(100vh - 24px)", overflowY: "auto" }} className="flex flex-col gap-3 pr-0.5">
+
+          {/* The ranking is the agent picker */}
+          <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="flex items-baseline justify-between mb-3">
+              <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>
+                {isOffice && scope !== "office" ? scope : is2ic && profile?.team ? profile.team : "Office"}
+              </span>
+              {agentFilter !== "All" && (
+                <button onClick={() => setAgentFilter("All")} className="sw-focus text-xs" style={{ color: "var(--primary)" }}>Clear</button>
+              )}
+            </div>
+            {agentRanking.length === 0 ? (
+              <div className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>No figures for this period.</div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {agentRanking.map((a, i) => {
+                  const tone = paceTone(a.gp, a.pace);
+                  const pct = a.target > 0 ? Math.min(100, (a.gp / a.target) * 100) : 0;
+                  const pacePct = a.target > 0 ? Math.min(100, (a.pace / a.target) * 100) : 0;
+                  const sel = agentFilter === a.name;
+                  return (
+                    <button key={a.name} onClick={() => setAgentFilter(sel ? "All" : a.name)}
+                      className="sw-focus text-left rounded-lg px-2 py-1.5"
+                      style={{ background: sel ? "var(--primary-soft)" : "transparent" }}
+                      title={a.target > 0 ? `${fmtGBP(a.gp)} of ${fmtGBP(a.target)}` : fmtGBP(a.gp)}>
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="text-xs truncate" style={{ color: sel ? "var(--primary)" : "var(--ink)", fontWeight: sel ? 600 : 500 }}>
+                          <span className="sw-mono" style={{ color: "var(--ink-faint)", marginRight: 6 }}>{i + 1}</span>
+                          {a.name}
+                        </span>
+                        <span className="sw-mono text-xs shrink-0" style={{ color: tone ? tone.fg : "var(--ink-soft)", fontWeight: 600 }}>{fmtGBP(a.gp)}</span>
+                      </div>
+                      {a.target > 0 && (
+                        <div className="rounded-full mt-1" style={{ height: 4, background: "var(--surface-alt)", position: "relative" }}>
+                          <div className="rounded-full" style={{ width: `${pct}%`, height: "100%", background: tone ? tone.fg : "var(--ink-faint)" }} />
+                          {pacePct > 0 && pacePct < 100 && (
+                            <div style={{ position: "absolute", left: `${pacePct}%`, top: -1, bottom: -1, width: 2, background: "var(--ink)", opacity: 0.35 }} />
+                          )}
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Statted vs forecast */}
+          <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="flex items-baseline justify-between mb-3">
+              <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Statted vs forecast</span>
+              <span className="text-xs" style={{ color: analytics.accuracy >= 90 ? "var(--green)" : analytics.accuracy >= 70 ? "var(--amber)" : "var(--red)" }}>
+                {analytics.accuracy.toFixed(0)}%
+              </span>
+            </div>
+            <TargetBars height={150} groups={analytics.months.map((m, i) => ({
+              label: m, actual: analytics.stattedGp[i], target: analytics.forecastGp[i],
+            }))} />
+          </div>
+
+          {/* Top deals */}
+          <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="text-xs font-medium uppercase mb-3" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Top 5 deals</div>
+            {analytics.top.length === 0 ? (
+              <div className="text-xs text-center py-4" style={{ color: "var(--ink-faint)" }}>No deals in this period.</div>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                {analytics.top.map((d, i) => {
+                  const max = analytics.top[0].gp || 1;
+                  return (
+                    <div key={i}>
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="text-xs truncate">{d.company}</span>
+                        <span className="sw-mono text-xs shrink-0" style={{ color: "var(--ink-soft)", fontWeight: 600 }}>{fmtGBP(d.gp)}</span>
+                      </div>
+                      <div className="rounded-full mt-1" style={{ height: 3, background: "var(--surface-alt)" }}>
+                        <div className="rounded-full" style={{ width: `${(d.gp / max) * 100}%`, height: "100%", background: "var(--primary)" }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* RIGHT — filters and the order list */}
+        <div>
       {/* One condensed filter bar: view, period, team, search, agent, status, product */}
       <div className="mb-3 flex items-center gap-2 flex-wrap">
 
@@ -1538,12 +1816,6 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
           <input className="sw-input sw-focus" style={{ paddingLeft: 32 }} placeholder="Search company..." value={query} onChange={(e) => setQuery(e.target.value)} />
         </div>
 
-        {canFilterByAgent && (
-          <select className="sw-input sw-focus" style={{ width: 155 }} value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)}>
-            <option value="All">All agents</option>
-            {agentOptions.map((a) => <option key={a} value={a}>{a}</option>)}
-          </select>
-        )}
 
         <select className="sw-input sw-focus" style={{ width: 150 }} value={productFilter} onChange={(e) => setProductFilter(e.target.value)}>
           <option value="All">All products</option>
@@ -1691,122 +1963,8 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
           </table>
         </div>
         <div className="flex items-center gap-1.5 px-4 py-2.5 text-xs" style={{ color: "var(--ink-faint)", borderTop: "1px solid var(--border)" }}><RefreshCw size={11} /> Live — updates as orders change</div>
-      </div>
-
-      {/* Analytics column — sticks while the list scrolls */}
-      <div style={{ position: "sticky", top: 12, maxHeight: "calc(100vh - 24px)", overflowY: "auto" }} className="flex flex-col gap-3 pr-0.5">
-
-        {/* Pay plan against what has actually statted */}
-        {targets.people > 0 && (
-          <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-            <div className="flex items-baseline justify-between mb-3">
-              <div className="sw-display text-sm" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>PAY PLAN vs STATTED</div>
-              <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
-                {targets.people} plan{targets.people === 1 ? "" : "s"} · {periodLabelFor(period)}
-              </span>
-            </div>
-            <div className="flex flex-col gap-2">
-              {[
-                ["GP", planVsStatted.gp, targets.full.gp, targets.gp],
-                ["Cloud SOV", planVsStatted.cloud, targets.full.cloud, targets.cloud],
-                ["Connectivity SOV", planVsStatted.conn, targets.full.conn, targets.conn],
-                ["Mobile SOV", planVsStatted.mobile, targets.full.mobile, targets.mobile],
-              ].map(([label, actual, full, pace]) => {
-                // Progress is against the whole target; the colour is against
-                // where they should be today.
-                const tone = paceTone(actual, pace);
-                const pct = full > 0 ? Math.round((actual / full) * 100) : 0;
-                const pacePct = full > 0 ? Math.min(100, (pace / full) * 100) : 0;
-                return (
-                  <div key={label}>
-                    <div className="flex items-baseline justify-between gap-2">
-                      <span className="text-xs font-semibold" style={{ color: "var(--ink-soft)" }}>{label}</span>
-                      <span className="sw-mono text-xs" style={{ color: "var(--ink-faint)" }}>
-                        <b style={{ color: tone ? tone.fg : "var(--ink)" }}>{fmtGBP(actual)}</b>
-                        {full > 0 ? ` / ${fmtGBP(full)}` : ""}
-                        {full > 0 && <span style={{ marginLeft: 4 }}>{pct}%</span>}
-                      </span>
-                    </div>
-                    <div className="rounded-full mt-1" style={{ height: 6, background: "var(--surface-alt)", position: "relative" }}>
-                      <div className="rounded-full" style={{ width: `${Math.min(100, pct)}%`, height: "100%", background: tone ? tone.fg : "var(--ink-faint)", transition: "width .3s" }} />
-                      {/* where they should be by today */}
-                      {pacePct > 0 && pacePct < 100 && (
-                        <div style={{ position: "absolute", left: `${pacePct}%`, top: -2, bottom: -2, width: 2, background: "var(--ink)", opacity: 0.55 }}
-                          title={`On pace today: ${fmtGBP(pace)}`} />
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
-              Bars run to the full {periodLabelFor(period)} target; the marker is where you should be today.
-              Green means on or ahead of pace. Measured against NetSuite, so claimed GP usually runs ahead.
-            </p>
-          </div>
-        )}
-        {/* Top deals */}
-        <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="sw-display text-sm mb-3" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>TOP 5 DEALS — THIS PERIOD</div>
-          {analytics.top.length === 0 ? (
-            <div className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>No deals in this period yet.</div>
-          ) : (
-            <div className="flex flex-col gap-1.5">
-              {analytics.top.map((d, i) => {
-                const max = analytics.top[0].gp || 1;
-                return (
-                  <div key={i} className="flex items-center gap-3">
-                    <span className="sw-mono text-xs font-bold shrink-0" style={{ color: "var(--ink-faint)", width: 14 }}>{i + 1}</span>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-baseline justify-between gap-2">
-                        <span className="text-xs font-semibold truncate">{d.company}</span>
-                        <span className="sw-mono text-xs font-bold shrink-0" style={{ color: "var(--green)" }}>{fmtGBP(d.gp)}</span>
-                      </div>
-                      <div className="rounded-full mt-1" style={{ height: 4, background: "var(--surface-alt)" }}>
-                        <div className="rounded-full" style={{ width: `${(d.gp / max) * 100}%`, height: "100%", background: PRODUCT_SHADES[i % PRODUCT_SHADES.length] }} />
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </div>
-        <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="flex items-baseline justify-between mb-3">
-            <div className="sw-display text-sm" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>STATTED vs FORECAST</div>
-            <span className="text-xs" style={{ color: analytics.accuracy >= 90 ? "var(--green)" : analytics.accuracy >= 70 ? "var(--amber)" : "var(--red)" }}>
-              {analytics.accuracy.toFixed(0)}% of forecast
-            </span>
-          </div>
-          <TargetBars groups={analytics.months.map((m, i) => ({
-            label: m,
-            actual: analytics.stattedGp[i],
-            target: analytics.forecastGp[i],
-          }))} />
         </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
-        <RateCard label="Cancellation rate" pct={analytics.cancelRate} count={analytics.cancelled} of={analytics.nsTotal}
-          colour={analytics.cancelRate > 15 ? "var(--red)" : analytics.cancelRate > 8 ? "var(--amber)" : "var(--green)"}
-          hint="NetSuite orders with a cease, cancel, lost or reject status" />
-        <RateCard label="Rejection rate" pct={analytics.rejectRate} count={analytics.ngpCountAll} of={analytics.nsTotal}
-          colour={analytics.rejectRate > 15 ? "var(--red)" : analytics.rejectRate > 8 ? "var(--amber)" : "var(--green)"}
-          hint="Orders flagged NGP — statted but not counting toward GP" />
-        <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>Average deal</div>
-          <div className="sw-display font-bold mt-1" style={{ fontSize: 24 }}>{fmtGBP(analytics.avgDeal)}</div>
-          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>GP per order, this period</div>
-        </div>
-        <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>Forecast accuracy</div>
-          <div className="sw-display font-bold mt-1" style={{ fontSize: 24, color: analytics.accuracy >= 90 ? "var(--green)" : analytics.accuracy >= 70 ? "var(--amber)" : "var(--red)" }}>
-            {analytics.accuracy.toFixed(0)}%
-          </div>
-          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>statted against forecast, 6 months</div>
-        </div>
-      </div>
-
       </div>
       </div>
     </div>
@@ -7015,7 +7173,10 @@ export default function App() {
     loadOrders();
   }, [loadOrders, session]);
 
-  // Can the current user edit this deal? office = any; 2ic = their team; agent = only deals they closed.
+  // Who can change a deal:
+  //   office (manager) — anything
+  //   2ic              — anything in their team, whoever closed it
+  //   agent            — only deals they closed themselves
   const canEditOrder = useCallback((o) => {
     if (!o || !profile) return false;
     if (profile.role === "office") return true;
