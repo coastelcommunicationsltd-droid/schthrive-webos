@@ -63,6 +63,16 @@ const resolveName = (name, aliases) => {
   return hit || name;
 };
 
+// A leaver's name still needs to appear on real historical orders — hiding
+// the row would hide real business data — but softened to first name plus
+// last initial rather than shown in full.
+function obscureName(name, leaverNames) {
+  if (!name || !leaverNames || !leaverNames.has(name)) return name;
+  const parts = String(name).trim().split(/\s+/);
+  if (parts.length < 2) return parts[0];
+  return `${parts[0]} ${parts[parts.length - 1][0]}.`;
+}
+
 /* ---- Postcodes --------------------------------------------------------
    The "area" is the leading letters of a UK postcode — PL is Plymouth,
    EX Exeter, TQ Torquay. That's the right grain for a sales heatmap:
@@ -1455,9 +1465,19 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
 
   // ---- Ranked agents: claimed against each person's own target --------
   // Replaces the agent dropdown — the ranking is the selector.
+  // Whose name gets softened wherever an order shows it
+  const leaverNames = useMemo(
+    () => new Set((staff || []).filter((s) => s.active === false).map((s) => s.full_name)),
+    [staff]
+  );
+
   const agentRanking = useMemo(() => {
     const planById = {};
     (payPlans || []).forEach((p) => { planById[p.id] = p; });
+
+    // Everyone who's left, by name — checked before adding any row, so a
+    // leaver's historical figures can never resurface as a named entry.
+    const leaverNames = new Set((staff || []).filter((s) => s.active === false).map((s) => s.full_name));
 
     // Who's in scope: the team being viewed, or the whole office
     const teamScope = isOffice && scope !== "office" ? scope : (is2ic ? profile?.team : null);
@@ -1484,49 +1504,51 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       if (!mix[nm]) mix[nm] = {};
       mix[nm][b] = (mix[nm][b] || 0) + v;
     };
-    // Split separately: SOV they closed themselves, and GP earned purely
-    // as lead gen — these drive the two segments of the little bar below
-    // each name.
-    const closerSov = {};
-    const leadGenGp = {};
     gpCountable.forEach((o) => {
       const b = bucketOf(o);
       add(o.closer_name, num(o.closer_share), b);
       add(o.lead_gen_name, num(o.lead_gen_share), b);
-      if (o.closer_name) closerSov[o.closer_name] = (closerSov[o.closer_name] || 0) + num(o.contract_value);
-      if (o.lead_gen_name) leadGenGp[o.lead_gen_name] = (leadGenGp[o.lead_gen_name] || 0) + num(o.lead_gen_share);
+    });
+
+    // Statted GP per person — the figure the bar is actually measured
+    // against, since that's what the pay plan judges.
+    const from = periodStart(period);
+    const statted = {};
+    (netsuite || []).forEach((n) => {
+      if (from && (!n.order_date || new Date(n.order_date + "T00:00:00") < from)) return;
+      const cfg = n.order_status ? statusCfg[n.order_status] : null;
+      const countsGp = cfg ? cfg.count_gp !== false : n.count_gp !== false;
+      if (!countsGp) return;
+      if (n.closer_name) statted[n.closer_name] = (statted[n.closer_name] || 0) + num(n.closer_gp);
+      if (n.referrer_name) statted[n.referrer_name] = (statted[n.referrer_name] || 0) + num(n.referrer_gp);
     });
 
     const rows = people.map((s) => {
       const plan = s.pay_plan_id ? planById[s.pay_plan_id] : null;
       const hasPlan = !!(plan && plan.active !== false);
       const monthly = hasPlan ? num(plan.target_gp) : 0;
-      const sovMonthly = hasPlan
-        ? num(plan.target_cloud_sov) + num(plan.target_connectivity_sov) + num(plan.target_mobile_sov)
-        : 0;
       return {
         name: s.full_name,
         team: s.team,
         gp: claimed[s.full_name] || 0,
+        statted: statted[s.full_name] || 0,
         mix: mix[s.full_name] || {},
         target: fullPeriodTarget(monthly, period),
         pace: proRatedTarget(monthly, period),
         hasPlan,
-        closerSov: closerSov[s.full_name] || 0,
-        sovTarget: fullPeriodTarget(sovMonthly, period),
-        leadGenGp: leadGenGp[s.full_name] || 0,
-        leadGenTarget: fullPeriodTarget(monthly, period),
       };
     });
 
     // Anyone with figures who isn't on the staff list still deserves a row
+    // — but never a leaver. Their GP still flows into the team/office
+    // totals elsewhere; they just don't get a named row here.
     Object.keys(claimed).forEach((nm) => {
+      if (leaverNames.has(nm)) return;
       if (!rows.some((r) => r.name === nm)) {
         if (teamScope) return;
         rows.push({
-          name: nm, team: null, gp: claimed[nm], mix: mix[nm] || {}, target: 0, pace: 0,
-          hasPlan: false, closerSov: closerSov[nm] || 0, sovTarget: 0,
-          leadGenGp: leadGenGp[nm] || 0, leadGenTarget: 0,
+          name: nm, team: null, gp: claimed[nm], statted: statted[nm] || 0,
+          mix: mix[nm] || {}, target: 0, pace: 0, hasPlan: false,
         });
       }
     });
@@ -1534,7 +1556,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
     // Everyone shows, including those on nothing — that's the point of a
     // ranking. Zero-GP people sort to the bottom, alphabetically.
     return rows.sort((a, b) => (b.gp - a.gp) || a.name.localeCompare(b.name));
-  }, [staff, payPlans, gpCountable, isOffice, is2ic, scope, profile, period]);
+  }, [staff, payPlans, gpCountable, netsuite, statusCfg, isOffice, is2ic, scope, profile, period]);
 
   // ---- Pay plan measured against what NetSuite actually statted -------
   // The KPI cards use claimed GP; this asks the harder question — has the
@@ -1928,28 +1950,33 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                           {fmtGBP(a.gp)}
                         </span>
                       </div>
-                      {/* Closer SOV vs target (solid block) then Lead Gen
-                          GP vs target (hollow) — no pay plan means there's
-                          nothing to measure against, shown as a flat red
-                          line rather than a bar that would be meaningless. */}
-                      {a.hasPlan ? (
-                        <div className="flex items-center gap-1 mt-1">
-                          <div className="rounded-full overflow-hidden flex-1" style={{ height: 4, background: "var(--surface-alt)" }}
-                            title={`Closer SOV: ${fmtGBP(a.closerSov)} of ${fmtGBP(a.sovTarget)}`}>
-                            <div style={{
-                              width: `${a.sovTarget > 0 ? Math.min(100, (a.closerSov / a.sovTarget) * 100) : 0}%`,
-                              height: "100%", background: "var(--primary)",
-                            }} />
+                      {/* Statted GP vs pay plan target. The bar scales to
+                          150% of target so there's room to show going over —
+                          the part beyond target renders in green regardless
+                          of the base colour, since exceeding is always good.
+                          No plan at all means there's nothing to measure
+                          against, shown as a flat red line instead. */}
+                      {a.hasPlan ? (() => {
+                        const scaleMax = a.target * 1.5;
+                        const baseAmt = Math.min(a.statted, a.target);
+                        const overAmt = Math.max(0, a.statted - a.target);
+                        const basePct = scaleMax > 0 ? Math.min(100, (baseAmt / scaleMax) * 100) : 0;
+                        const overPct = scaleMax > 0 ? Math.min(100 - basePct, (overAmt / scaleMax) * 100) : 0;
+                        const pacePct = scaleMax > 0 ? Math.min(100, (a.pace / scaleMax) * 100) : 0;
+                        const baseTone = paceTone(a.statted, a.pace);
+                        return (
+                          <div className="mt-1" style={{ height: 4, background: "var(--surface-alt)", borderRadius: 2, position: "relative", overflow: "hidden" }}
+                            title={`Statted: ${fmtGBP(a.statted)} of ${fmtGBP(a.target)} target${overAmt > 0 ? ` — ${fmtGBP(overAmt)} over` : ""}`}>
+                            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${basePct}%`, background: baseTone ? baseTone.fg : "var(--ink-faint)" }} />
+                            {overPct > 0 && (
+                              <div style={{ position: "absolute", left: `${basePct}%`, top: 0, bottom: 0, width: `${overPct}%`, background: "var(--green)" }} />
+                            )}
+                            {pacePct > 0 && pacePct < 100 && (
+                              <div style={{ position: "absolute", left: `calc(${pacePct}% - 1px)`, top: -1, bottom: -1, width: 2, background: "var(--ink)", opacity: 0.4 }} />
+                            )}
                           </div>
-                          <div className="rounded-full flex-1" style={{ height: 4, background: "var(--surface-alt)", border: "1px solid var(--primary)", boxSizing: "border-box" }}
-                            title={`Lead gen GP: ${fmtGBP(a.leadGenGp)} of ${fmtGBP(a.leadGenTarget)}`}>
-                            <div style={{
-                              width: `${a.leadGenTarget > 0 ? Math.min(100, (a.leadGenGp / a.leadGenTarget) * 100) : 0}%`,
-                              height: "100%", background: "var(--primary-soft)",
-                            }} />
-                          </div>
-                        </div>
-                      ) : (
+                        );
+                      })() : (
                         <div className="mt-1" style={{ height: 2, background: "var(--red)", opacity: 0.6, borderRadius: 1 }}
                           title="No pay plan set" />
                       )}
@@ -1964,120 +1991,124 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
 
         {/* RIGHT — filters and the order list */}
         <div>
-      {/* Filters — one row, consistent control heights */}
-      <div className="mb-3 flex items-center gap-1.5 flex-wrap">
+      {/* Filters — grouped into a single clean toolbar: scope on top,
+          refinement below, one consistent control height throughout. */}
+      <div className="rounded-xl mb-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
 
-        {/* What we're looking at */}
-        <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-          {[["forecast", "Forecast"], ["claimed", "Claimed"], ["statted", "Statted"]].map(([k, lbl]) => (
-            <button key={k} onClick={() => { setDataView(k); setStatusFilter("All"); setProductFilter("All"); setFocusFilter("All"); }}
-              className="sw-focus px-3 py-2 text-xs"
-              style={dataView === k
-                ? { background: "var(--primary)", color: "#fff", fontWeight: 600 }
-                : { background: "transparent", color: "var(--ink-faint)" }}>
-              {lbl}
-            </button>
-          ))}
-        </div>
+        {/* Row 1 — what we're looking at */}
+        <div className="flex items-center gap-2 px-3 py-2.5 flex-wrap">
+          <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 32 }}>
+            {[["forecast", "Forecast"], ["claimed", "Claimed"], ["statted", "Statted"]].map(([k, lbl]) => (
+              <button key={k} onClick={() => { setDataView(k); setStatusFilter("All"); setProductFilter("All"); setFocusFilter("All"); }}
+                className="sw-focus px-3 text-xs"
+                style={dataView === k
+                  ? { background: "var(--primary)", color: "#fff", fontWeight: 600, height: "100%" }
+                  : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
+                {lbl}
+              </button>
+            ))}
+          </div>
 
-        {/* Period */}
-        <select className="sw-input sw-focus" style={{ width: 108 }} value={period} onChange={(e) => setPeriod(e.target.value)} title={periodLabel}>
-          {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
-        </select>
-
-        {/* Team scope */}
-        {isOffice && (
-          <select className="sw-input sw-focus" style={{ width: 150 }} value={scope} onChange={(e) => setScope(e.target.value)}>
-            <option value="office">Whole Office</option>
-            {teamOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+          <select className="sw-input sw-focus" style={{ width: 100, height: 32, fontSize: 12.5 }} value={period} onChange={(e) => setPeriod(e.target.value)} title={periodLabel}>
+            {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
           </select>
-        )}
-        {is2ic && (
-          <span className="px-2.5 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap" style={{ background: "var(--primary-soft)", color: "var(--primary)" }}>
-            {profile?.team || "My team"}
-          </span>
-        )}
 
-        {/* Search */}
-        <div className="relative" style={{ flex: 1, minWidth: 170 }}>
-          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--ink-faint)" }} />
-          <input className="sw-input sw-focus" style={{ paddingLeft: 32 }} placeholder="Search company..." value={query} onChange={(e) => setQuery(e.target.value)} />
+          {isOffice && (
+            <select className="sw-input sw-focus" style={{ width: 150, height: 32, fontSize: 12.5 }} value={scope} onChange={(e) => setScope(e.target.value)}>
+              <option value="office">Whole Office</option>
+              {teamOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          )}
+          {is2ic && (
+            <span className="flex items-center px-2.5 rounded-lg text-xs font-semibold whitespace-nowrap" style={{ height: 32, background: "var(--primary-soft)", color: "var(--primary)" }}>
+              {profile?.team || "My team"}
+            </span>
+          )}
+
+          <div className="relative" style={{ flex: 1, minWidth: 180 }}>
+            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: "var(--ink-faint)" }} />
+            <input className="sw-input sw-focus" style={{ paddingLeft: 28, height: 32, fontSize: 12.5 }} placeholder="Search company..." value={query} onChange={(e) => setQuery(e.target.value)} />
+          </div>
         </div>
 
+        {/* Row 2 — narrow it down */}
+        <div className="flex items-center gap-2 px-3 py-2.5 flex-wrap" style={{ borderTop: "1px solid var(--border)" }}>
+          <select className="sw-input sw-focus" style={{ width: 140, height: 32, fontSize: 12.5 }} value={productFilter} onChange={(e) => setProductFilter(e.target.value)}>
+            <option value="All">All products</option>
+            {productOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
 
-        <select className="sw-input sw-focus" style={{ width: 150 }} value={productFilter} onChange={(e) => setProductFilter(e.target.value)}>
-          <option value="All">All products</option>
-          {productOptions.map((p) => <option key={p} value={p}>{p}</option>)}
-        </select>
+          <select className="sw-input sw-focus" style={{ width: 160, height: 32, fontSize: 12.5 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+            <option value="All">All statuses</option>
+            {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+            {dataView === "claimed" && <option value="__not_statted">Not Statted</option>}
+          </select>
 
-        <select className="sw-input sw-focus" style={{ width: 155 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-          <option value="All">All statuses</option>
-          {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
-          {dataView === "claimed" && <option value="__not_statted">⚠ Not Statted</option>}
-        </select>
+          <span style={{ width: 1, height: 20, background: "var(--border)" }} />
 
-        {/* Exceptions — everything that narrows the list to a problem set */}
-        <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-          {[
-            ["hide", "Hide NGP", null, "NGP orders don't count toward GP"],
-            ["show", "Show NGP", null, "Include NGP orders in the list"],
-            ["only", "Only NGP", ngpCount, "Just the NGP orders"],
-          ].map(([k, lbl, n, hint]) => (
-            <button key={k} onClick={() => { setNgpMode(k); setFocusFilter("All"); }} title={hint}
-              className="sw-focus px-2.5 py-2 text-xs whitespace-nowrap"
-              style={ngpMode === k && focusFilter === "All"
-                ? { background: k === "only" ? "var(--red)" : "var(--surface-alt)", color: k === "only" ? "#fff" : "var(--ink)", fontWeight: 600 }
-                : { background: "transparent", color: "var(--ink-faint)" }}>
-              {lbl}{n ? ` (${n})` : ""}
+          {/* Exceptions — one consistent segmented group */}
+          <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 32 }}>
+            {[
+              ["hide", "Hide NGP", null, "NGP orders don't count toward GP"],
+              ["show", "Show NGP", null, "Include NGP orders in the list"],
+              ["only", "Only NGP", ngpCount, "Just the NGP orders"],
+            ].map(([k, lbl, n, hint]) => (
+              <button key={k} onClick={() => { setNgpMode(k); setFocusFilter("All"); }} title={hint}
+                className="sw-focus px-2.5 text-xs whitespace-nowrap"
+                style={ngpMode === k && focusFilter === "All"
+                  ? { background: "var(--surface-alt)", color: "var(--ink)", fontWeight: 600, height: "100%" }
+                  : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
+                {lbl}{n ? ` (${n})` : ""}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 32 }}>
+            <button onClick={() => { setNsovMode(nsovMode === "only" ? "show" : "only"); setFocusFilter("All"); }}
+              title="Orders flagged NSOV — excluded from SOV, still counts toward GP"
+              className="sw-focus px-2.5 text-xs whitespace-nowrap"
+              style={nsovMode === "only" && focusFilter === "All"
+                ? { background: "var(--amber-soft)", color: "var(--amber)", fontWeight: 600, height: "100%" }
+                : { background: "transparent", color: nsovCount ? "var(--ink-soft)" : "var(--ink-faint)", height: "100%" }}>
+              NSOV{nsovCount ? ` (${nsovCount})` : ""}
             </button>
-          ))}
-          <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
-          {/* NSOV still counts toward GP, so it stays visible by default —
-              this is only for finding it, not hiding it. */}
-          <button onClick={() => { setNsovMode(nsovMode === "only" ? "show" : "only"); setFocusFilter("All"); }}
-            title="Orders flagged NSOV — excluded from SOV, still counts toward GP"
-            className="sw-focus px-2.5 py-2 text-xs whitespace-nowrap"
-            style={nsovMode === "only" && focusFilter === "All"
-              ? { background: "var(--amber)", color: "#fff", fontWeight: 600 }
-              : { background: "transparent", color: nsovCount ? "var(--amber)" : "var(--ink-faint)" }}>
-            Only NSOV{nsovCount ? ` (${nsovCount})` : ""}
-          </button>
-          <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
-          <button onClick={() => setFocusFilter(focusFilter === "attention" ? "All" : "attention")}
-            title="Orders at a status that needs the agent to act"
-            className="sw-focus px-2.5 py-2 text-xs whitespace-nowrap"
-            style={focusFilter === "attention"
-              ? { background: "var(--amber)", color: "#fff", fontWeight: 600 }
-              : { background: "transparent", color: attentionCount ? "var(--amber)" : "var(--ink-faint)" }}>
-            Needs action{attentionCount ? ` (${attentionCount})` : ""}
-          </button>
-          <button onClick={() => setFocusFilter(focusFilter === "aged" ? "All" : "aged")}
-            title="Submitted more than 90 days ago"
-            className="sw-focus px-2.5 py-2 text-xs whitespace-nowrap"
-            style={focusFilter === "aged"
-              ? { background: "var(--red)", color: "#fff", fontWeight: 600 }
-              : { background: "transparent", color: agedCount ? "var(--red)" : "var(--ink-faint)" }}>
-            90+ days{agedCount ? ` (${agedCount})` : ""}
-          </button>
-        </div>
+            <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
+            <button onClick={() => setFocusFilter(focusFilter === "attention" ? "All" : "attention")}
+              title="Orders at a status that needs the agent to act"
+              className="sw-focus px-2.5 text-xs whitespace-nowrap"
+              style={focusFilter === "attention"
+                ? { background: "var(--amber-soft)", color: "var(--amber)", fontWeight: 600, height: "100%" }
+                : { background: "transparent", color: attentionCount ? "var(--ink-soft)" : "var(--ink-faint)", height: "100%" }}>
+              Needs action{attentionCount ? ` (${attentionCount})` : ""}
+            </button>
+            <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
+            <button onClick={() => setFocusFilter(focusFilter === "aged" ? "All" : "aged")}
+              title="Submitted more than 90 days ago"
+              className="sw-focus px-2.5 text-xs whitespace-nowrap"
+              style={focusFilter === "aged"
+                ? { background: "var(--red-soft)", color: "var(--red)", fontWeight: 600, height: "100%" }
+                : { background: "transparent", color: agedCount ? "var(--ink-soft)" : "var(--ink-faint)", height: "100%" }}>
+              90+ days{agedCount ? ` (${agedCount})` : ""}
+            </button>
+          </div>
 
-        {/* Campaign and acquisition slices */}
-        <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-          <button onClick={() => setCampaignOnly((v) => !v)} title="Only deals from a named campaign"
-            className="sw-focus px-2.5 py-2 text-xs whitespace-nowrap"
-            style={campaignOnly
-              ? { background: "var(--primary)", color: "#fff", fontWeight: 600 }
-              : { background: "transparent", color: "var(--ink-faint)" }}>
-            🎯 Campaign
-          </button>
-          <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
-          <button onClick={() => setAcqOnly((v) => !v)} title="Only acquisitions — new business"
-            className="sw-focus px-2.5 py-2 text-xs whitespace-nowrap"
-            style={acqOnly
-              ? { background: "var(--primary)", color: "#fff", fontWeight: 600 }
-              : { background: "transparent", color: "var(--ink-faint)" }}>
-            ACQ
-          </button>
+          <div className="flex items-center rounded-lg overflow-hidden ml-auto" style={{ border: "1px solid var(--border)", height: 32 }}>
+            <button onClick={() => setCampaignOnly((v) => !v)} title="Only deals from a named campaign"
+              className="sw-focus px-2.5 text-xs whitespace-nowrap flex items-center gap-1"
+              style={campaignOnly
+                ? { background: "var(--primary-soft)", color: "var(--primary)", fontWeight: 600, height: "100%" }
+                : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
+              🎯 Campaign
+            </button>
+            <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
+            <button onClick={() => setAcqOnly((v) => !v)} title="Only acquisitions — new business"
+              className="sw-focus px-2.5 text-xs whitespace-nowrap"
+              style={acqOnly
+                ? { background: "var(--primary-soft)", color: "var(--primary)", fontWeight: 600, height: "100%" }
+                : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
+              ACQ
+            </button>
+          </div>
         </div>
       </div>
 
@@ -2145,12 +2176,12 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                   <td className="px-3 py-2" style={{ overflow: "hidden" }}>
                     <div className="flex items-center gap-1.5">
                       <TeamTag team={r.closer_team} allTeams={teamOptions} />
-                      <span className="text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>{r.closer_name || "—"}</span>
+                      <span className="text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>{obscureName(r.closer_name, leaverNames) || "—"}</span>
                     </div>
                     {r.lead_gen_name && (
                       <div className="flex items-center gap-1.5 mt-0.5">
                         <TeamTag team={r.lead_gen_team} allTeams={teamOptions} />
-                        <span className="sw-clamp2" style={{ color: "var(--ink-faint)", fontSize: 10, lineHeight: 1.3 }}>{r.lead_gen_name}</span>
+                        <span className="sw-clamp2" style={{ color: "var(--ink-faint)", fontSize: 10, lineHeight: 1.3 }}>{obscureName(r.lead_gen_name, leaverNames)}</span>
                       </div>
                     )}
                   </td>
@@ -4221,7 +4252,7 @@ function PayPlansView({ plans, staff, onSave, onAdd, onDelete }) {
 /*  STATUS SETTINGS — office-only: colours + what counts toward GP / SOV   */
 /* ---------------------------------------------------------------------- */
 
-function StatusConfigRow({ row, onSave }) {
+function StatusConfigRow({ row, onSave, showAttention }) {
   const [tone, setTone] = useState(row.tone || "primary");
   const [countGp, setCountGp] = useState(row.count_gp !== false);
   const [countSov, setCountSov] = useState(row.count_sov !== false);
@@ -4255,11 +4286,13 @@ function StatusConfigRow({ row, onSave }) {
         <input type="checkbox" checked={countSov} onChange={(e) => setCountSov(e.target.checked)} title="Counts toward SOV" />
         <div className="text-xs" style={{ color: countSov ? "var(--ink-faint)" : "var(--amber)" }}>{countSov ? "counts" : "NSOV"}</div>
       </td>
-      <td className="px-3 py-2 text-center">
-        <input type="checkbox" checked={needsAttention} onChange={(e) => setNeedsAttention(e.target.checked)}
-          title="An order sitting at this status needs the agent to do something" />
-        <div className="text-xs" style={{ color: needsAttention ? "var(--amber)" : "var(--ink-faint)" }}>{needsAttention ? "chase" : "—"}</div>
-      </td>
+      {showAttention && (
+        <td className="px-3 py-2 text-center">
+          <input type="checkbox" checked={needsAttention} onChange={(e) => setNeedsAttention(e.target.checked)}
+            title="An order sitting at this status needs the agent to do something" />
+          <div className="text-xs" style={{ color: needsAttention ? "var(--amber)" : "var(--ink-faint)" }}>{needsAttention ? "chase" : "—"}</div>
+        </td>
+      )}
       <td className="px-3 py-2">
         <button
           disabled={!dirty || saving}
@@ -4278,18 +4311,20 @@ function StatusConfigRow({ row, onSave }) {
 }
 
 function StatusSettingsView({ rows, onSave, newCount }) {
+  const [showAttention, setShowAttention] = useState(false);   // collapsed by default
   const sorted = useMemo(() => {
     return [...rows].sort((a, b) => {
       if (!!a.auto_added !== !!b.auto_added) return a.auto_added ? -1 : 1;  // new ones first
       return String(a.status).localeCompare(String(b.status));
     });
   }, [rows]);
+  const attentionCount = useMemo(() => rows.filter((r) => r.needs_attention).length, [rows]);
 
   return (
     <div>
       <div className="flex items-center gap-2 mb-4">
         <Palette size={18} style={{ color: "var(--primary)" }} />
-        <h2 className="sw-display text-lg font-bold">Order Statuses</h2>
+        <h2 className="sw-display text-lg" style={{ fontWeight: 600 }}>Order Statuses</h2>
         <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Office only · applies everywhere immediately</span>
       </div>
 
@@ -4300,19 +4335,26 @@ function StatusSettingsView({ rows, onSave, newCount }) {
         {newCount > 0 && <> <b>{newCount} new {newCount === 1 ? "status" : "statuses"}</b> to review.</>}
       </p>
 
+      <button onClick={() => setShowAttention((v) => !v)}
+        className="sw-focus flex items-center gap-1.5 text-xs font-medium mb-2"
+        style={{ color: "var(--ink-faint)" }}>
+        <ChevronDown size={13} style={{ transform: showAttention ? "rotate(0)" : "rotate(-90deg)", transition: "transform .15s" }} />
+        Needs action{attentionCount > 0 ? ` (${attentionCount} set)` : ""}
+      </button>
+
       <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <table className="w-full text-sm">
           <thead>
             <tr style={{ background: "var(--surface-alt)" }}>
-              {["Status", "Colour", "Counts to GP", "Counts to SOV", "Needs action", "", ""].map((h, i) => (
+              {["Status", "Colour", "Counts to GP", "Counts to SOV", ...(showAttention ? ["Needs action"] : []), "", ""].map((h, i) => (
                 <th key={i} className="text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {sorted.map((r) => <StatusConfigRow key={r.status} row={r} onSave={onSave} />)}
+            {sorted.map((r) => <StatusConfigRow key={r.status} row={r} onSave={onSave} showAttention={showAttention} />)}
             {sorted.length === 0 && (
-              <tr><td colSpan={6} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+              <tr><td colSpan={showAttention ? 7 : 6} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
                 No statuses yet — they'll appear as NetSuite data syncs in.
               </td></tr>
             )}
