@@ -4,7 +4,7 @@ import {
   Search, Filter, X, AlertTriangle, CheckCircle2, Clock, Radio, Plus,
   Building2, Wallet, TrendingUp, ShieldAlert, RefreshCw, LogOut, Mail,
   Loader2, Users, Eye, EyeOff, ArrowLeft, LogIn, KeyRound, Palette, MapPin,
-  BarChart3, CalendarDays,
+  BarChart3, CalendarDays, Target,
 } from "lucide-react";
 
 /* ====================================================================== */
@@ -254,6 +254,61 @@ function periodLabelFor(key) {
   return p ? p.label : "";
 }
 
+/* ---- Targets & pacing -------------------------------------------------
+   Pay plan targets are monthly. They get pro-rated by WORKING DAYS so
+   someone isn't judged against a full month's number on the 3rd. On day
+   10 of a 20-working-day month, half the target is the green line.
+   (Counts Mon-Fri; bank holidays aren't accounted for.) */
+function workdaysBetween(start, end) {
+  let n = 0;
+  const d = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const last = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+  while (d <= last) {
+    const day = d.getDay();
+    if (day !== 0 && day !== 6) n++;
+    d.setDate(d.getDate() + 1);
+  }
+  return n;
+}
+function workdaysInMonth(d = new Date()) {
+  return workdaysBetween(new Date(d.getFullYear(), d.getMonth(), 1), new Date(d.getFullYear(), d.getMonth() + 1, 0));
+}
+function workdaysElapsedInMonth(d = new Date()) {
+  return workdaysBetween(new Date(d.getFullYear(), d.getMonth(), 1), d);
+}
+
+// How much of a monthly target should be met by now, for the period shown.
+function proRatedTarget(monthlyTarget, period, now = new Date()) {
+  if (!monthlyTarget) return 0;
+  const inMonth = workdaysInMonth(now) || 1;
+  const perDay = monthlyTarget / inMonth;
+  switch (period) {
+    case "day": return perDay;
+    case "wtd": return perDay * workdaysBetween(weekStart(now), now);
+    case "mtd": return perDay * workdaysElapsedInMonth(now);
+    case "qtd": {
+      const qs = fqStart(now);
+      const monthsDone = (now.getFullYear() * 12 + now.getMonth()) - (qs.getFullYear() * 12 + qs.getMonth());
+      return monthlyTarget * monthsDone + perDay * workdaysElapsedInMonth(now);
+    }
+    case "ytd": {
+      const ys = fyStart(now);
+      const monthsDone = (now.getFullYear() * 12 + now.getMonth()) - (ys.getFullYear() * 12 + ys.getMonth());
+      return monthlyTarget * monthsDone + perDay * workdaysElapsedInMonth(now);
+    }
+    default: return 0;   // 'all' — no meaningful target
+  }
+}
+
+// Green once the pace target is met, amber from 75%, red below.
+function paceTone(value, target) {
+  if (!target || target <= 0) return null;
+  const ratio = value / target;
+  if (ratio >= 1) return { key: "green", fg: "var(--green)", bg: "var(--green-soft)" };
+  if (ratio >= 0.75) return { key: "amber", fg: "var(--amber)", bg: "var(--amber-soft)" };
+  return { key: "red", fg: "var(--red)", bg: "var(--red-soft)" };
+}
+
 // Start of the current financial year: 1 April of this year if we're in
 // April or later, otherwise 1 April of last year.
 function fyStart(now = new Date()) {
@@ -387,15 +442,33 @@ function StatusPill({ status, ngp }) {
 function IdChip({ children }) {
   return <span className="sw-mono text-xs px-1.5 py-0.5 rounded" style={{ background: "var(--surface-alt)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>{children}</span>;
 }
-function KPICard({ icon: Icon, label, value, sub, accent }) {
+function KPICard({ icon: Icon, label, value, sub, accent, target, rawValue }) {
+  const tone = target ? paceTone(rawValue, target) : null;
+  const pct = target ? Math.min(200, Math.round((rawValue / target) * 100)) : 0;
   return (
-    <div className="sw-rise rounded-2xl p-3.5 flex flex-col gap-2" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+    <div className="sw-rise rounded-2xl p-3.5 flex flex-col gap-2 h-full"
+      style={{
+        background: tone ? tone.bg : "var(--surface)",
+        border: `1px solid ${tone ? tone.fg : "var(--border)"}`,
+      }}>
       <div className="flex items-center justify-between">
         <span className="text-xs font-semibold uppercase tracking-wide truncate" style={{ color: "var(--ink-soft)" }}>{label}</span>
-        <div className="w-7 h-7 shrink-0 rounded-lg flex items-center justify-center" style={{ background: accent + "1a", color: accent }}><Icon size={14} strokeWidth={2.25} /></div>
+        <div className="w-7 h-7 shrink-0 rounded-lg flex items-center justify-center"
+          style={{ background: (tone ? tone.fg : accent) + "1a", color: tone ? tone.fg : accent }}><Icon size={14} strokeWidth={2.25} /></div>
       </div>
-      <div className="sw-display text-xl font-bold truncate">{value}</div>
-      {sub && <div className="text-xs truncate" style={{ color: "var(--ink-faint)" }}>{sub}</div>}
+      <div className="sw-display text-xl font-bold truncate" style={{ color: tone ? tone.fg : "var(--ink)" }}>{value}</div>
+      {tone ? (
+        <>
+          <div className="rounded-full" style={{ height: 5, background: "rgba(0,0,0,0.07)" }}>
+            <div className="rounded-full" style={{ width: Math.min(100, pct) + "%", height: "100%", background: tone.fg, transition: "width .3s" }} />
+          </div>
+          <div className="text-xs truncate" style={{ color: "var(--ink-soft)" }}>
+            <b style={{ color: tone.fg }}>{pct}%</b> of pace · {fmtGBP(target)}
+          </div>
+        </>
+      ) : (
+        sub && <div className="text-xs truncate" style={{ color: "var(--ink-faint)" }}>{sub}</div>
+      )}
     </div>
   );
 }
@@ -580,7 +653,7 @@ function ChangePasswordScreen({ forced, onDone, onCancel }) {
 /*  DASHBOARD                                                              */
 /* ---------------------------------------------------------------------- */
 
-function DashboardView({ orders, netsuite, onOpenOrder, flashId, profile, loading }) {
+function DashboardView({ orders, netsuite, staff, payPlans, onOpenOrder, flashId, profile, loading }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [agentFilter, setAgentFilter] = useState("All");
@@ -713,7 +786,44 @@ function DashboardView({ orders, netsuite, onOpenOrder, flashId, profile, loadin
   const dirtyCount = useMemo(() => scoped.filter((o) => o.dirty_order === "Yes").length, [scoped]);
   const notStattedCount = useMemo(() => scoped.filter(isNotStatted).length, [scoped]);
 
-  // ---- SOV by product category, straight from NetSuite ---------------
+  // ---- Targets for whoever is in scope --------------------------------
+  // An agent is measured against their own plan; a team or the whole
+  // office against the sum of everyone's plans in that scope. Then it's
+  // pro-rated by working days for the period being viewed.
+  const targets = useMemo(() => {
+    const planById = {};
+    (payPlans || []).forEach((p) => { planById[p.id] = p; });
+
+    let people = (staff || []).filter((s) => s.pay_plan_id && s.sells !== false);
+    if (isOffice && scope !== "office") people = people.filter((s) => s.team === scope);
+    else if (is2ic && profile?.team) people = people.filter((s) => s.team === profile.team);
+    else if (!isOffice && !is2ic) {
+      // An agent sees just their own target
+      const me = (staff || []).find((s) => s.user_id && profile && s.user_id === profile.id);
+      people = me && me.pay_plan_id ? [me] : [];
+    }
+    if (agentFilter !== "All") people = people.filter((s) => s.full_name === agentFilter);
+
+    const monthly = { gp: 0, cloud: 0, conn: 0, mobile: 0 };
+    people.forEach((s) => {
+      const p = planById[s.pay_plan_id];
+      if (!p || p.active === false) return;
+      monthly.gp += num(p.target_gp);
+      monthly.cloud += num(p.target_cloud_sov);
+      monthly.conn += num(p.target_connectivity_sov);
+      monthly.mobile += num(p.target_mobile_sov);
+    });
+
+    return {
+      people: people.length,
+      gp: proRatedTarget(monthly.gp, period),
+      cloud: proRatedTarget(monthly.cloud, period),
+      conn: proRatedTarget(monthly.conn, period),
+      mobile: proRatedTarget(monthly.mobile, period),
+      monthly,
+    };
+  }, [payPlans, staff, isOffice, is2ic, scope, profile, period, agentFilter]);
+
   // Excludes anything flagged NSOV. Connectivity groups Broadband, BT Net
   // and Security together, which is how the office thinks about it.
   const nsSovCards = useMemo(() => {
@@ -782,17 +892,17 @@ function DashboardView({ orders, netsuite, onOpenOrder, flashId, profile, loadin
       <div style={{ display: "grid", gridTemplateColumns: "repeat(10, minmax(0, 1fr))", gap: "0.75rem" }} className="mb-6">
         {/* Row 1 — first three units */}
         <div style={{ gridColumn: "span 3" }}>
-          <KPICard icon={TrendingUp} label={gpLabel} value={fmtGBP(gpTotal)} sub="Single-counted GP" accent="#1F7A3D" />
+          <KPICard icon={TrendingUp} label={gpLabel} value={fmtGBP(gpTotal)} sub="Single-counted GP" accent="#1F7A3D" target={targets.gp} rawValue={gpTotal} />
         </div>
         <div style={{ gridColumn: "span 3" }}>
           <KPICard icon={Wallet} label="SOV" value={fmtGBP(sovTotal)} sub={`${scoped.length} orders`} accent="#4C1D8F" />
         </div>
         {/* Row 1 — last two units */}
         <div style={{ gridColumn: "span 2" }}>
-          <KPICard icon={Radio} label="Cloud SOV" value={fmtGBP(nsSovCards.cloud)} sub="NetSuite" accent="#5E2CA8" />
+          <KPICard icon={Radio} label="Cloud SOV" value={fmtGBP(nsSovCards.cloud)} sub="NetSuite" accent="#5E2CA8" target={targets.cloud} rawValue={nsSovCards.cloud} />
         </div>
         <div style={{ gridColumn: "span 2" }}>
-          <KPICard icon={Radio} label="Connectivity SOV" value={fmtGBP(nsSovCards.connectivity)} sub="BB · BTNet · Security" accent="#205EA6" />
+          <KPICard icon={Radio} label="Connectivity SOV" value={fmtGBP(nsSovCards.connectivity)} sub="BB · BTNet · Security" accent="#205EA6" target={targets.conn} rawValue={nsSovCards.connectivity} />
         </div>
 
         {/* Row 2 — first three units */}
@@ -807,7 +917,7 @@ function DashboardView({ orders, netsuite, onOpenOrder, flashId, profile, loadin
         </div>
         {/* Row 2 — last two units */}
         <div style={{ gridColumn: "span 2" }}>
-          <KPICard icon={Radio} label="Mobile SOV" value={fmtGBP(nsSovCards.mobile)} sub="NetSuite" accent="#8659CE" />
+          <KPICard icon={Radio} label="Mobile SOV" value={fmtGBP(nsSovCards.mobile)} sub="NetSuite" accent="#8659CE" target={targets.mobile} rawValue={nsSovCards.mobile} />
         </div>
         <div style={{ gridColumn: "span 2" }}>
           <KPICard icon={Wallet} label="Total SOV" value={fmtGBP(nsSovCards.all)} sub="NetSuite · excl. NSOV" accent="#1F7A3D" />
@@ -2587,6 +2697,167 @@ function DayByDayView({ orders }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  PAY PLANS — office-only: monthly targets agents are measured against   */
+/* ---------------------------------------------------------------------- */
+
+function PayPlanRow({ plan, agentCount, onSave, onDelete }) {
+  const [f, setF] = useState({
+    name: plan.name || "",
+    target_gp: plan.target_gp ?? 0,
+    target_cloud_sov: plan.target_cloud_sov ?? 0,
+    target_connectivity_sov: plan.target_connectivity_sov ?? 0,
+    target_mobile_sov: plan.target_mobile_sov ?? 0,
+    active: plan.active !== false,
+  });
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const dirty = Object.keys(f).some((k) => String(f[k]) !== String(plan[k] ?? (k === "active" ? true : 0)));
+
+  const numField = (key, width = 96) => (
+    <input className="sw-input sw-focus" style={{ width, textAlign: "right" }} value={f[key]}
+      onChange={(e) => setF((p) => ({ ...p, [key]: e.target.value }))} />
+  );
+
+  return (
+    <tr style={{ borderTop: "1px solid var(--border)" }}>
+      <td className="px-3 py-2">
+        <input className="sw-input sw-focus" style={{ minWidth: 150 }} value={f.name}
+          onChange={(e) => setF((p) => ({ ...p, name: e.target.value }))} />
+      </td>
+      <td className="px-3 py-2">{numField("target_gp")}</td>
+      <td className="px-3 py-2">{numField("target_cloud_sov")}</td>
+      <td className="px-3 py-2">{numField("target_connectivity_sov")}</td>
+      <td className="px-3 py-2">{numField("target_mobile_sov")}</td>
+      <td className="px-3 py-2 text-center">
+        <span className="text-xs font-semibold px-2 py-1 rounded-full"
+          style={{ background: agentCount ? "var(--primary-soft)" : "var(--surface-alt)", color: agentCount ? "var(--primary)" : "var(--ink-faint)" }}>
+          {agentCount}
+        </span>
+      </td>
+      <td className="px-3 py-2 text-center">
+        <input type="checkbox" checked={f.active} onChange={(e) => setF((p) => ({ ...p, active: e.target.checked }))} />
+      </td>
+      <td className="px-3 py-2">
+        <button disabled={!dirty || saving}
+          onClick={async () => {
+            setSaving(true);
+            await onSave(plan.id, {
+              name: f.name,
+              target_gp: parseFloat(f.target_gp) || 0,
+              target_cloud_sov: parseFloat(f.target_cloud_sov) || 0,
+              target_connectivity_sov: parseFloat(f.target_connectivity_sov) || 0,
+              target_mobile_sov: parseFloat(f.target_mobile_sov) || 0,
+              active: f.active,
+            });
+            setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 1500);
+          }}
+          className="sw-focus text-xs font-semibold px-2.5 py-1.5 rounded-lg"
+          style={{ background: dirty ? "var(--primary)" : "var(--surface-alt)", color: dirty ? "#fff" : "var(--ink-faint)" }}
+        >{saving ? "..." : "Save"}</button>
+      </td>
+      <td className="px-2 text-center">
+        {saved ? <CheckCircle2 size={14} style={{ color: "var(--green)" }} /> : (
+          agentCount === 0 && (
+            <button onClick={() => onDelete(plan.id, plan.name)} className="sw-focus text-xs" style={{ color: "var(--red)" }} title="Delete this plan">✕</button>
+          )
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function PayPlansView({ plans, staff, onSave, onAdd, onDelete }) {
+  const [newName, setNewName] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  const countByPlan = useMemo(() => {
+    const m = {};
+    (staff || []).forEach((s) => { if (s.pay_plan_id) m[s.pay_plan_id] = (m[s.pay_plan_id] || 0) + 1; });
+    return m;
+  }, [staff]);
+
+  const officeTotals = useMemo(() => {
+    const t = { gp: 0, cloud: 0, conn: 0, mobile: 0 };
+    (staff || []).forEach((s) => {
+      const p = (plans || []).find((x) => x.id === s.pay_plan_id);
+      if (!p || p.active === false) return;
+      t.gp += num(p.target_gp);
+      t.cloud += num(p.target_cloud_sov);
+      t.conn += num(p.target_connectivity_sov);
+      t.mobile += num(p.target_mobile_sov);
+    });
+    return t;
+  }, [staff, plans]);
+
+  const wd = workdaysInMonth();
+  const wdDone = workdaysElapsedInMonth();
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <Target size={18} style={{ color: "var(--primary)" }} />
+        <h2 className="sw-display text-lg font-bold">Pay Plans</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+          Monthly targets · assign to people on the Admin page
+        </span>
+      </div>
+
+      <p className="text-sm mb-4 p-3 rounded-xl" style={{ background: "var(--primary-soft)", color: "var(--ink-soft)" }}>
+        Targets are monthly and get pro-rated by working day, so nobody is judged against a full month on the 3rd.
+        This month has <b>{wd} working days</b> and <b>{wdDone}</b> have passed — so right now a card turns
+        green at <b>{Math.round((wdDone / wd) * 100)}%</b> of the monthly figure, and amber from 75% of that.
+        Team and office targets are just the totals of everyone in scope.
+      </p>
+
+      <div className="rounded-2xl overflow-hidden mb-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr style={{ background: "var(--surface-alt)" }}>
+                {["Plan name", "GP", "Cloud SOV", "Connectivity SOV", "Mobile SOV", "On plan", "Active", "", ""].map((h, i) => (
+                  <th key={i} className="text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {(plans || []).map((p) => (
+                <PayPlanRow key={p.id} plan={p} agentCount={countByPlan[p.id] || 0} onSave={onSave} onDelete={onDelete} />
+              ))}
+              <tr style={{ borderTop: "2px solid var(--border)", background: "var(--surface-alt)" }}>
+                <td className="px-3 py-2">
+                  <input className="sw-input sw-focus" placeholder="New plan name" value={newName}
+                    onChange={(e) => setNewName(e.target.value)} />
+                </td>
+                <td className="px-3 py-2" colSpan={8}>
+                  <button disabled={!newName.trim() || adding}
+                    onClick={async () => { setAdding(true); await onAdd(newName.trim()); setNewName(""); setAdding(false); }}
+                    className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
+                    style={{ background: newName.trim() ? "var(--primary)" : "var(--surface)", color: newName.trim() ? "#fff" : "var(--ink-faint)", border: "1px solid var(--border)" }}>
+                    <Plus size={12} /> {adding ? "Adding..." : "Add plan"}
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="sw-display font-bold text-sm mb-3" style={{ color: "var(--ink-soft)" }}>OFFICE MONTHLY TARGET (all assigned plans)</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "0.75rem" }}>
+          {[["GP", officeTotals.gp], ["Cloud SOV", officeTotals.cloud], ["Connectivity SOV", officeTotals.conn], ["Mobile SOV", officeTotals.mobile]].map(([lbl, v]) => (
+            <div key={lbl} className="rounded-xl p-3" style={{ background: "var(--surface-alt)" }}>
+              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>{lbl}</div>
+              <div className="sw-display font-bold text-xl">{fmtGBP(v)}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /*  STATUS SETTINGS — office-only: colours + what counts toward GP / SOV   */
 /* ---------------------------------------------------------------------- */
 
@@ -2687,16 +2958,47 @@ function StatusSettingsView({ rows, onSave, newCount }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  SETTINGS — office-only, holds Statuses and Pay Plans                   */
+/* ---------------------------------------------------------------------- */
+
+function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSavePlan, onAddPlan, onDeletePlan }) {
+  const [section, setSection] = useState("statuses");
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-5">
+        {[
+          { key: "statuses", label: "Order Statuses", icon: Palette, badge: newCount },
+          { key: "payplans", label: "Pay Plans", icon: Target, badge: 0 },
+        ].map((s) => (
+          <button key={s.key} onClick={() => setSection(s.key)}
+            className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5"
+            style={section === s.key
+              ? { background: "var(--primary)", color: "#fff" }
+              : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>
+            <s.icon size={14} /> {s.label}
+            {s.badge > 0 && <span className="rounded-full px-1.5 text-xs font-bold" style={{ background: "var(--amber)", color: "#fff" }}>{s.badge}</span>}
+          </button>
+        ))}
+      </div>
+      {section === "statuses"
+        ? <StatusSettingsView rows={statusRows} onSave={onSaveStatus} newCount={newCount} />
+        : <PayPlansView plans={plans} staff={staff} onSave={onSavePlan} onAdd={onAddPlan} onDelete={onDeletePlan} />}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /*  ADMIN — office-only: manage staff records, roles, teams                */
 /* ---------------------------------------------------------------------- */
 
 const ROLE_OPTIONS = ["office", "2ic", "agent"];
 
-function StaffRow({ s, profileForStaff, onSaveStaff, onSaveProfile, onResetPassword }) {
+function StaffRow({ s, profileForStaff, onSaveStaff, onSaveProfile, onResetPassword, plans }) {
   const [edit, setEdit] = useState({
     full_name: s.full_name || "", uin: s.uin || "", email: s.email || "",
     manager_name: s.manager_name || "", manager_email: s.manager_email || "",
     team: s.team || "", sells: !!s.sells,
+    pay_plan_id: s.pay_plan_id || "",
   });
   const [roleEdit, setRoleEdit] = useState(profileForStaff?.role || "");
   const [teamEdit, setTeamEdit] = useState(profileForStaff?.team || s.team || "");
@@ -2720,9 +3022,18 @@ function StaffRow({ s, profileForStaff, onSaveStaff, onSaveProfile, onResetPassw
       <td className="px-3 py-2"><input className="sw-input sw-focus" style={{ minWidth: 110 }} value={edit.team} onChange={(e) => setEdit((p) => ({ ...p, team: e.target.value }))} list="team-suggestions" /></td>
       <td className="px-3 py-2 text-center"><input type="checkbox" checked={edit.sells} onChange={(e) => setEdit((p) => ({ ...p, sells: e.target.checked }))} /></td>
       <td className="px-3 py-2">
+        <select className="sw-input sw-focus" style={{ minWidth: 130 }} value={edit.pay_plan_id || ""}
+          onChange={(e) => setEdit((p) => ({ ...p, pay_plan_id: e.target.value }))}>
+          <option value="">No plan</option>
+          {(plans || []).filter((p) => p.active !== false).map((p) => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
+      </td>
+      <td className="px-3 py-2">
         <button
           disabled={!staffDirty || savingStaff}
-          onClick={async () => { setSavingStaff(true); await onSaveStaff(s.id, edit); setSavingStaff(false); flash(); }}
+          onClick={async () => { setSavingStaff(true); await onSaveStaff(s.id, { ...edit, pay_plan_id: edit.pay_plan_id || null }); setSavingStaff(false); flash(); }}
           className="sw-focus text-xs font-semibold px-2.5 py-1.5 rounded-lg"
           style={{ background: staffDirty ? "var(--primary)" : "var(--surface-alt)", color: staffDirty ? "#fff" : "var(--ink-faint)" }}
         >{savingStaff ? "..." : "Save"}</button>
@@ -2789,7 +3100,7 @@ function AddStaffRow({ onAdd }) {
       <td className="px-3 py-2"><input className="sw-input sw-focus" placeholder="Email" value={f.email} onChange={(e) => setF((p) => ({ ...p, email: e.target.value }))} /></td>
       <td className="px-3 py-2"><input className="sw-input sw-focus" placeholder="Team" value={f.team} onChange={(e) => setF((p) => ({ ...p, team: e.target.value }))} list="team-suggestions" /></td>
       <td className="px-3 py-2 text-center"><input type="checkbox" checked={f.sells} onChange={(e) => setF((p) => ({ ...p, sells: e.target.checked }))} /></td>
-      <td className="px-3 py-2" colSpan={5}>
+      <td className="px-3 py-2" colSpan={6}>
         <button
           disabled={!canAdd || saving}
           onClick={async () => { setSaving(true); await onAdd(f); setF({ full_name: "", uin: "", email: "", manager_name: "", manager_email: "", team: "", sells: true }); setSaving(false); }}
@@ -2801,7 +3112,7 @@ function AddStaffRow({ onAdd }) {
   );
 }
 
-function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, onResetPassword }) {
+function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, onResetPassword, plans }) {
   const teamOptions = useMemo(() => Array.from(new Set(staff.map((s) => s.team).filter(Boolean))), [staff]);
   const profileByUserId = useMemo(() => {
     const m = {};
@@ -2822,14 +3133,14 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
           <table className="w-full text-sm">
             <thead>
               <tr style={{ background: "var(--surface-alt)" }}>
-                {["Name", "UIN", "Email", "Team", "Sells", "", "Role", "", "Password", ""].map((h, i) => (
+                {["Name", "UIN", "Email", "Team", "Sells", "Pay Plan", "", "Role", "", "Password", ""].map((h, i) => (
                   <th key={i} className="text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {staff.map((s) => (
-                <StaffRow key={s.id} s={s} profileForStaff={s.user_id ? profileByUserId[s.user_id] : null} onSaveStaff={onSaveStaff} onSaveProfile={onSaveProfile} onResetPassword={onResetPassword} />
+                <StaffRow key={s.id} s={s} profileForStaff={s.user_id ? profileByUserId[s.user_id] : null} onSaveStaff={onSaveStaff} onSaveProfile={onSaveProfile} onResetPassword={onResetPassword} plans={plans} />
               ))}
               <AddStaffRow onAdd={onAddStaff} />
             </tbody>
@@ -2855,6 +3166,7 @@ export default function App() {
   const [staff, setStaff] = useState([]);
   const [netsuite, setNetsuite] = useState([]);
   const [statusRows, setStatusRows] = useState([]);
+  const [payPlans, setPayPlans] = useState([]);
   const [allProfiles, setAllProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("dashboard");
@@ -2916,6 +3228,35 @@ export default function App() {
     setNetsuite(all);
   }, [isTVRoute]);
   useEffect(() => { if (session?.user) loadNetsuite(); }, [session, loadNetsuite]);
+
+  // Pay plans — monthly targets the KPI cards are measured against
+  const loadPayPlans = useCallback(async () => {
+    const { data } = await supabase.from("pay_plans").select("*").order("name");
+    setPayPlans(data || []);
+  }, []);
+  useEffect(() => { if (session?.user) loadPayPlans(); }, [session, loadPayPlans]);
+
+  const savePayPlan = useCallback(async (id, patch) => {
+    const { error } = await supabase.from("pay_plans").update(patch).eq("id", id);
+    if (error) { setToast(`Couldn't save plan: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    loadPayPlans();
+  }, [loadPayPlans]);
+
+  const addPayPlan = useCallback(async (name) => {
+    const { error } = await supabase.from("pay_plans").insert({ name });
+    if (error) { setToast(`Couldn't add plan: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    setToast(`Plan "${name}" added`);
+    setTimeout(() => setToast(""), 2500);
+    loadPayPlans();
+  }, [loadPayPlans]);
+
+  const deletePayPlan = useCallback(async (id, name) => {
+    const { error } = await supabase.from("pay_plans").delete().eq("id", id);
+    if (error) { setToast(`Couldn't delete: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    setToast(`Plan "${name}" deleted`);
+    setTimeout(() => setToast(""), 2500);
+    loadPayPlans();
+  }, [loadPayPlans]);
 
   // Status settings — colours and what counts toward GP/SOV
   const loadStatusCfg = useCallback(async () => {
@@ -3166,7 +3507,7 @@ export default function App() {
             )}
             {profile?.role === "office" && (
               <button onClick={() => setTab("statuses")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "statuses" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}>
-                <Palette size={14} /> Statuses
+                <Palette size={14} /> Settings
                 {newStatusCount > 0 && (
                   <span className="rounded-full px-1.5 text-xs font-bold" style={{ background: "var(--amber)", color: "#fff" }}>{newStatusCount}</span>
                 )}
@@ -3197,12 +3538,12 @@ export default function App() {
             </div>
           </div>
         )}
-        {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuite} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
+        {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuite} staff={staff} payPlans={payPlans} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
         {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} />}
         {tab === "daybyday" && <DayByDayView orders={orders} />}
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuite} />}
-        {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onResetPassword={resetPassword} />}
-        {tab === "statuses" && profile?.role === "office" && <StatusSettingsView rows={statusRows} onSave={saveStatusCfg} newCount={newStatusCount} />}
+        {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onResetPassword={resetPassword} plans={payPlans} />}
+        {tab === "statuses" && profile?.role === "office" && <SettingsView statusRows={statusRows} onSaveStatus={saveStatusCfg} newCount={newStatusCount} plans={payPlans} staff={staff} onSavePlan={savePayPlan} onAddPlan={addPayPlan} onDeletePlan={deletePayPlan} />}
       </main>
 
       {selected && <OrderDrawer order={selected} ns={selected.document_number ? netsuite.find((n) => String(n.document_number) === String(selected.document_number)) : null} onClose={() => setSelected(null)} canEdit={canEditOrder(selected)} onSave={saveOrder} saving={savingEdit} onRemove={removeOrder} />}
