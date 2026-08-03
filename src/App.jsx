@@ -83,7 +83,7 @@ function normalisePostcode(pc) {
 /* ---------------------------------------------------------------------- */
 
 const STYLE = `
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
 .sw-root {
   --bg:#F7F6FB; --surface:#FFFFFF; --surface-alt:#F7F5FC; --border:#E8E4F2;
   --ink:#211E32; --ink-soft:#6B6584; --ink-faint:#A19BB4;
@@ -92,11 +92,12 @@ const STYLE = `
   --amber:#A55C0B; --amber-soft:#FCF1E4; --blue:#1D5595; --blue-soft:#EBF1FA;
   --red:#B3352A; --red-soft:#FBEEEC;
   font-family:'Inter',ui-sans-serif,system-ui,sans-serif; color:var(--ink);
+  font-feature-settings:'cv05' 1; -webkit-font-smoothing:antialiased;
   background:var(--bg); min-height:100vh;
 }
 .sw-root *{box-sizing:border-box;}
-.sw-display{font-family:'Space Grotesk','Inter',sans-serif;letter-spacing:-.01em;}
-.sw-mono{font-family:'JetBrains Mono',ui-monospace,monospace;}
+.sw-display{font-family:'Inter',ui-sans-serif,system-ui,sans-serif;letter-spacing:-.015em;font-feature-settings:'tnum' 1,'cv05' 1;}
+.sw-mono{font-family:'Inter',ui-sans-serif,system-ui,sans-serif;font-variant-numeric:tabular-nums;font-feature-settings:'tnum' 1;}
 .sw-root ::-webkit-scrollbar{width:8px;height:8px;}
 .sw-root ::-webkit-scrollbar-thumb{background:var(--border);border-radius:8px;}
 @keyframes sw-pulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.45;transform:scale(.82);}}
@@ -432,6 +433,10 @@ function Logo({ height = 34 }) {
    Splits the space in two at roughly half the total value, alternating
    direction each time. Bigger sellers get bigger boxes. */
 const PRODUCT_SHADES = ["#3B1370", "#4C1D8F", "#5E2CA8", "#7040BE", "#8659CE", "#9C74DC", "#B18FE6", "#C4AAEE"];
+
+// GP makeup on the ranked list — one colour per product group
+const MIX_ORDER = ["Cloud", "Connectivity", "Mobile", "Other"];
+const MIX_COLOURS = { Cloud: "#5E2CA8", Connectivity: "#2A6FB8", Mobile: "#8659CE", Other: "#B4AEC6" };
 
 function treemapLayout(items, x, y, w, h, horizontal) {
   if (!items.length) return [];
@@ -1354,11 +1359,27 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       return !!s.team;
     });
 
-    // Claimed GP per person, using their own share of each deal
+    // Claimed GP per person, using their own share of each deal, split by
+    // product so each row can show what their GP is actually made of.
     const claimed = {};
+    const mix = {};
+    const bucketOf = (o) => {
+      const s = String(o.item_name_grouped || o.product_group_2 || "").toLowerCase();
+      if (/mobile|\bsim\b|airtime|handset/.test(s)) return "Mobile";
+      if (/cloud|dv4|voice/.test(s)) return "Cloud";
+      if (/broadband|bt ?net|btnet|security|badr|fttp|fttc|ethernet|pstn|line|wi-?fi/.test(s)) return "Connectivity";
+      return "Other";
+    };
+    const add = (nm, v, b) => {
+      if (!nm || !v) return;
+      claimed[nm] = (claimed[nm] || 0) + v;
+      if (!mix[nm]) mix[nm] = {};
+      mix[nm][b] = (mix[nm][b] || 0) + v;
+    };
     gpCountable.forEach((o) => {
-      if (o.closer_name) claimed[o.closer_name] = (claimed[o.closer_name] || 0) + num(o.closer_share);
-      if (o.lead_gen_name) claimed[o.lead_gen_name] = (claimed[o.lead_gen_name] || 0) + num(o.lead_gen_share);
+      const b = bucketOf(o);
+      add(o.closer_name, num(o.closer_share), b);
+      add(o.lead_gen_name, num(o.lead_gen_share), b);
     });
 
     const rows = people.map((s) => {
@@ -1368,6 +1389,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         name: s.full_name,
         team: s.team,
         gp: claimed[s.full_name] || 0,
+        mix: mix[s.full_name] || {},
         target: fullPeriodTarget(monthly, period),
         pace: proRatedTarget(monthly, period),
       };
@@ -1377,11 +1399,13 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
     Object.keys(claimed).forEach((nm) => {
       if (!rows.some((r) => r.name === nm)) {
         if (teamScope) return;
-        rows.push({ name: nm, team: null, gp: claimed[nm], target: 0, pace: 0 });
+        rows.push({ name: nm, team: null, gp: claimed[nm], mix: mix[nm] || {}, target: 0, pace: 0 });
       }
     });
 
-    return rows.filter((r) => r.gp > 0 || r.target > 0).sort((a, b) => b.gp - a.gp);
+    // Everyone shows, including those on nothing — that's the point of a
+    // ranking. Zero-GP people sort to the bottom, alphabetically.
+    return rows.sort((a, b) => (b.gp - a.gp) || a.name.localeCompare(b.name));
   }, [staff, payPlans, gpCountable, isOffice, is2ic, scope, profile, period]);
 
   // ---- Pay plan measured against what NetSuite actually statted -------
@@ -1721,32 +1745,43 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
             {agentRanking.length === 0 ? (
               <div className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>No figures for this period.</div>
             ) : (
-              <div className="flex flex-col gap-2" style={{ maxHeight: 340, overflowY: "auto" }}>
+              <div style={{ maxHeight: "calc(100vh - 190px)", overflowY: "auto" }}>
                 {agentRanking.map((a, i) => {
+                  // Traffic light comes from the pay plan pace, exactly as the
+                  // KPI cards do — so a name reads the same everywhere.
                   const tone = paceTone(a.gp, a.pace);
-                  const pct = a.target > 0 ? Math.min(100, (a.gp / a.target) * 100) : 0;
-                  const pacePct = a.target > 0 ? Math.min(100, (a.pace / a.target) * 100) : 0;
+                  const dot = tone ? tone.fg : "var(--ink-faint)";
                   const sel = agentFilter === a.name;
+                  const total = Object.keys(a.mix).reduce((s, k) => s + a.mix[k], 0);
+                  const segs = MIX_ORDER
+                    .map((k) => ({ k, v: a.mix[k] || 0 }))
+                    .filter((s) => s.v > 0);
                   return (
                     <button key={a.name} onClick={() => setAgentFilter(sel ? "All" : a.name)}
-                      className="sw-focus text-left rounded-lg px-2 py-1.5"
-                      style={{ background: sel ? "var(--primary-soft)" : "transparent" }}
-                      title={a.target > 0 ? `${fmtGBP(a.gp)} of ${fmtGBP(a.target)}` : fmtGBP(a.gp)}>
-                      <div className="flex items-baseline justify-between gap-2">
-                        <span className="text-xs truncate" style={{ color: sel ? "var(--primary)" : "var(--ink)", fontWeight: sel ? 600 : 500 }}>
-                          <span className="sw-mono" style={{ color: "var(--ink-faint)", marginRight: 6 }}>{i + 1}</span>
+                      className="sw-focus w-full text-left px-2 py-1.5"
+                      style={{
+                        background: sel ? "var(--primary-soft)" : "transparent",
+                        borderTop: i === 0 ? "none" : "1px solid var(--border)",
+                      }}
+                      title={a.target > 0
+                        ? `${fmtGBP(a.gp)} of ${fmtGBP(a.target)} — pace ${fmtGBP(a.pace)}`
+                        : fmtGBP(a.gp)}>
+                      <div className="flex items-center gap-2">
+                        <span style={{ width: 6, height: 6, borderRadius: 99, background: dot, flexShrink: 0 }} />
+                        <span className="truncate" style={{ fontSize: 12, color: sel ? "var(--primary)" : "var(--ink)", fontWeight: sel ? 600 : 500 }}>
                           {a.name}
                         </span>
-                        <span className="sw-mono text-xs shrink-0" style={{ color: tone ? tone.fg : "var(--ink-soft)", fontWeight: 600 }}>{fmtGBP(a.gp)}</span>
+                        <span className="sw-mono ml-auto shrink-0" style={{ fontSize: 12, fontWeight: 600, color: a.gp ? "var(--ink)" : "var(--ink-faint)" }}>
+                          {fmtGBP(a.gp)}
+                        </span>
                       </div>
-                      {a.target > 0 && (
-                        <div className="rounded-full mt-1" style={{ height: 4, background: "var(--surface-alt)", position: "relative" }}>
-                          <div className="rounded-full" style={{ width: `${pct}%`, height: "100%", background: tone ? tone.fg : "var(--ink-faint)" }} />
-                          {pacePct > 0 && pacePct < 100 && (
-                            <div style={{ position: "absolute", left: `${pacePct}%`, top: -1, bottom: -1, width: 2, background: "var(--ink)", opacity: 0.35 }} />
-                          )}
-                        </div>
-                      )}
+                      {/* What their GP is made of */}
+                      <div className="flex mt-1 rounded-full overflow-hidden" style={{ height: 4, background: "var(--surface-alt)" }}>
+                        {segs.map((s) => (
+                          <div key={s.k} title={`${s.k} ${fmtGBP(s.v)}`}
+                            style={{ width: `${(s.v / total) * 100}%`, background: MIX_COLOURS[s.k] }} />
+                        ))}
+                      </div>
                     </button>
                   );
                 })}
@@ -1754,43 +1789,6 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
             )}
           </div>
 
-          {/* Statted vs forecast */}
-          <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-            <div className="flex items-baseline justify-between mb-3">
-              <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Statted vs forecast</span>
-              <span className="text-xs" style={{ color: analytics.accuracy >= 90 ? "var(--green)" : analytics.accuracy >= 70 ? "var(--amber)" : "var(--red)" }}>
-                {analytics.accuracy.toFixed(0)}%
-              </span>
-            </div>
-            <TargetBars height={150} groups={analytics.months.map((m, i) => ({
-              label: m, actual: analytics.stattedGp[i], target: analytics.forecastGp[i],
-            }))} />
-          </div>
-
-          {/* Top deals */}
-          <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-            <div className="text-xs font-medium uppercase mb-3" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Top 5 deals</div>
-            {analytics.top.length === 0 ? (
-              <div className="text-xs text-center py-4" style={{ color: "var(--ink-faint)" }}>No deals in this period.</div>
-            ) : (
-              <div className="flex flex-col gap-1.5">
-                {analytics.top.map((d, i) => {
-                  const max = analytics.top[0].gp || 1;
-                  return (
-                    <div key={i}>
-                      <div className="flex items-baseline justify-between gap-2">
-                        <span className="text-xs truncate">{d.company}</span>
-                        <span className="sw-mono text-xs shrink-0" style={{ color: "var(--ink-soft)", fontWeight: 600 }}>{fmtGBP(d.gp)}</span>
-                      </div>
-                      <div className="rounded-full mt-1" style={{ height: 3, background: "var(--surface-alt)" }}>
-                        <div className="rounded-full" style={{ width: `${(d.gp / max) * 100}%`, height: "100%", background: "var(--primary)" }} />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
         </div>
 
         {/* RIGHT — filters and the order list */}
@@ -1884,8 +1882,17 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       </div>
 
       <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+        <div>
+          <table className="w-full text-sm" style={{ tableLayout: "fixed" }}>
+            <colgroup>
+              <col style={{ width: "26%" }} />
+              <col style={{ width: "18%" }} />
+              <col style={{ width: "18%" }} />
+              <col style={{ width: "11%" }} />
+              <col style={{ width: "12%" }} />
+              <col style={{ width: "10%" }} />
+              <col style={{ width: "5%" }} />
+            </colgroup>
             <thead>
               <tr style={{ background: "var(--surface-alt)" }}>
                 {[
@@ -1917,7 +1924,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                   onMouseLeave={(e) => (e.currentTarget.style.background = r.ngp ? "var(--red-soft)" : "transparent")}>
 
                   {/* 1: company, with flags kept inline so the row stays short */}
-                  <td className="px-3 py-2" style={{ maxWidth: 260 }}>
+                  <td className="px-3 py-2" style={{ overflow: "hidden" }}>
                     <div className="font-medium text-xs truncate">{r.company_name}</div>
                     {(r.dirty || r.notStatted || r.nsov || r.needsAction || (r.ageDays != null && r.ageDays >= 90) || (r.kind === "forecast" && r.matched)) && (
                       <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
@@ -1932,12 +1939,12 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                   </td>
 
                   {/* 2: people */}
-                  <td className="px-3 py-2" style={{ maxWidth: 190 }}>
+                  <td className="px-3 py-2" style={{ overflow: "hidden" }}>
                     <div className="text-xs truncate">{r.closer_name || "—"}</div>
                     {r.lead_gen_name && <div className="text-xs truncate" style={{ color: "var(--ink-faint)", fontSize: 10 }}>LG: {r.lead_gen_name}</div>}
                   </td>
 
-                  <td className="px-3 py-2 text-xs truncate" style={{ color: "var(--ink-soft)", maxWidth: 170 }}>{r.product}</td>
+                  <td className="px-3 py-2 text-xs truncate" style={{ color: "var(--ink-soft)" }}>{r.product}</td>
 
                   <td className="px-3 py-2 sw-mono text-xs">{fmtGBP(r.sov)}</td>
 
@@ -4221,11 +4228,162 @@ function CoachSettingsView({ scenarios, settings, onSaveScenario, onAddScenario,
 }
 
 /* ---------------------------------------------------------------------- */
+/*  OTHER VISUALS — charts that don't earn their place on a daily view     */
+/* ---------------------------------------------------------------------- */
+
+function OtherVisualsView({ orders, netsuite, forecasts, staff }) {
+  const [period, setPeriod] = useState("mtd");
+  const [team, setTeam] = useState("All");
+
+  const teamOptions = useMemo(() => {
+    const s = new Set();
+    (staff || []).forEach((x) => { if (x.team && x.sells !== false) s.add(x.team); });
+    SELLING_TEAMS.forEach((t) => s.add(t));
+    return Array.from(s).sort();
+  }, [staff]);
+
+  const inTeam = (ct, lt) => team === "All" || ct === team || lt === team;
+
+  const data = useMemo(() => {
+    const months = [];
+    const base = new Date();
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(base.getFullYear(), base.getMonth() - i, 1);
+      months.push({
+        key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
+        label: d.toLocaleDateString("en-GB", { month: "short" }),
+      });
+    }
+    const idx = {};
+    months.forEach((m, i) => { idx[m.key] = i; });
+    const monthOf = (dstr) => {
+      if (!dstr) return null;
+      const d = new Date(dstr);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    };
+
+    const claimed = new Array(6).fill(0);
+    const statted = new Array(6).fill(0);
+    const forecast = new Array(6).fill(0);
+
+    (orders || []).forEach((o) => {
+      if (o.removed_at || !inTeam(o.closer_team, o.lead_gen_team)) return;
+      const i = idx[monthOf(o.submission_date)];
+      if (i !== undefined) claimed[i] += num(o.gp_office != null ? o.gp_office : o.sales_agent_gp);
+    });
+    (netsuite || []).forEach((n) => {
+      if (!inTeam(n.closer_team, n.referrer_team)) return;
+      const i = idx[monthOf(n.order_date ? n.order_date + "T00:00:00" : null)];
+      if (i !== undefined && n.count_gp !== false) statted[i] += num(n.gp_office);
+    });
+    (forecasts || []).forEach((f) => {
+      if (!inTeam(f.agent_team, f.lead_gen_team)) return;
+      const i = idx[monthOf(f.forecast_date || f.forecast_week)];
+      if (i !== undefined) forecast[i] += num(f.gp);
+    });
+
+    // Top deals in the chosen period
+    const from = periodStart(period);
+    const top = (orders || [])
+      .filter((o) => !o.removed_at && inTeam(o.closer_team, o.lead_gen_team))
+      .filter((o) => !from || (o.submission_date && new Date(o.submission_date) >= from))
+      .map((o) => ({
+        company: o.company_name,
+        agent: o.closer_name,
+        gp: num(o.gp_office != null ? o.gp_office : o.sales_agent_gp),
+        sov: num(o.contract_value),
+      }))
+      .sort((a, b) => b.gp - a.gp)
+      .slice(0, 10);
+
+    const fcTotal = forecast.reduce((s, v) => s + v, 0);
+    const stTotal = statted.reduce((s, v) => s + v, 0);
+
+    return {
+      months: months.map((m) => m.label),
+      claimed, statted, forecast, top,
+      accuracy: fcTotal ? (stTotal / fcTotal) * 100 : 0,
+    };
+  }, [orders, netsuite, forecasts, team, period]);
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <BarChart3 size={18} style={{ color: "var(--primary)" }} />
+        <h2 className="sw-display text-lg" style={{ fontWeight: 600 }}>Other Visuals</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Trends and league tables, off the daily view</span>
+        <div className="ml-auto flex items-center gap-2">
+          <select className="sw-input sw-focus" style={{ width: 150 }} value={team} onChange={(e) => setTeam(e.target.value)}>
+            <option value="All">All teams</option>
+            {teamOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <select className="sw-input sw-focus" style={{ width: 110 }} value={period} onChange={(e) => setPeriod(e.target.value)}>
+            {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: "0.75rem" }} className="mb-3">
+        <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="flex items-baseline justify-between mb-3">
+            <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Statted vs forecast</span>
+            <span className="text-xs" style={{ color: data.accuracy >= 90 ? "var(--green)" : data.accuracy >= 70 ? "var(--amber)" : "var(--red)" }}>
+              {data.accuracy.toFixed(0)}% delivered
+            </span>
+          </div>
+          <TargetBars groups={data.months.map((m, i) => ({ label: m, actual: data.statted[i], target: data.forecast[i] }))} />
+        </div>
+
+        <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="text-xs font-medium uppercase mb-3" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Claimed vs statted</div>
+          <LineChart series={[
+            { name: "Claimed", colour: "#4C1D8F", points: data.months.map((m, i) => ({ label: m, value: data.claimed[i] })) },
+            { name: "Statted", colour: "#1B7038", points: data.months.map((m, i) => ({ label: m, value: data.statted[i] })) },
+          ]} />
+        </div>
+      </div>
+
+      <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="text-xs font-medium uppercase mb-3" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>
+          Top 10 deals · {periodLabelFor(period)}
+        </div>
+        {data.top.length === 0 ? (
+          <div className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>No deals in this period.</div>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {data.top.map((d, i) => {
+              const max = data.top[0].gp || 1;
+              return (
+                <div key={i} className="flex items-center gap-3">
+                  <span className="sw-mono shrink-0" style={{ fontSize: 11, color: "var(--ink-faint)", width: 16 }}>{i + 1}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-xs font-medium truncate">{d.company}</span>
+                      <span className="sw-mono text-xs font-semibold shrink-0">{fmtGBP(d.gp)}</span>
+                    </div>
+                    <div className="rounded-full mt-1" style={{ height: 3, background: "var(--surface-alt)" }}>
+                      <div className="rounded-full" style={{ width: `${(d.gp / max) * 100}%`, height: "100%", background: "var(--primary)" }} />
+                    </div>
+                  </div>
+                  <span className="text-xs shrink-0 truncate" style={{ color: "var(--ink-faint)", width: 130 }}>{d.agent}</span>
+                  <span className="sw-mono text-xs shrink-0" style={{ color: "var(--ink-soft)", width: 86, textAlign: "right" }}>{fmtGBP(d.sov)}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /*  SETTINGS — office-only, holds Statuses and Pay Plans                   */
 /* ---------------------------------------------------------------------- */
 
 function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSavePlan, onAddPlan, onDeletePlan,
-                       coachScenarios, coachSettings, onSaveCoachScenario, onAddCoachScenario, onDeleteCoachScenario, onSaveCoachSettings }) {
+                       coachScenarios, coachSettings, onSaveCoachScenario, onAddCoachScenario, onDeleteCoachScenario, onSaveCoachSettings,
+                       orders, netsuite, forecasts }) {
   const [section, setSection] = useState("statuses");
   return (
     <div>
@@ -4234,6 +4392,7 @@ function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSave
           { key: "statuses", label: "Order Statuses", icon: Palette, badge: newCount },
           { key: "payplans", label: "Pay Plans", icon: Target, badge: 0 },
           { key: "coach", label: "Coach Setup", icon: Headphones, badge: 0 },
+          { key: "visuals", label: "Other Visuals", icon: BarChart3, badge: 0 },
         ].map((s) => (
           <button key={s.key} onClick={() => setSection(s.key)}
             className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5"
@@ -4247,6 +4406,9 @@ function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSave
       </div>
       {section === "statuses" && <StatusSettingsView rows={statusRows} onSave={onSaveStatus} newCount={newCount} />}
       {section === "payplans" && <PayPlansView plans={plans} staff={staff} onSave={onSavePlan} onAdd={onAddPlan} onDelete={onDeletePlan} />}
+      {section === "visuals" && (
+        <OtherVisualsView orders={orders} netsuite={netsuite} forecasts={forecasts} staff={staff} />
+      )}
       {section === "coach" && (
         <CoachSettingsView scenarios={coachScenarios} settings={coachSettings}
           onSaveScenario={onSaveCoachScenario} onAddScenario={onAddCoachScenario}
@@ -7340,7 +7502,8 @@ export default function App() {
         {tab === "statuses" && profile?.role === "office" && <SettingsView statusRows={statusRows} onSaveStatus={saveStatusCfg} newCount={newStatusCount} plans={payPlans} staff={staff} onSavePlan={savePayPlan} onAddPlan={addPayPlan} onDeletePlan={deletePayPlan}
           coachScenarios={coachScenarios} coachSettings={coachSettings}
           onSaveCoachScenario={saveCoachScenario} onAddCoachScenario={addCoachScenario}
-          onDeleteCoachScenario={deleteCoachScenario} onSaveCoachSettings={saveCoachSettings} />}
+          onDeleteCoachScenario={deleteCoachScenario} onSaveCoachSettings={saveCoachSettings}
+          orders={orders} netsuite={netsuiteResolved} forecasts={forecasts} />}
       </main>
 
       {selected && <OrderDrawer order={selected} ns={selected.document_number ? netsuite.find((n) => String(n.document_number) === String(selected.document_number)) : null} onClose={() => setSelected(null)} canEdit={canEditOrder(selected)} onSave={saveOrder} saving={savingEdit} onRemove={removeOrder} />}
