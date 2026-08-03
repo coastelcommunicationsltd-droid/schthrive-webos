@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 import {
   Search, Filter, X, AlertTriangle, CheckCircle2, Clock, Radio, Plus,
   Building2, Wallet, TrendingUp, ShieldAlert, RefreshCw, LogOut, Mail,
   Loader2, Users, Eye, EyeOff, ArrowLeft, LogIn, KeyRound, Palette, MapPin,
-  BarChart3, CalendarDays, Target,
+  BarChart3, CalendarDays, Target, Headphones, Phone,
 } from "lucide-react";
 
 /* ====================================================================== */
@@ -3155,6 +3155,383 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
 }
 
 /* ---------------------------------------------------------------------- */
+/*  LIVE SALES COACH — AI roleplay practice calls                          */
+/*  Isolated by design: the coach function has no database access.         */
+/* ---------------------------------------------------------------------- */
+
+const COACH_SCENARIOS = [
+  { key: "cold_call",  label: "Cold call",        blurb: "Busy owner who didn't ask for this call" },
+  { key: "objection",  label: "Objection handling", blurb: "Interested but pushing back hard" },
+  { key: "renewal",    label: "Renewal",           blurb: "Lukewarm customer with a cheaper quote" },
+  { key: "gatekeeper", label: "Gatekeeper",        blurb: "Receptionist screening you out" },
+  { key: "angry",      label: "Angry customer",    blurb: "Order went wrong, nobody called back" },
+];
+
+const SCORE_STYLE = {
+  brilliant:  { sym: "!!", label: "Brilliant",  fg: "#0E7C6B", bg: "#DEF5F0" },
+  excellent:  { sym: "!",  label: "Excellent",  fg: "var(--green)", bg: "var(--green-soft)" },
+  good:       { sym: "",   label: "Good",       fg: "var(--blue)",  bg: "var(--blue-soft)" },
+  inaccuracy: { sym: "?!", label: "Inaccuracy", fg: "var(--amber)", bg: "var(--amber-soft)" },
+  mistake:    { sym: "?",  label: "Mistake",    fg: "#C4600E",      bg: "#FBE6D2" },
+  blunder:    { sym: "??", label: "Blunder",    fg: "var(--red)",   bg: "var(--red-soft)" },
+};
+const SCORE_POINTS = { brilliant: 3, excellent: 2, good: 1, inaccuracy: -1, mistake: -2, blunder: -4 };
+
+function ScoreBadge({ score }) {
+  const s = SCORE_STYLE[score] || SCORE_STYLE.good;
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-bold whitespace-nowrap"
+      style={{ color: s.fg, background: s.bg }}>
+      {s.sym && <span className="sw-mono">{s.sym}</span>}{s.label}
+    </span>
+  );
+}
+
+function SalesCoachView() {
+  const [scenario, setScenario] = useState("cold_call");
+  const [status, setStatus] = useState("idle");      // idle | live | thinking | ended
+  const [turns, setTurns] = useState([]);            // {role, text, score, note}
+  const [interim, setInterim] = useState("");
+  const [summary, setSummary] = useState(null);
+  const [error, setError] = useState("");
+  const [speakBack, setSpeakBack] = useState(true);
+  const [typed, setTyped] = useState("");
+
+  const recogRef = useRef(null);
+  const scrollRef = useRef(null);
+  const turnsRef = useRef([]);
+  useEffect(() => { turnsRef.current = turns; }, [turns]);
+
+  const supported = typeof window !== "undefined" &&
+    (window.SpeechRecognition || window.webkitSpeechRecognition);
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [turns, interim]);
+
+  // ---- talking to the coach function --------------------------------
+  const callCoach = useCallback(async (mode, history) => {
+    const { data: sess } = await supabase.auth.getSession();
+    const token = sess?.session?.access_token;
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/sales-coach`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        apikey: SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({ mode, scenario, history }),
+    });
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(`Coach unavailable (${res.status}). ${t.slice(0, 160)}`);
+    }
+    return res.json();
+  }, [scenario]);
+
+  const say = useCallback((text) => {
+    if (!speakBack || typeof window === "undefined" || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.05;
+    u.lang = "en-GB";
+    window.speechSynthesis.speak(u);
+  }, [speakBack]);
+
+  // ---- submit one agent turn ----------------------------------------
+  const submitTurn = useCallback(async (text) => {
+    const clean = (text || "").trim();
+    if (!clean) return;
+    setError("");
+    const withAgent = [...turnsRef.current, { role: "agent", text: clean }];
+    setTurns(withAgent);
+    setInterim("");
+    setStatus("thinking");
+    try {
+      const r = await callCoach("turn", withAgent.map(({ role, text }) => ({ role, text })));
+      setTurns((prev) => {
+        const copy = [...prev];
+        // attach the score to the agent turn we just sent
+        for (let i = copy.length - 1; i >= 0; i--) {
+          if (copy[i].role === "agent" && !copy[i].score) {
+            copy[i] = { ...copy[i], score: r.score || "good", note: r.note || "" };
+            break;
+          }
+        }
+        return [...copy, { role: "customer", text: r.customer || "..." }];
+      });
+      say(r.customer);
+      setStatus("live");
+    } catch (e) {
+      setError(e && e.message ? String(e.message) : String(e));
+      setStatus("live");
+    }
+  }, [callCoach, say]);
+
+  // ---- speech recognition -------------------------------------------
+  const startListening = useCallback(() => {
+    if (!supported) return;
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const r = new SR();
+    r.lang = "en-GB";
+    r.continuous = true;
+    r.interimResults = true;
+
+    let buffer = "";
+    let silence = null;
+
+    r.onresult = (ev) => {
+      let interimText = "";
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const res = ev.results[i];
+        if (res.isFinal) buffer += res[0].transcript + " ";
+        else interimText += res[0].transcript;
+      }
+      setInterim(buffer + interimText);
+      // Send the turn after a pause, the way a real conversation hands over
+      clearTimeout(silence);
+      silence = setTimeout(() => {
+        const toSend = buffer.trim();
+        buffer = "";
+        if (toSend) submitTurn(toSend);
+      }, 1400);
+    };
+    r.onerror = (ev) => {
+      if (ev.error === "not-allowed") setError("Microphone blocked — allow access in your browser and try again.");
+      else if (ev.error !== "no-speech" && ev.error !== "aborted") setError(`Microphone: ${ev.error}`);
+    };
+    r.onend = () => { if (recogRef.current === r) { try { r.start(); } catch (_) {} } };
+
+    recogRef.current = r;
+    try { r.start(); } catch (_) {}
+  }, [supported, submitTurn]);
+
+  const stopListening = useCallback(() => {
+    const r = recogRef.current;
+    recogRef.current = null;
+    if (r) { try { r.onend = null; r.stop(); } catch (_) {} }
+    setInterim("");
+  }, []);
+
+  useEffect(() => () => stopListening(), [stopListening]);
+
+  // ---- call lifecycle ------------------------------------------------
+  const startCall = useCallback(async () => {
+    setTurns([]); setSummary(null); setError(""); setInterim("");
+    setStatus("thinking");
+    try {
+      const r = await callCoach("turn", []);
+      setTurns([{ role: "customer", text: r.customer || "Hello?" }]);
+      say(r.customer);
+      setStatus("live");
+      startListening();
+    } catch (e) {
+      setError(e && e.message ? String(e.message) : String(e));
+      setStatus("idle");
+    }
+  }, [callCoach, say, startListening]);
+
+  const endCall = useCallback(async () => {
+    stopListening();
+    if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.cancel();
+    setStatus("thinking");
+    try {
+      const r = await callCoach("summary", turnsRef.current.map(({ role, text }) => ({ role, text })));
+      setSummary(r);
+    } catch (e) {
+      setError(e && e.message ? String(e.message) : String(e));
+    }
+    setStatus("ended");
+  }, [callCoach, stopListening]);
+
+  // ---- running score --------------------------------------------------
+  const scored = turns.filter((t) => t.role === "agent" && t.score);
+  const points = scored.reduce((s, t) => s + (SCORE_POINTS[t.score] ?? 0), 0);
+  const tally = scored.reduce((m, t) => { m[t.score] = (m[t.score] || 0) + 1; return m; }, {});
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <Headphones size={18} style={{ color: "var(--primary)" }} />
+        <h2 className="sw-display text-lg font-bold">Live Sales Coach</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+          Practice call · nothing here touches live customer data
+        </span>
+      </div>
+
+      {!supported && (
+        <div className="rounded-xl p-3 mb-4 text-sm" style={{ background: "var(--amber-soft)", color: "var(--ink-soft)" }}>
+          <b>Speech isn't supported in this browser.</b> Use Chrome or Edge for voice.
+          You can still practise by typing your side of the call.
+        </div>
+      )}
+      {error && (
+        <div className="rounded-xl p-3 mb-4 text-sm" style={{ background: "var(--red-soft)", color: "var(--red)" }}>{error}</div>
+      )}
+
+      {/* Scenario picker — only before a call starts */}
+      {status === "idle" && (
+        <>
+          <div className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--ink-soft)" }}>Choose a scenario</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "0.6rem" }} className="mb-4">
+            {COACH_SCENARIOS.map((s) => (
+              <button key={s.key} onClick={() => setScenario(s.key)}
+                className="sw-focus rounded-xl p-3 text-left"
+                style={scenario === s.key
+                  ? { background: "var(--primary)", color: "#fff", border: "1px solid var(--primary)" }
+                  : { background: "var(--surface)", border: "1px solid var(--border)" }}>
+                <div className="font-semibold text-sm">{s.label}</div>
+                <div className="text-xs mt-0.5" style={{ color: scenario === s.key ? "rgba(255,255,255,0.8)" : "var(--ink-faint)" }}>{s.blurb}</div>
+              </button>
+            ))}
+          </div>
+          <button onClick={startCall} className="sw-focus px-5 py-3 rounded-full font-semibold text-sm flex items-center gap-2"
+            style={{ background: "var(--primary)", color: "#fff" }}>
+            <Phone size={15} /> Start practice call
+          </button>
+        </>
+      )}
+
+      {/* Live call */}
+      {(status === "live" || status === "thinking" || status === "ended") && (
+        <>
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            <span className="text-xs font-semibold px-2.5 py-1 rounded-full"
+              style={{ background: "var(--primary-soft)", color: "var(--primary)" }}>
+              {COACH_SCENARIOS.find((s) => s.key === scenario)?.label}
+            </span>
+            {status !== "ended" && (
+              <span className="text-xs flex items-center gap-1" style={{ color: recogRef.current ? "var(--green)" : "var(--ink-faint)" }}>
+                <Radio size={10} className={recogRef.current ? "sw-live-dot" : ""} /> {recogRef.current ? "Listening" : "Mic off"}
+              </span>
+            )}
+            {scored.length > 0 && (
+              <span className="text-xs sw-mono font-bold px-2.5 py-1 rounded-full"
+                style={{ background: points >= 0 ? "var(--green-soft)" : "var(--red-soft)", color: points >= 0 ? "var(--green)" : "var(--red)" }}>
+                {points > 0 ? "+" : ""}{points}
+              </span>
+            )}
+            <div className="ml-auto flex items-center gap-2">
+              <label className="flex items-center gap-1.5 text-xs cursor-pointer" style={{ color: "var(--ink-soft)" }}>
+                <input type="checkbox" checked={speakBack} onChange={(e) => setSpeakBack(e.target.checked)} /> Customer speaks
+              </label>
+              {status !== "ended" && (
+                <button onClick={endCall} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold text-white"
+                  style={{ background: "var(--red)" }}>End call</button>
+              )}
+              {status === "ended" && (
+                <button onClick={() => { setStatus("idle"); setTurns([]); setSummary(null); }}
+                  className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold"
+                  style={{ background: "var(--primary)", color: "#fff" }}>New call</button>
+              )}
+            </div>
+          </div>
+
+          <div ref={scrollRef} className="rounded-2xl p-4 mb-3"
+            style={{ background: "var(--surface)", border: "1px solid var(--border)", height: 420, overflowY: "auto" }}>
+            {turns.map((t, i) => (
+              <div key={i} className="mb-3">
+                <div className="flex items-start gap-2">
+                  <span className="text-xs font-bold shrink-0 px-2 py-0.5 rounded"
+                    style={t.role === "agent"
+                      ? { background: "var(--primary-soft)", color: "var(--primary)" }
+                      : { background: "var(--surface-alt)", color: "var(--ink-soft)" }}>
+                    {t.role === "agent" ? "YOU" : "THEM"}
+                  </span>
+                  <div className="flex-1">
+                    <div className="text-sm">{t.text}</div>
+                    {t.score && (
+                      <div className="flex items-center gap-2 mt-1 flex-wrap">
+                        <ScoreBadge score={t.score} />
+                        {t.note && <span className="text-xs" style={{ color: "var(--ink-soft)" }}>{t.note}</span>}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+            {interim && (
+              <div className="flex items-start gap-2 mb-3" style={{ opacity: 0.55 }}>
+                <span className="text-xs font-bold shrink-0 px-2 py-0.5 rounded" style={{ background: "var(--primary-soft)", color: "var(--primary)" }}>YOU</span>
+                <div className="text-sm italic">{interim}</div>
+              </div>
+            )}
+            {status === "thinking" && (
+              <div className="flex items-center gap-2 text-xs" style={{ color: "var(--ink-faint)" }}>
+                <Loader2 size={13} className="animate-spin" /> thinking...
+              </div>
+            )}
+          </div>
+
+          {/* Typed fallback — also handy if you'd rather practise silently */}
+          {status !== "ended" && (
+            <div className="flex items-center gap-2 mb-4">
+              <input className="sw-input sw-focus" placeholder="...or type your line and press Enter"
+                value={typed} onChange={(e) => setTyped(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && typed.trim()) { submitTurn(typed); setTyped(""); } }} />
+              <button onClick={() => { if (typed.trim()) { submitTurn(typed); setTyped(""); } }}
+                className="sw-focus px-4 py-2 rounded-lg text-sm font-semibold text-white" style={{ background: "var(--primary)" }}>Send</button>
+              {supported && (
+                recogRef.current
+                  ? <button onClick={stopListening} className="sw-focus px-3 py-2 rounded-lg text-sm font-semibold" style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>Mute</button>
+                  : <button onClick={startListening} className="sw-focus px-3 py-2 rounded-lg text-sm font-semibold" style={{ background: "var(--green)", color: "#fff" }}>Unmute</button>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* End of call review */}
+      {summary && (
+        <div className="rounded-2xl p-5" style={{ background: "var(--surface)", border: "2px solid var(--primary)" }}>
+          <div className="flex items-center gap-3 mb-3">
+            <div className="sw-display font-bold text-3xl rounded-xl px-4 py-1"
+              style={{ background: "var(--primary)", color: "#fff" }}>{summary.grade || "—"}</div>
+            <div>
+              <div className="sw-display font-bold text-base">Call review</div>
+              <div className="text-sm" style={{ color: "var(--ink-soft)" }}>{summary.headline}</div>
+            </div>
+          </div>
+
+          {scored.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap mb-4">
+              {Object.keys(SCORE_STYLE).filter((k) => tally[k]).map((k) => (
+                <span key={k} className="text-xs font-semibold px-2 py-1 rounded-full"
+                  style={{ background: SCORE_STYLE[k].bg, color: SCORE_STYLE[k].fg }}>
+                  {tally[k]} × {SCORE_STYLE[k].label}
+                </span>
+              ))}
+            </div>
+          )}
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "0.75rem" }}>
+            <div className="rounded-xl p-3" style={{ background: "var(--green-soft)" }}>
+              <div className="text-xs font-bold uppercase mb-2" style={{ color: "var(--green)" }}>What worked</div>
+              {(summary.strengths || []).map((s, i) => (
+                <div key={i} className="text-sm mb-1.5" style={{ color: "var(--ink)" }}>• {s}</div>
+              ))}
+            </div>
+            <div className="rounded-xl p-3" style={{ background: "var(--amber-soft)" }}>
+              <div className="text-xs font-bold uppercase mb-2" style={{ color: "var(--amber)" }}>Work on this</div>
+              {(summary.improvements || []).map((s, i) => (
+                <div key={i} className="text-sm mb-1.5" style={{ color: "var(--ink)" }}>• {s}</div>
+              ))}
+            </div>
+          </div>
+
+          {summary.moment && (
+            <div className="rounded-xl p-3 mt-3" style={{ background: "var(--surface-alt)" }}>
+              <div className="text-xs font-bold uppercase mb-1" style={{ color: "var(--ink-soft)" }}>Turning point</div>
+              <div className="text-sm">{summary.moment}</div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /*  APP SHELL — auth gate + live data                                     */
 /* ---------------------------------------------------------------------- */
 
@@ -3502,6 +3879,7 @@ export default function App() {
             <button onClick={() => setTab("new")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "new" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}><Plus size={14} /> New Submission</button>
             <button onClick={() => setTab("daybyday")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "daybyday" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}><CalendarDays size={14} /> Day by Day</button>
             <button onClick={() => setTab("breakdown")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "breakdown" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}><BarChart3 size={14} /> Sales Breakdown</button>
+            <button onClick={() => setTab("coach")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "coach" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}><Headphones size={14} /> Sales Coach</button>
             {profile?.role === "office" && (
               <button onClick={() => setTab("admin")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "admin" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}><Users size={14} /> Admin</button>
             )}
@@ -3542,6 +3920,7 @@ export default function App() {
         {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} />}
         {tab === "daybyday" && <DayByDayView orders={orders} />}
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuite} />}
+        {tab === "coach" && <SalesCoachView />}
         {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onResetPassword={resetPassword} plans={payPlans} />}
         {tab === "statuses" && profile?.role === "office" && <SettingsView statusRows={statusRows} onSaveStatus={saveStatusCfg} newCount={newStatusCount} plans={payPlans} staff={staff} onSavePlan={savePayPlan} onAddPlan={addPayPlan} onDeletePlan={deletePayPlan} />}
       </main>
