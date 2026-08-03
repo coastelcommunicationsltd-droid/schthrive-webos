@@ -6,7 +6,7 @@ import {
   Loader2, Users, Eye, EyeOff, ArrowLeft, LogIn, KeyRound, Palette, MapPin,
   BarChart3, CalendarDays, Target, Headphones, Phone,
   ChevronDown, ClipboardList, LayoutDashboard, Settings as SettingsIcon,
-  PanelLeftClose, PanelLeftOpen, History, FileText,
+  PanelLeftClose, PanelLeftOpen, History, FileText, Inbox,
 } from "lucide-react";
 
 /* ====================================================================== */
@@ -703,19 +703,32 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
   const inPeriod = useMemo(() => filterByPeriod(orders, period), [orders, period]);
 
   const scoped = useMemo(() => {
-    if (isOffice && scope === "office") return inPeriod;
-    if (isOffice) return inPeriod.filter((o) => o.closer_team === scope || o.lead_gen_team === scope);
-    // 2ic: RLS already limits rows to their team; the toggle lets them narrow to just themselves
-    return inPeriod;
-  }, [inPeriod, isOffice, scope]);
+    let rows = inPeriod;
+    // Team scope
+    if (isOffice && scope !== "office") {
+      rows = rows.filter((o) => o.closer_team === scope || o.lead_gen_team === scope);
+    }
+    // Agent filter — applies to the KPI cards as well as the table, so the
+    // headline figures always describe the same slice being looked at.
+    if (agentFilter !== "All") {
+      rows = rows.filter((o) => o.closer_name === agentFilter || o.lead_gen_name === agentFilter);
+    }
+    return rows;
+  }, [inPeriod, isOffice, scope, agentFilter]);
 
   // Every agent (closer or lead gen) appearing in the currently-scoped orders —
   // this is how a manager/2IC "sorts the list to agents".
   const agentOptions = useMemo(() => {
+    // Built before the agent filter is applied, so picking one doesn't
+    // leave the dropdown with a single option and no way back.
+    let rows = inPeriod;
+    if (isOffice && scope !== "office") {
+      rows = rows.filter((o) => o.closer_team === scope || o.lead_gen_team === scope);
+    }
     const names = new Set();
-    scoped.forEach((o) => { if (o.closer_name) names.add(o.closer_name); if (o.lead_gen_name) names.add(o.lead_gen_name); });
+    rows.forEach((o) => { if (o.closer_name) names.add(o.closer_name); if (o.lead_gen_name) names.add(o.lead_gen_name); });
     return Array.from(names).sort();
-  }, [scoped]);
+  }, [inPeriod, isOffice, scope]);
 
   // ---- Which dataset the table shows ---------------------------------
   // Claimed = what agents submitted. Statted = what NetSuite booked.
@@ -872,12 +885,23 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
 
   const sovTotal = useMemo(() => totalSOV(sovCountable), [sovCountable]);
   const gpTotal = useMemo(() => {
+    // One agent selected -> THEIR share of each deal, not the whole deal.
+    // Showing full deal GP for a single agent would credit them with their
+    // colleague's cut too.
+    if (agentFilter !== "All") {
+      return gpCountable.reduce((s, o) => {
+        let v = 0;
+        if (o.closer_name === agentFilter) v += num(o.closer_share);
+        if (o.lead_gen_name === agentFilter) v += num(o.lead_gen_share);
+        return s + v;
+      }, 0);
+    }
     // Office (whole office) -> single-count office GP.
     // A specific team scope -> that team's docked GP.
     if (isOffice && scope !== "office") return teamGP(gpCountable, scope);
     if (is2ic && profile?.team) return teamGP(gpCountable, profile.team);
     return officeGP(gpCountable);
-  }, [gpCountable, isOffice, is2ic, scope, profile]);
+  }, [gpCountable, isOffice, is2ic, scope, profile, agentFilter]);
   const ngpCount = useMemo(() => viewRows.filter((r) => r.ngp).length, [viewRows]);
   const nsovCount = useMemo(() => productScoped.filter(isNSOV).length, [productScoped, isNSOV]);
   const activeOrders = useMemo(() => productScoped.filter((o) => {
@@ -961,7 +985,11 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
     return totals;
   }, [netsuite, period, statusCfg, isOffice, is2ic, scope, profile, agentFilter, productFilter]);
 
-  const gpLabel = isOffice && scope !== "office" ? `GP · ${scope}` : is2ic && profile?.team ? `GP · ${profile.team}` : "GP · Office";
+  const gpLabel = agentFilter !== "All"
+    ? `GP · ${agentFilter.split(" ")[0]}`
+    : isOffice && scope !== "office" ? `GP · ${scope}`
+    : is2ic && profile?.team ? `GP · ${profile.team}`
+    : "GP · Office";
   const periodLabel = useMemo(() => {
     const s = periodStart(period);
     if (!s) return "all time";
@@ -5318,6 +5346,7 @@ function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSig
     try { return localStorage.getItem(SIDEBAR_KEY) === "collapsed"; } catch (_) { return false; }
   });
   const [mainOpen, setMainOpen] = useState(true);
+  const [submitOpen, setSubmitOpen] = useState(true);
   const [dashOpen, setDashOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(true);
   const isOffice = profile?.role === "office";
@@ -5330,7 +5359,8 @@ function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSig
     });
   };
 
-  const mainActive = ["dashboard", "forecast", "new", "daybyday", "landscapes", "quote"].includes(tab);
+  const mainActive = ["dashboard", "forecast", "daybyday"].includes(tab);
+  const submitActive = ["new", "landscapes", "quote"].includes(tab);
   const dashboardsActive = ["breakdown"].includes(tab);
   const settingsActive = ["admin", "statuses"].includes(tab);
 
@@ -5352,8 +5382,13 @@ function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSig
         <SidebarSection icon={ClipboardList} label="Main Views" collapsed={collapsed} open={mainOpen} onToggle={() => setMainOpen((o) => !o)} childActive={mainActive}>
           <SidebarItem icon={ClipboardList} label="Claimed" collapsed={collapsed} active={tab === "dashboard"} indent onClick={() => setTab("dashboard")} />
           <SidebarItem icon={TrendingUp} label="Forecasting" collapsed={collapsed} active={tab === "forecast"} indent onClick={() => setTab("forecast")} />
-          <SidebarItem icon={Plus} label="Submit Lilac Box" collapsed={collapsed} active={tab === "new"} indent onClick={() => setTab("new")} />
           <SidebarItem icon={CalendarDays} label="Day by Day" collapsed={collapsed} active={tab === "daybyday"} indent onClick={() => setTab("daybyday")} />
+        </SidebarSection>
+
+        <div className="my-1" />
+
+        <SidebarSection icon={Inbox} label="Submission Boxes" collapsed={collapsed} open={submitOpen} onToggle={() => setSubmitOpen((o) => !o)} childActive={submitActive}>
+          <SidebarItem icon={Plus} label="Submit Lilac Box" collapsed={collapsed} active={tab === "new"} indent onClick={() => setTab("new")} />
           <SidebarItem icon={MapPin} label="Landscapes" collapsed={collapsed} active={tab === "landscapes"} indent onClick={() => setTab("landscapes")} />
           <SidebarItem icon={FileText} label="Quote Builder" collapsed={collapsed} active={tab === "quote"} indent onClick={() => setTab("quote")} />
         </SidebarSection>
