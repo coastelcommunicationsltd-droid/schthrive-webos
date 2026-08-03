@@ -503,9 +503,13 @@ function KPICard({ icon: Icon, label, value, sub, accent, target, rawValue }) {
 }
 
 /* Headline figure. Carries a target when the viewer has a pay plan. */
-function HeroCard({ label, value, note, accent, target, rawValue }) {
+function HeroCard({ label, value, note, accent, target, fullTarget, rawValue }) {
+  // Colour reflects pace (are you where you should be today); the number
+  // and bar reflect the whole target, so day 1 doesn't read as 1200%.
   const tone = target ? paceTone(rawValue, target) : null;
-  const pct = target ? Math.round((rawValue / target) * 100) : 0;
+  const denom = fullTarget || target;
+  const pct = denom ? Math.round((rawValue / denom) * 100) : 0;
+  const pacePct = denom && target ? Math.min(100, (target / denom) * 100) : 0;
   return (
     <div className="sw-rise rounded-xl p-4 flex flex-col justify-between"
       style={{ background: "var(--surface)", border: "1px solid var(--border)", minHeight: 112 }}>
@@ -520,10 +524,15 @@ function HeroCard({ label, value, note, accent, target, rawValue }) {
       </div>
       {tone ? (
         <div>
-          <div className="rounded-full mb-1.5" style={{ height: 3, background: "var(--surface-alt)" }}>
+          <div className="rounded-full mb-1.5" style={{ height: 4, background: "var(--surface-alt)", position: "relative" }}>
             <div className="rounded-full" style={{ width: Math.min(100, pct) + "%", height: "100%", background: tone.fg, transition: "width .3s" }} />
+            {pacePct > 0 && pacePct < 100 && (
+              <div style={{ position: "absolute", left: `${pacePct}%`, top: -1, bottom: -1, width: 2, background: "var(--ink)", opacity: 0.4 }} />
+            )}
           </div>
-          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{fmtGBP(target)} to pace</div>
+          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+            {fmtGBP(denom)} target · {fmtGBP(target)} to pace
+          </div>
         </div>
       ) : (
         <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{note}</div>
@@ -533,9 +542,10 @@ function HeroCard({ label, value, note, accent, target, rawValue }) {
 }
 
 /* One product's SOV, with its target bar if there is one. */
-function MiniStat({ label, value, target, accent, bold }) {
+function MiniStat({ label, value, target, fullTarget, accent, bold }) {
   const tone = target ? paceTone(value, target) : null;
-  const pct = target ? Math.round((value / target) * 100) : 0;
+  const denom = fullTarget || target;
+  const pct = denom ? Math.round((value / denom) * 100) : 0;
   return (
     <div className="px-1 py-1">
       <div className="flex items-baseline justify-between gap-1">
@@ -1023,6 +1033,16 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
 
   // Every agent (closer or lead gen) appearing in the currently-scoped orders —
   // this is how a manager/2IC "sorts the list to agents".
+  // Teams as they actually appear in the data, so the picker can't go stale
+  // if a team is renamed or added.
+  const teamOptions = useMemo(() => {
+    const s = new Set();
+    (staff || []).forEach((x) => { if (x.team && x.sells !== false) s.add(x.team); });
+    (orders || []).forEach((o) => { if (o.closer_team) s.add(o.closer_team); });
+    SELLING_TEAMS.forEach((t) => s.add(t));
+    return Array.from(s).sort();
+  }, [staff, orders]);
+
   const agentOptions = useMemo(() => {
     // Built before the agent filter is applied, so picking one doesn't
     // leave the dropdown with a single option and no way back.
@@ -1524,13 +1544,14 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         /* Just GP and SOV, given room to breathe */
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }} className="mb-3">
           {[
-            { label: gpLabel, value: fmtGBP(gpTotal), target: targets.gp, raw: gpTotal,
+            { label: gpLabel, value: fmtGBP(gpTotal), target: targets.gp, fullTarget: targets.full.gp, raw: gpTotal,
               note: gpWorking.dc > 0 ? `${fmtGBP(gpWorking.claimed)} claimed − ${fmtGBP(gpWorking.dc)} DC` : "Single-counted GP" },
             { label: "SOV", value: fmtGBP(sovTotal), target: null, raw: 0,
               note: `${productScoped.length} order${productScoped.length === 1 ? "" : "s"} · ${periodLabelFor(period)}` },
           ].map((c) => {
             const tone = c.target ? paceTone(c.raw, c.target) : null;
-            const pct = c.target ? Math.round((c.raw / c.target) * 100) : 0;
+            const denom = c.fullTarget || c.target;
+            const pct = denom ? Math.round((c.raw / denom) * 100) : 0;
             return (
               <div key={c.label} className="rounded-xl px-6 py-7" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
                 <div className="flex items-baseline justify-between">
@@ -1555,7 +1576,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) minmax(0,1.1fr) minmax(260px,1.15fr)", gap: "0.75rem" }} className="mb-3">
 
         <HeroCard label={gpLabel} value={fmtGBP(gpTotal)} accent="#1F7A3D"
-          target={targets.gp} rawValue={gpTotal}
+          target={targets.gp} fullTarget={targets.full.gp} rawValue={gpTotal}
           note={gpWorking.dc > 0 ? `${fmtGBP(gpWorking.claimed)} claimed − ${fmtGBP(gpWorking.dc)} DC` : "Single-counted"} />
 
         <HeroCard label="SOV" value={fmtGBP(sovTotal)} accent="#4C1D8F"
@@ -1567,9 +1588,9 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
             <span className="text-xs" style={{ color: "var(--ink-faint)" }}>NetSuite</span>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem 1.25rem" }}>
-            <MiniStat label="Cloud" value={nsSovCards.cloud} target={targets.cloud} />
-            <MiniStat label="Connectivity" value={nsSovCards.connectivity} target={targets.conn} />
-            <MiniStat label="Mobile" value={nsSovCards.mobile} target={targets.mobile} />
+            <MiniStat label="Cloud" value={nsSovCards.cloud} target={targets.cloud} fullTarget={targets.full.cloud} />
+            <MiniStat label="Connectivity" value={nsSovCards.connectivity} target={targets.conn} fullTarget={targets.full.conn} />
+            <MiniStat label="Mobile" value={nsSovCards.mobile} target={targets.mobile} fullTarget={targets.full.mobile} />
             <MiniStat label="Total" value={nsSovCards.all} bold />
           </div>
         </div>
@@ -1700,7 +1721,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
             {agentRanking.length === 0 ? (
               <div className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>No figures for this period.</div>
             ) : (
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-2" style={{ maxHeight: 340, overflowY: "auto" }}>
                 {agentRanking.map((a, i) => {
                   const tone = paceTone(a.gp, a.pace);
                   const pct = a.target > 0 ? Math.min(100, (a.gp / a.target) * 100) : 0;
@@ -1801,7 +1822,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         {isOffice && (
           <select className="sw-input sw-focus" style={{ width: 150 }} value={scope} onChange={(e) => setScope(e.target.value)}>
             <option value="office">Whole Office</option>
-            {SELLING_TEAMS.map((t) => <option key={t} value={t}>{t}</option>)}
+            {teamOptions.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
         )}
         {is2ic && (
@@ -1861,10 +1882,6 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
           </button>
         )}
       </div>
-
-      {/* List on the left, analytics pinned on the right so they stay in
-          view while the order list scrolls. */}
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px", gap: "0.75rem", alignItems: "start" }}>
 
       <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="overflow-x-auto">
@@ -1963,9 +1980,9 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
           </table>
         </div>
         <div className="flex items-center gap-1.5 px-4 py-2.5 text-xs" style={{ color: "var(--ink-faint)", borderTop: "1px solid var(--border)" }}><RefreshCw size={11} /> Live — updates as orders change</div>
-        </div>
-        </div>
       </div>
+
+        </div>
       </div>
     </div>
   );
