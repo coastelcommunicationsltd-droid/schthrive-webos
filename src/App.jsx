@@ -1037,6 +1037,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
   const [statusFilter, setStatusFilter] = useState("All");
   const [agentFilter, setAgentFilter] = useState("All");
   const [ngpMode, setNgpMode] = useState("hide");  // hide | show | only
+  const [nsovMode, setNsovMode] = useState("show");  // show | only (NSOV still counts toward GP, so it isn't hidden by default)
   const [dataView, setDataView] = useState("claimed");   // forecast | claimed | statted
   const [productFilter, setProductFilter] = useState("All");
   const [focusFilter, setFocusFilter] = useState("All");   // All | aged | attention
@@ -1235,6 +1236,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       // but sometimes chasing them is the job, hence "only".
       if (ngpMode === "hide" && r.ngp) return false;
       if (ngpMode === "only" && !r.ngp) return false;
+      if (nsovMode === "only" && !r.nsov) return false;
       const q = query.trim().toLowerCase();
       const raw = r.raw || {};
       const mq = !q
@@ -1267,7 +1269,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       if (typeof av === "string") return av.localeCompare(bv) * dir;
       return (av - bv) * dir;
     });
-  }, [viewRows, query, statusFilter, agentFilter, productFilter, focusFilter, sortKey, sortDir, ngpMode, campaignOnly, acqOnly]);
+  }, [viewRows, query, statusFilter, agentFilter, productFilter, focusFilter, sortKey, sortDir, ngpMode, nsovMode, campaignOnly, acqOnly]);
 
   // Statuses actually present — Lilac stages plus whatever NetSuite reports
   const statusOptions = useMemo(() => {
@@ -1997,6 +1999,17 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
               {lbl}{n ? ` (${n})` : ""}
             </button>
           ))}
+          <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
+          {/* NSOV still counts toward GP, so it stays visible by default —
+              this is only for finding it, not hiding it. */}
+          <button onClick={() => { setNsovMode(nsovMode === "only" ? "show" : "only"); setFocusFilter("All"); }}
+            title="Orders flagged NSOV — excluded from SOV, still counts toward GP"
+            className="sw-focus px-2.5 py-2 text-xs whitespace-nowrap"
+            style={nsovMode === "only" && focusFilter === "All"
+              ? { background: "var(--amber)", color: "#fff", fontWeight: 600 }
+              : { background: "transparent", color: nsovCount ? "var(--amber)" : "var(--ink-faint)" }}>
+            Only NSOV{nsovCount ? ` (${nsovCount})` : ""}
+          </button>
           <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
           <button onClick={() => setFocusFilter(focusFilter === "attention" ? "All" : "attention")}
             title="Orders at a status that needs the agent to act"
