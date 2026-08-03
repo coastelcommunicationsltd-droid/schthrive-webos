@@ -3,7 +3,8 @@ import { createClient } from "@supabase/supabase-js";
 import {
   Search, Filter, X, AlertTriangle, CheckCircle2, Clock, Radio, Plus,
   Building2, Wallet, TrendingUp, ShieldAlert, RefreshCw, LogOut, Mail,
-  Loader2, Users, Eye, ArrowLeft, LogIn, KeyRound, Palette, MapPin,
+  Loader2, Users, Eye, EyeOff, ArrowLeft, LogIn, KeyRound, Palette, MapPin,
+  BarChart3, CalendarDays,
 } from "lucide-react";
 
 /* ====================================================================== */
@@ -1247,6 +1248,8 @@ function LilacForm({ onSubmit, submitting }) {
       opp_id: f.oppId,
       lbcr_ref: makeLbcrRef(),   // quote this in NetSuite to link the two
       postcode: normalisePostcode(f.sitePostcode),
+      deal_type: dealTypes.length ? dealTypes.join(", ") : null,
+      units: f.units ? (parseFloat(f.units) || null) : null,
       cug: f.cug || null,
       company_name: f.lEName,
       team: closerTeam,          // primary/closer team for the top-level column
@@ -1944,6 +1947,408 @@ function TVBoard({ orders, netsuite }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  REPORT HELPERS                                                         */
+/* ---------------------------------------------------------------------- */
+
+const FY_MONTHS = ["Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar"];
+
+// Which financial-year month a date falls in (0 = April ... 11 = March)
+function fyMonthIndex(d) {
+  const m = d.getMonth();
+  return (m - 3 + 12) % 12;
+}
+// ISO-ish week number, Monday-based
+function weekNumber(d) {
+  const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const day = (t.getUTCDay() + 6) % 7;
+  t.setUTCDate(t.getUTCDate() - day + 3);
+  const firstThursday = new Date(Date.UTC(t.getUTCFullYear(), 0, 4));
+  const fday = (firstThursday.getUTCDay() + 6) % 7;
+  firstThursday.setUTCDate(firstThursday.getUTCDate() - fday + 3);
+  return 1 + Math.round((t - firstThursday) / (7 * 86400000));
+}
+
+function ReportCell({ value, money = true, bold, tone }) {
+  const empty = value === 0 || value == null;
+  return (
+    <td className="px-2 py-1.5 text-right sw-mono whitespace-nowrap"
+      style={{
+        fontSize: 12,
+        fontWeight: bold ? 700 : 500,
+        color: empty ? "var(--ink-faint)" : (tone || "var(--ink)"),
+        borderLeft: "1px solid var(--border)",
+      }}>
+      {money ? fmtGBP(value) : (value || 0).toLocaleString("en-GB")}
+    </td>
+  );
+}
+
+function ReportLabel({ children, indent, bold, tone }) {
+  return (
+    <td className="px-3 py-1.5 whitespace-nowrap"
+      style={{
+        fontSize: 12,
+        fontWeight: bold ? 700 : 600,
+        color: tone || "var(--ink-soft)",
+        paddingLeft: indent ? 24 : 12,
+        position: "sticky", left: 0,
+        background: "var(--surface)",
+      }}>
+      {children}
+    </td>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  SALES BREAKDOWN — month or week, from NetSuite                         */
+/* ---------------------------------------------------------------------- */
+
+function SalesBreakdownView({ netsuite }) {
+  const [grain, setGrain] = useState("month");   // 'month' | 'week'
+  const [showAcq, setShowAcq] = useState(false);
+  const statusCfg = useStatusCfg();
+
+  const counts = (r, kind) => {
+    const cfg = r.order_status ? statusCfg[r.order_status] : null;
+    if (kind === "sov") {
+      if (cfg) return cfg.count_sov !== false;
+      return r.count_sov !== false;
+    }
+    if (cfg) return cfg.count_gp !== false;
+    return r.count_gp !== false;
+  };
+
+  const bucketOf = (r) => {
+    const s = [r.prod_for_gs, r.product_group_2, r.item_name_grouped].join(" ").toLowerCase();
+    if (/dv4/.test(s)) return "dv4b";
+    if (/mobile|\bsim\b|airtime|handset/.test(s)) return "mobile";
+    if (/cloud|voice/.test(s)) return "cloud";
+    if (/bt ?net|btnet/.test(s)) return "btnet";
+    if (/broadband|fttp|fttc|sogea|adsl/.test(s)) return "broadband";
+    if (/security|badr/.test(s)) return "security";
+    if (/data|ethernet/.test(s)) return "data";
+    return "other";
+  };
+  const isResign = (r) => /resign/i.test(String(r.class_name || ""));
+  const isAcq = (r) => /acquisition/i.test(String(r.class_name || ""));
+  const isCampaign = (r) => !!(r.campaign_source && String(r.campaign_source).trim());
+
+  // Build the columns: FY months, or the weeks present in the data
+  const { columns, keyOf } = useMemo(() => {
+    if (grain === "month") {
+      return { columns: FY_MONTHS.map((m, i) => ({ key: i, label: m })), keyOf: (d) => fyMonthIndex(d) };
+    }
+    const weeks = new Set();
+    (netsuite || []).forEach((r) => { if (r.order_date) weeks.add(weekNumber(new Date(r.order_date + "T00:00:00"))); });
+    const sorted = Array.from(weeks).map(Number).sort((a, b) => a - b);
+    return { columns: sorted.map((w) => ({ key: w, label: "W" + w })), keyOf: (d) => weekNumber(d) };
+  }, [grain, netsuite]);
+
+  // Aggregate every metric per column
+  const data = useMemo(() => {
+    const blank = () => {
+      const o = {};
+      columns.forEach((c) => { o[c.key] = 0; });
+      return o;
+    };
+    const rows = {
+      cloudSov: blank(), connSov: blank(), btnetSov: blank(), bbSov: blank(),
+      mobileSov: blank(), otherSov: blank(), dv4bSov: blank(), totalSov: blank(),
+      resignSov: blank(), resignUnits: blank(), nonResignSov: blank(), nonResignUnits: blank(),
+      acqSov: blank(), totalGp: blank(), acqGp: blank(),
+      campaignGp: blank(), acqCampaignGp: blank(),
+    };
+
+    (netsuite || []).forEach((r) => {
+      if (!r.order_date) return;
+      const d = new Date(r.order_date + "T00:00:00");
+      const k = keyOf(d);
+      if (!(k in rows.totalSov)) return;
+
+      const sov = counts(r, "sov") ? num(r.contract_value) : 0;
+      const gp = counts(r, "gp") ? num(r.gp_office) : 0;
+      const units = num(r.quantity) || 0;
+      const b = bucketOf(r);
+
+      if (b === "cloud") rows.cloudSov[k] += sov;
+      if (b === "dv4b") rows.dv4bSov[k] += sov;
+      if (b === "btnet") rows.btnetSov[k] += sov;
+      if (b === "broadband") rows.bbSov[k] += sov;
+      if (b === "mobile") rows.mobileSov[k] += sov;
+      if (b === "other" || b === "data") rows.otherSov[k] += sov;
+      // Connectivity groups broadband, BT Net and security
+      if (b === "broadband" || b === "btnet" || b === "security") rows.connSov[k] += sov;
+
+      rows.totalSov[k] += sov;
+      rows.totalGp[k] += gp;
+
+      if (isResign(r)) { rows.resignSov[k] += sov; rows.resignUnits[k] += units; }
+      else { rows.nonResignSov[k] += sov; rows.nonResignUnits[k] += units; }
+
+      if (isAcq(r)) { rows.acqSov[k] += sov; rows.acqGp[k] += gp; }
+      if (isCampaign(r)) {
+        rows.campaignGp[k] += gp;
+        if (isAcq(r)) rows.acqCampaignGp[k] += gp;
+      }
+    });
+    return rows;
+  }, [netsuite, columns, keyOf, statusCfg]);
+
+  const rowTotal = (r) => columns.reduce((s, c) => s + (r[c.key] || 0), 0);
+  const rowAvg = (r) => {
+    const active = columns.filter((c) => (r[c.key] || 0) !== 0).length;
+    return active ? rowTotal(r) / active : 0;
+  };
+  const pctRow = (numer, denom) => {
+    const o = {};
+    columns.forEach((c) => {
+      const d = denom[c.key] || 0;
+      o[c.key] = d ? ((numer[c.key] || 0) / d) * 100 : 0;
+    });
+    return o;
+  };
+  const acqPct = pctRow(data.acqGp, data.totalGp);
+  const campaignPct = pctRow(data.campaignGp, data.totalGp);
+  const acqCampaignPct = pctRow(data.acqCampaignGp, data.campaignGp);
+
+  const MetricRow = ({ label, row, money = true, bold, tone, indent, pct }) => (
+    <tr style={{ borderTop: "1px solid var(--border)" }}>
+      <ReportLabel bold={bold} tone={tone} indent={indent}>{label}</ReportLabel>
+      <ReportCell value={pct ? null : rowAvg(row)} money={money} bold />
+      <ReportCell value={pct ? null : rowTotal(row)} money={money} bold />
+      {columns.map((c) => (
+        pct
+          ? <td key={c.key} className="px-2 py-1.5 text-right sw-mono" style={{ fontSize: 12, borderLeft: "1px solid var(--border)", color: (row[c.key] || 0) ? "var(--ink)" : "var(--ink-faint)" }}>
+              {(row[c.key] || 0).toFixed(2)}%
+            </td>
+          : <ReportCell key={c.key} value={row[c.key]} money={money} tone={tone} />
+      ))}
+    </tr>
+  );
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <BarChart3 size={18} style={{ color: "var(--primary)" }} />
+        <h2 className="sw-display text-lg font-bold">Sales Breakdown</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Source: NetSuite · excludes NSOV / NGP</span>
+        <div className="flex items-center gap-1.5 ml-auto">
+          {[["month", "Month by month"], ["week", "Week by week"]].map(([k, lbl]) => (
+            <button key={k} onClick={() => setGrain(k)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold"
+              style={grain === k ? { background: "var(--primary)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>
+              {lbl}
+            </button>
+          ))}
+          <button onClick={() => setShowAcq((v) => !v)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1"
+            style={showAcq ? { background: "var(--gold)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>
+            {showAcq ? <EyeOff size={12} /> : <Eye size={12} />} ACQ figures
+          </button>
+        </div>
+      </div>
+
+      <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="overflow-x-auto">
+          <table className="w-full" style={{ borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "var(--primary)" }}>
+                <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "#fff", position: "sticky", left: 0, background: "var(--primary)" }}>Metric</th>
+                <th className="px-2 py-2 text-right text-xs font-bold" style={{ color: "rgba(255,255,255,0.85)" }}>Avg</th>
+                <th className="px-2 py-2 text-right text-xs font-bold" style={{ color: "rgba(255,255,255,0.85)" }}>Total</th>
+                {columns.map((c) => (
+                  <th key={c.key} className="px-2 py-2 text-right text-xs font-bold" style={{ color: "#fff" }}>{c.label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              <MetricRow label="Cloud SOV" row={data.cloudSov} />
+              <MetricRow label="Connectivity SOV" row={data.connSov} />
+              <MetricRow label="BT Net SOV" row={data.btnetSov} indent />
+              <MetricRow label="Broadband SOV" row={data.bbSov} indent />
+              <MetricRow label="Mobile SOV" row={data.mobileSov} />
+              <MetricRow label="Other SOV" row={data.otherSov} />
+              <MetricRow label="DV4B SOV" row={data.dv4bSov} />
+              <MetricRow label="Resign SOV" row={data.resignSov} />
+              <MetricRow label="Resign Units" row={data.resignUnits} money={false} indent />
+              <MetricRow label="Non Resign SOV" row={data.nonResignSov} />
+              <MetricRow label="Non Resign Units" row={data.nonResignUnits} money={false} indent />
+              <MetricRow label="Total SOV" row={data.totalSov} bold tone="var(--primary)" />
+              <MetricRow label="Total GP" row={data.totalGp} bold tone="var(--green)" />
+              <MetricRow label="Campaign GP" row={data.campaignGp} />
+              <MetricRow label="Campaign GP %" row={campaignPct} pct indent />
+
+              {showAcq && (
+                <>
+                  <tr style={{ background: "var(--gold-soft)" }}>
+                    <td colSpan={3 + columns.length} className="px-3 py-1.5 text-xs font-bold" style={{ color: "var(--gold)" }}>
+                      ACQUISITION
+                    </td>
+                  </tr>
+                  <MetricRow label="Acq SOV" row={data.acqSov} tone="var(--gold)" />
+                  <MetricRow label="Acq GP" row={data.acqGp} tone="var(--gold)" />
+                  <MetricRow label="Acq %" row={acqPct} pct indent tone="var(--gold)" />
+                  <MetricRow label="Acq Campaign GP" row={data.acqCampaignGp} tone="var(--gold)" />
+                  <MetricRow label="Acq Campaign %" row={acqCampaignPct} pct indent tone="var(--gold)" />
+                </>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <p className="text-xs mt-3" style={{ color: "var(--ink-faint)" }}>
+        Averages ignore months with no activity, so a part-year doesn't drag the figure down.
+        Connectivity combines Broadband, BT Net and Security.
+      </p>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  DAY BY DAY — this week and month, from claimed Lilac Boxes             */
+/* ---------------------------------------------------------------------- */
+
+const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+
+function DayByDayView({ orders }) {
+  const now = new Date();
+  const wkStart = weekStart(now);
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  const hasProduct = (o, re) => re.test(String(o.item_name_grouped || "") + " " + String(o.product_group_2 || ""));
+  const hasDeal = (o, re) => re.test(String(o.deal_type || ""));
+
+  const metrics = useMemo(() => {
+    // Mon-Fri buckets for this week, plus a month bucket
+    const blankWeek = () => [0, 0, 0, 0, 0];
+    const rows = {
+      gp: { week: blankWeek(), month: 0 },
+      acqCloud: { week: blankWeek(), month: 0 },
+      crossSellCloud: { week: blankWeek(), month: 0 },
+      modifyCloud: { week: blankWeek(), month: 0 },
+      resignCloud: { week: blankWeek(), month: 0 },
+      dv4b: { week: blankWeek(), month: 0 },
+      dv4bUnits: { week: blankWeek(), month: 0 },
+      broadband: { week: blankWeek(), month: 0 },
+      broadbandUnits: { week: blankWeek(), month: 0 },
+      mobile: { week: blankWeek(), month: 0 },
+      mobileUnits: { week: blankWeek(), month: 0 },
+      data: { week: blankWeek(), month: 0 },
+      security: { week: blankWeek(), month: 0 },
+      resignBroadband: { week: blankWeek(), month: 0 },
+      resignMobile: { week: blankWeek(), month: 0 },
+    };
+
+    const add = (key, d, value) => {
+      const dt = new Date(d);
+      if (dt >= monthStart) rows[key].month += value;
+      if (dt >= wkStart) {
+        const idx = (dt.getDay() + 6) % 7;          // Mon=0
+        if (idx >= 0 && idx < 5) rows[key].week[idx] += value;
+      }
+    };
+
+    (orders || []).forEach((o) => {
+      if (!o.submission_date || o.removed_at) return;
+      const d = o.submission_date;
+      const gp = num(o.gp_office != null ? o.gp_office : o.sales_agent_gp);
+      const sov = num(o.contract_value);
+      const units = num(o.units) || 0;
+
+      add("gp", d, gp);
+
+      const cloud = hasProduct(o, /cloud|dv4|voice/i);
+      const dv4 = hasProduct(o, /dv4/i);
+      const bb = hasProduct(o, /broadband/i);
+      const mob = hasProduct(o, /mobile/i);
+      const sec = hasProduct(o, /security/i);
+      const dat = hasProduct(o, /\bdata\b|bt net|btnet/i);
+
+      const acq = hasDeal(o, /acquisition/i);
+      const cross = hasDeal(o, /cross/i);
+      const modify = hasDeal(o, /modify|upgrade/i);
+      const resign = hasDeal(o, /resign/i);
+
+      if (cloud && acq) add("acqCloud", d, sov);
+      if (cloud && cross) add("crossSellCloud", d, sov);
+      if (cloud && modify) add("modifyCloud", d, sov);
+      if (cloud && resign) add("resignCloud", d, sov);
+      if (dv4) { add("dv4b", d, sov); add("dv4bUnits", d, units); }
+      if (bb) { add("broadband", d, sov); add("broadbandUnits", d, units); }
+      if (mob) { add("mobile", d, sov); add("mobileUnits", d, units); }
+      if (dat) add("data", d, sov);
+      if (sec) add("security", d, sov);
+      if (bb && resign) add("resignBroadband", d, sov);
+      if (mob && resign) add("resignMobile", d, sov);
+    });
+    return rows;
+  }, [orders, wkStart, monthStart]);
+
+  const Row = ({ label, m, money = true, bold, tone, indent }) => {
+    const weekTotal = m.week.reduce((s, v) => s + v, 0);
+    return (
+      <tr style={{ borderTop: "1px solid var(--border)" }}>
+        <ReportLabel bold={bold} tone={tone} indent={indent}>{label}</ReportLabel>
+        <ReportCell value={m.month} money={money} bold tone={tone} />
+        {m.week.map((v, i) => <ReportCell key={i} value={v} money={money} tone={tone} />)}
+        <ReportCell value={weekTotal} money={money} bold tone={tone} />
+      </tr>
+    );
+  };
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <CalendarDays size={18} style={{ color: "var(--primary)" }} />
+        <h2 className="sw-display text-lg font-bold">Day by Day</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+          Source: claimed Lilac Boxes · week commencing {fmtDate(wkStart)}
+        </span>
+      </div>
+
+      <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="overflow-x-auto">
+          <table className="w-full" style={{ borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "var(--primary)" }}>
+                <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "#fff", position: "sticky", left: 0, background: "var(--primary)" }}>Metric</th>
+                <th className="px-2 py-2 text-right text-xs font-bold" style={{ color: "rgba(255,255,255,0.85)" }}>Month Total</th>
+                {DAY_NAMES.map((d) => (
+                  <th key={d} className="px-2 py-2 text-right text-xs font-bold" style={{ color: "#fff" }}>{d.slice(0, 3)}</th>
+                ))}
+                <th className="px-2 py-2 text-right text-xs font-bold" style={{ color: "rgba(255,255,255,0.85)" }}>Week Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              <Row label="GP (Office DC Removed)" m={metrics.gp} bold tone="var(--green)" />
+              <Row label="ACQ Cloud Voice" m={metrics.acqCloud} />
+              <Row label="Cross Sell Cloud" m={metrics.crossSellCloud} />
+              <Row label="Modify Cloud" m={metrics.modifyCloud} />
+              <Row label="Resign Cloud" m={metrics.resignCloud} />
+              <Row label="DV4B" m={metrics.dv4b} />
+              <Row label="DV4B Units" m={metrics.dv4bUnits} money={false} indent />
+              <Row label="Broadband" m={metrics.broadband} />
+              <Row label="Broadband Units" m={metrics.broadbandUnits} money={false} indent />
+              <Row label="Mobile" m={metrics.mobile} />
+              <Row label="Mobile Units" m={metrics.mobileUnits} money={false} indent />
+              <Row label="Data" m={metrics.data} />
+              <Row label="Security SOV" m={metrics.security} />
+              <Row label="RESIGN Broadband" m={metrics.resignBroadband} />
+              <Row label="RESIGN Mobile" m={metrics.resignMobile} />
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="rounded-xl p-3 mt-3 text-xs" style={{ background: "var(--amber-soft)", color: "var(--ink-soft)" }}>
+        <b>Building up.</b> Deal type (ACQ / Cross Sell / Modify / Resign) and unit counts have only just started
+        being saved from the Lilac form, so those rows fill in from today's submissions onward. Older orders show
+        under the product rows but not the deal-type splits. Some rows from the original sheet — Leasing, SR's,
+        OSAS, IP-IP — need their own fields before they can be reported on.
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /*  STATUS SETTINGS — office-only: colours + what counts toward GP / SOV   */
 /* ---------------------------------------------------------------------- */
 
@@ -2453,6 +2858,8 @@ export default function App() {
           <nav className="flex gap-2">
             <button onClick={() => setTab("dashboard")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold" style={tab === "dashboard" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}>Dashboard</button>
             <button onClick={() => setTab("new")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "new" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}><Plus size={14} /> New Submission</button>
+            <button onClick={() => setTab("daybyday")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "daybyday" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}><CalendarDays size={14} /> Day by Day</button>
+            <button onClick={() => setTab("breakdown")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "breakdown" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}><BarChart3 size={14} /> Sales Breakdown</button>
             {profile?.role === "office" && (
               <button onClick={() => setTab("admin")} className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5" style={tab === "admin" ? { background: "var(--primary)", color: "#fff" } : { color: "var(--ink-soft)" }}><Users size={14} /> Admin</button>
             )}
@@ -2471,7 +2878,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="p-6 max-w-6xl mx-auto">
+      <main className={`p-6 mx-auto ${tab === "breakdown" || tab === "daybyday" ? "max-w-none" : "max-w-6xl"}`}>
         {submitted && (
           <div className="sw-rise rounded-2xl p-4 mb-5 flex items-center justify-between gap-4" style={{ background: "var(--green-soft)", border: "1px solid var(--green)" }}>
             <div className="flex items-center gap-3">
@@ -2491,6 +2898,8 @@ export default function App() {
         )}
         {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuite} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
         {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} />}
+        {tab === "daybyday" && <DayByDayView orders={orders} />}
+        {tab === "breakdown" && <SalesBreakdownView netsuite={netsuite} />}
         {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} />}
         {tab === "statuses" && profile?.role === "office" && <StatusSettingsView rows={statusRows} onSave={saveStatusCfg} newCount={newStatusCount} />}
       </main>
