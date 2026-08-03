@@ -289,6 +289,23 @@ function workdaysElapsedInMonth(d = new Date()) {
   return workdaysBetween(new Date(d.getFullYear(), d.getMonth(), 1), d);
 }
 
+// The whole target for the period, not scaled by how far through it we are.
+// This is what people are actually chasing; the pro-rated figure below is
+// only used to decide whether they're on track today.
+function fullPeriodTarget(monthlyTarget, period, now = new Date()) {
+  if (!monthlyTarget) return 0;
+  const inMonth = workdaysInMonth(now) || 1;
+  const perDay = monthlyTarget / inMonth;
+  switch (period) {
+    case "day": return perDay;
+    case "wtd": return perDay * 5;
+    case "mtd": return monthlyTarget;
+    case "qtd": return monthlyTarget * 3;
+    case "ytd": return monthlyTarget * 12;
+    default: return 0;   // 'all'
+  }
+}
+
 // How much of a monthly target should be met by now, for the period shown.
 function proRatedTarget(monthlyTarget, period, now = new Date()) {
   if (!monthlyTarget) return 0;
@@ -1252,10 +1269,17 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
 
     return {
       people: people.length,
+      // pace = what should be done by today; full = the whole period's target
       gp: proRatedTarget(monthly.gp, period),
       cloud: proRatedTarget(monthly.cloud, period),
       conn: proRatedTarget(monthly.conn, period),
       mobile: proRatedTarget(monthly.mobile, period),
+      full: {
+        gp: fullPeriodTarget(monthly.gp, period),
+        cloud: fullPeriodTarget(monthly.cloud, period),
+        conn: fullPeriodTarget(monthly.conn, period),
+        mobile: fullPeriodTarget(monthly.mobile, period),
+      },
       monthly,
     };
   }, [payPlans, staff, isOffice, is2ic, scope, profile, period, agentFilter]);
@@ -1686,31 +1710,41 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
             </div>
             <div className="flex flex-col gap-2">
               {[
-                ["GP", planVsStatted.gp, targets.gp],
-                ["Cloud SOV", planVsStatted.cloud, targets.cloud],
-                ["Connectivity SOV", planVsStatted.conn, targets.conn],
-                ["Mobile SOV", planVsStatted.mobile, targets.mobile],
-              ].map(([label, actual, target]) => {
-                const tone = paceTone(actual, target);
-                const pct = target > 0 ? Math.round((actual / target) * 100) : null;
+                ["GP", planVsStatted.gp, targets.full.gp, targets.gp],
+                ["Cloud SOV", planVsStatted.cloud, targets.full.cloud, targets.cloud],
+                ["Connectivity SOV", planVsStatted.conn, targets.full.conn, targets.conn],
+                ["Mobile SOV", planVsStatted.mobile, targets.full.mobile, targets.mobile],
+              ].map(([label, actual, full, pace]) => {
+                // Progress is against the whole target; the colour is against
+                // where they should be today.
+                const tone = paceTone(actual, pace);
+                const pct = full > 0 ? Math.round((actual / full) * 100) : 0;
+                const pacePct = full > 0 ? Math.min(100, (pace / full) * 100) : 0;
                 return (
                   <div key={label}>
                     <div className="flex items-baseline justify-between gap-2">
                       <span className="text-xs font-semibold" style={{ color: "var(--ink-soft)" }}>{label}</span>
                       <span className="sw-mono text-xs" style={{ color: "var(--ink-faint)" }}>
                         <b style={{ color: tone ? tone.fg : "var(--ink)" }}>{fmtGBP(actual)}</b>
-                        {target > 0 ? ` / ${fmtGBP(target)}` : ""}
+                        {full > 0 ? ` / ${fmtGBP(full)}` : ""}
+                        {full > 0 && <span style={{ marginLeft: 4 }}>{pct}%</span>}
                       </span>
                     </div>
-                    <div className="rounded-full mt-1" style={{ height: 5, background: "var(--surface-alt)" }}>
-                      <div className="rounded-full" style={{ width: `${Math.min(100, pct || 0)}%`, height: "100%", background: tone ? tone.fg : "var(--ink-faint)", transition: "width .3s" }} />
+                    <div className="rounded-full mt-1" style={{ height: 6, background: "var(--surface-alt)", position: "relative" }}>
+                      <div className="rounded-full" style={{ width: `${Math.min(100, pct)}%`, height: "100%", background: tone ? tone.fg : "var(--ink-faint)", transition: "width .3s" }} />
+                      {/* where they should be by today */}
+                      {pacePct > 0 && pacePct < 100 && (
+                        <div style={{ position: "absolute", left: `${pacePct}%`, top: -2, bottom: -2, width: 2, background: "var(--ink)", opacity: 0.55 }}
+                          title={`On pace today: ${fmtGBP(pace)}`} />
+                      )}
                     </div>
                   </div>
                 );
               })}
             </div>
             <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
-              Measured against NetSuite, pro-rated by working day. Claimed GP will usually run ahead of this.
+              Bars run to the full {periodLabelFor(period)} target; the marker is where you should be today.
+              Green means on or ahead of pace. Measured against NetSuite, so claimed GP usually runs ahead.
             </p>
           </div>
         )}
