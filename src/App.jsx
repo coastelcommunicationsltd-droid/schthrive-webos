@@ -475,6 +475,67 @@ function KPICard({ icon: Icon, label, value, sub, accent, target, rawValue }) {
   );
 }
 
+/* Headline figure. Carries a target when the viewer has a pay plan. */
+function HeroCard({ label, value, note, accent, target, rawValue }) {
+  const tone = target ? paceTone(rawValue, target) : null;
+  const pct = target ? Math.round((rawValue / target) * 100) : 0;
+  return (
+    <div className="sw-rise rounded-2xl p-4 flex flex-col justify-between"
+      style={{ background: "var(--surface)", border: `1px solid ${tone ? tone.fg : "var(--border)"}`, minHeight: 116 }}>
+      <div className="flex items-start justify-between gap-2">
+        <span className="text-xs font-semibold uppercase tracking-wide truncate" style={{ color: "var(--ink-soft)" }}>{label}</span>
+        {tone && (
+          <span className="text-xs font-bold px-1.5 py-0.5 rounded shrink-0" style={{ background: tone.bg, color: tone.fg }}>{pct}%</span>
+        )}
+      </div>
+      <div className="sw-display font-bold" style={{ fontSize: 30, lineHeight: 1.05, letterSpacing: "-0.02em", color: tone ? tone.fg : accent }}>
+        {value}
+      </div>
+      {tone ? (
+        <div>
+          <div className="rounded-full mb-1" style={{ height: 4, background: "var(--surface-alt)" }}>
+            <div className="rounded-full" style={{ width: Math.min(100, pct) + "%", height: "100%", background: tone.fg, transition: "width .3s" }} />
+          </div>
+          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{fmtGBP(target)} to pace</div>
+        </div>
+      ) : (
+        <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{note}</div>
+      )}
+    </div>
+  );
+}
+
+/* One product's SOV, with its target bar if there is one. */
+function MiniStat({ label, value, target, accent, bold }) {
+  const tone = target ? paceTone(value, target) : null;
+  const pct = target ? Math.round((value / target) * 100) : 0;
+  return (
+    <div className="rounded-xl px-2.5 py-2" style={{ background: "var(--surface-alt)", borderLeft: `3px solid ${tone ? tone.fg : accent}` }}>
+      <div className="flex items-baseline justify-between gap-1">
+        <span className="text-xs font-semibold truncate" style={{ color: "var(--ink-soft)" }}>{label}</span>
+        {tone && <span className="text-xs font-bold shrink-0" style={{ color: tone.fg, fontSize: 10 }}>{pct}%</span>}
+      </div>
+      <div className="sw-display font-bold truncate" style={{ fontSize: bold ? 17 : 15.5, color: tone ? tone.fg : "var(--ink)" }}>{fmtGBP(value)}</div>
+      {tone && (
+        <div className="rounded-full mt-1" style={{ height: 3, background: "rgba(0,0,0,0.07)" }}>
+          <div className="rounded-full" style={{ width: Math.min(100, pct) + "%", height: "100%", background: tone.fg }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* A single count in the health strip. */
+function HealthItem({ label, value, colour, hint }) {
+  return (
+    <div className="flex items-center gap-2" title={hint}>
+      <span style={{ width: 7, height: 7, borderRadius: 99, background: colour, display: "inline-block" }} />
+      <span className="sw-display font-bold" style={{ fontSize: 16, color: colour }}>{value}</span>
+      <span className="text-xs" style={{ color: "var(--ink-soft)" }}>{label}</span>
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------------------- */
 /*  GENERIC FORM CONTROLS                                                  */
 /* ---------------------------------------------------------------------- */
@@ -998,42 +1059,44 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
 
   return (
     <div>
-      {/* Two rows of five units. The original five cards occupy the first
-          three units (GP and SOV taking one and a half each on row one),
-          with the NetSuite SOV breakdown filling the last two units. */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(10, minmax(0, 1fr))", gap: "0.75rem" }} className="mb-6">
-        {/* Row 1 — first three units */}
-        <div style={{ gridColumn: "span 3" }}>
-          <KPICard icon={TrendingUp} label={gpLabel} value={fmtGBP(gpTotal)} sub="Single-counted GP" accent="#1F7A3D" target={targets.gp} rawValue={gpTotal} />
-        </div>
-        <div style={{ gridColumn: "span 3" }}>
-          <KPICard icon={Wallet} label="SOV" value={fmtGBP(sovTotal)} sub={`${productScoped.length} orders`} accent="#4C1D8F" />
-        </div>
-        {/* Row 1 — last two units */}
-        <div style={{ gridColumn: "span 2" }}>
-          <KPICard icon={Radio} label="Cloud SOV" value={fmtGBP(nsSovCards.cloud)} sub="NetSuite" accent="#5E2CA8" target={targets.cloud} rawValue={nsSovCards.cloud} />
-        </div>
-        <div style={{ gridColumn: "span 2" }}>
-          <KPICard icon={Radio} label="Connectivity SOV" value={fmtGBP(nsSovCards.connectivity)} sub="BB · BTNet · Security" accent="#205EA6" target={targets.conn} rawValue={nsSovCards.connectivity} />
+      {/* Headline figures. GP and SOV lead; product SOV sits beside them;
+          the health counts are a quiet strip rather than competing cards. */}
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.15fr) minmax(0, 1fr)", gap: "0.75rem" }} className="mb-3">
+
+        {/* Hero pair */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+          <HeroCard
+            label={gpLabel} value={fmtGBP(gpTotal)} accent="#1F7A3D"
+            target={targets.gp} rawValue={gpTotal} note="Single-counted" />
+          <HeroCard
+            label="SOV" value={fmtGBP(sovTotal)} accent="#4C1D8F"
+            note={`${productScoped.length} order${productScoped.length === 1 ? "" : "s"}`} />
         </div>
 
-        {/* Row 2 — first three units */}
-        <div style={{ gridColumn: "span 2" }}>
-          <KPICard icon={Radio} label="Active Orders" value={activeOrders} sub="Not yet complete" accent="#205EA6" />
+        {/* Product SOV, from NetSuite */}
+        <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="flex items-baseline justify-between mb-2">
+            <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>SOV by product</span>
+            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>NetSuite · excl. NSOV</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.4rem" }}>
+            <MiniStat label="Cloud" value={nsSovCards.cloud} target={targets.cloud} accent="#5E2CA8" />
+            <MiniStat label="Connectivity" value={nsSovCards.connectivity} target={targets.conn} accent="#205EA6" />
+            <MiniStat label="Mobile" value={nsSovCards.mobile} target={targets.mobile} accent="#8659CE" />
+            <MiniStat label="Total" value={nsSovCards.all} accent="#1F7A3D" bold />
+          </div>
         </div>
-        <div style={{ gridColumn: "span 2" }}>
-          <KPICard icon={Clock} label="Not Statted" value={notStattedCount} sub="No NetSuite match 12h+" accent="#B3660E" />
-        </div>
-        <div style={{ gridColumn: "span 2" }}>
-          <KPICard icon={AlertTriangle} label="Dirty Orders" value={dirtyCount} sub="Flagged for review" accent="#C0392B" />
-        </div>
-        {/* Row 2 — last two units */}
-        <div style={{ gridColumn: "span 2" }}>
-          <KPICard icon={Radio} label="Mobile SOV" value={fmtGBP(nsSovCards.mobile)} sub="NetSuite" accent="#8659CE" target={targets.mobile} rawValue={nsSovCards.mobile} />
-        </div>
-        <div style={{ gridColumn: "span 2" }}>
-          <KPICard icon={Wallet} label="Total SOV" value={fmtGBP(nsSovCards.all)} sub="NetSuite · excl. NSOV" accent="#1F7A3D" />
-        </div>
+      </div>
+
+      {/* Health strip */}
+      <div className="rounded-2xl px-4 py-2.5 mb-4 flex items-center gap-5 flex-wrap"
+        style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-faint)" }}>Health</span>
+        <HealthItem label="Active" value={activeOrders} colour="var(--blue)" hint="Not yet complete" />
+        <HealthItem label="Not statted" value={notStattedCount} colour={notStattedCount > 0 ? "var(--amber)" : "var(--ink-faint)"} hint="No NetSuite match after 12h" />
+        <HealthItem label="Dirty" value={dirtyCount} colour={dirtyCount > 0 ? "var(--red)" : "var(--ink-faint)"} hint="Flagged for review" />
+        {ngpCount > 0 && <HealthItem label="NGP" value={ngpCount} colour="var(--red)" hint="Excluded from GP" />}
+        {nsovCount > 0 && <HealthItem label="NSOV" value={nsovCount} colour="var(--amber)" hint="Excluded from SOV" />}
       </div>
 
       {/* One condensed filter bar: view, period, team, search, agent, status, product */}
@@ -2707,6 +2770,14 @@ function SalesBreakdownView({ netsuite }) {
 
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 
+/* Top-level reporting groups for Day by Day. DV4B rolls into Cloud;
+   BT Net, Broadband and Security all roll into Connectivity. */
+const DBD_GROUPS = [
+  { key: "cloud",        label: "Cloud",        accent: "#5E2CA8", tags: ["Cloud Voice", "DV4 Cloud"] },
+  { key: "connectivity", label: "Connectivity", accent: "#205EA6", tags: ["BT Net", "Broadband", "Security", "PSTN/Lines", "Wi-Fi"] },
+  { key: "mobile",       label: "Mobile",       accent: "#8659CE", tags: ["Mobile"] },
+];
+
 function DayByDayView({ orders }) {
   const now = new Date();
   const wkStart = weekStart(now);
@@ -2714,6 +2785,7 @@ function DayByDayView({ orders }) {
   const [team, setTeam] = useState("All");
   const [agent, setAgent] = useState("All");
   const [product, setProduct] = useState(null);
+  const [expanded, setExpanded] = useState({});   // {teamName_groupKey: true}
 
   const agentOptions = useMemo(() => {
     const s = new Set();
@@ -2721,108 +2793,105 @@ function DayByDayView({ orders }) {
     return Array.from(s).sort();
   }, [orders]);
 
-  const groupOf = useCallback((o) => (o.item_name_grouped || o.product_group_2 || "Unspecified").trim() || "Unspecified", []);
-
   const filtered = useMemo(() => (orders || []).filter((o) => {
-    if (o.removed_at) return false;
+    if (o.removed_at || !o.submission_date) return false;
+    if (new Date(o.submission_date) < monthStart) return false;
     if (team !== "All" && o.closer_team !== team && o.lead_gen_team !== team) return false;
     if (agent !== "All" && o.closer_name !== agent && o.lead_gen_name !== agent) return false;
-    if (product && groupOf(o) !== product) return false;
     return true;
-  }), [orders, team, agent, product, groupOf]);
+  }), [orders, team, agent, monthStart]);
 
-  // Chart data — this month's GP per product, ignoring the product filter
-  // so the full picture stays visible while focused on one.
-  const chartItems = useMemo(() => {
-    const m = {};
-    (orders || []).forEach((o) => {
-      if (o.removed_at || !o.submission_date) return;
-      if (new Date(o.submission_date) < monthStart) return;
-      if (team !== "All" && o.closer_team !== team && o.lead_gen_team !== team) return;
-      if (agent !== "All" && o.closer_name !== agent && o.lead_gen_name !== agent) return;
-      const k = groupOf(o);
-      m[k] = (m[k] || 0) + num(o.gp_office != null ? o.gp_office : o.sales_agent_gp);
-    });
-    return Object.keys(m).map((name) => ({ name, value: m[name] }));
-  }, [orders, team, agent, monthStart, groupOf]);
+  const tagsOf = (o) => String(o.item_name_grouped || o.product_group_2 || "")
+    .split(/\s*\+\s*/).map((t) => t.trim()).filter(Boolean);
 
-  const hasProduct = (o, re) => re.test(String(o.item_name_grouped || "") + " " + String(o.product_group_2 || ""));
-  const hasDeal = (o, re) => re.test(String(o.deal_type || ""));
+  const groupOfTag = (tag) => {
+    const g = DBD_GROUPS.find((x) => x.tags.includes(tag));
+    return g ? g.key : null;
+  };
 
-  const metrics = useMemo(() => {
-    // Mon-Fri buckets for this week, plus a month bucket
-    const blankWeek = () => [0, 0, 0, 0, 0];
-    const rows = {
-      gp: { week: blankWeek(), month: 0 },
-      acqCloud: { week: blankWeek(), month: 0 },
-      crossSellCloud: { week: blankWeek(), month: 0 },
-      modifyCloud: { week: blankWeek(), month: 0 },
-      resignCloud: { week: blankWeek(), month: 0 },
-      dv4b: { week: blankWeek(), month: 0 },
-      dv4bUnits: { week: blankWeek(), month: 0 },
-      broadband: { week: blankWeek(), month: 0 },
-      broadbandUnits: { week: blankWeek(), month: 0 },
-      mobile: { week: blankWeek(), month: 0 },
-      mobileUnits: { week: blankWeek(), month: 0 },
-      data: { week: blankWeek(), month: 0 },
-      security: { week: blankWeek(), month: 0 },
-      resignBroadband: { week: blankWeek(), month: 0 },
-      resignMobile: { week: blankWeek(), month: 0 },
+  // Per team: GP plus each group's SOV, split Mon–Fri, with the sub-product
+  // breakdown carried alongside so it can be revealed on demand.
+  const data = useMemo(() => {
+    const blank = () => ({ week: [0, 0, 0, 0, 0], month: 0 });
+    const teams = {};
+    const ensure = (t) => {
+      if (!teams[t]) {
+        teams[t] = { team: t, gp: blank(), groups: {}, subs: {} };
+        DBD_GROUPS.forEach((g) => { teams[t].groups[g.key] = blank(); teams[t].subs[g.key] = {}; });
+      }
+      return teams[t];
     };
-
-    const add = (key, d, value) => {
+    const add = (bucket, d, v) => {
       const dt = new Date(d);
-      if (dt >= monthStart) rows[key].month += value;
+      bucket.month += v;
       if (dt >= wkStart) {
-        const idx = (dt.getDay() + 6) % 7;          // Mon=0
-        if (idx >= 0 && idx < 5) rows[key].week[idx] += value;
+        const i = (dt.getDay() + 6) % 7;
+        if (i >= 0 && i < 5) bucket.week[i] += v;
       }
     };
 
     filtered.forEach((o) => {
-      if (!o.submission_date) return;
+      const t = ensure(o.closer_team || "Unassigned");
       const d = o.submission_date;
-      const gp = num(o.gp_office != null ? o.gp_office : o.sales_agent_gp);
+      add(t.gp, d, num(o.gp_office != null ? o.gp_office : o.sales_agent_gp));
+
+      const tags = tagsOf(o);
       const sov = num(o.contract_value);
-      const units = num(o.units) || 0;
-
-      add("gp", d, gp);
-
-      const cloud = hasProduct(o, /cloud|dv4|voice/i);
-      const dv4 = hasProduct(o, /dv4/i);
-      const bb = hasProduct(o, /broadband/i);
-      const mob = hasProduct(o, /mobile/i);
-      const sec = hasProduct(o, /security/i);
-      const dat = hasProduct(o, /\bdata\b|bt net|btnet/i);
-
-      const acq = hasDeal(o, /acquisition/i);
-      const cross = hasDeal(o, /cross/i);
-      const modify = hasDeal(o, /modify|upgrade/i);
-      const resign = hasDeal(o, /resign/i);
-
-      if (cloud && acq) add("acqCloud", d, sov);
-      if (cloud && cross) add("crossSellCloud", d, sov);
-      if (cloud && modify) add("modifyCloud", d, sov);
-      if (cloud && resign) add("resignCloud", d, sov);
-      if (dv4) { add("dv4b", d, sov); add("dv4bUnits", d, units); }
-      if (bb) { add("broadband", d, sov); add("broadbandUnits", d, units); }
-      if (mob) { add("mobile", d, sov); add("mobileUnits", d, units); }
-      if (dat) add("data", d, sov);
-      if (sec) add("security", d, sov);
-      if (bb && resign) add("resignBroadband", d, sov);
-      if (mob && resign) add("resignMobile", d, sov);
+      // Split the deal's SOV evenly across the products on it, so a
+      // multi-product order isn't counted in full against each one.
+      const scored = tags.filter((tg) => groupOfTag(tg));
+      if (!scored.length) return;
+      const share = sov / scored.length;
+      scored.forEach((tg) => {
+        const gk = groupOfTag(tg);
+        if (product && product !== gk) return;
+        add(t.groups[gk], d, share);
+        if (!t.subs[gk][tg]) t.subs[gk][tg] = blank();
+        add(t.subs[gk][tg], d, share);
+      });
     });
-    return rows;
-  }, [filtered, wkStart, monthStart]);
 
-  const Row = ({ label, m, money = true, bold, tone, indent }) => {
-    const weekTotal = m.week.reduce((s, v) => s + v, 0);
+    return Object.keys(teams).map((k) => teams[k]).sort((a, b) => b.gp.month - a.gp.month);
+  }, [filtered, wkStart, product]);
+
+  const chartItems = useMemo(() => DBD_GROUPS.map((g) => ({
+    name: g.label,
+    value: data.reduce((s, t) => s + t.groups[g.key].month, 0),
+  })).filter((i) => i.value > 0), [data]);
+
+  const totalsRow = useMemo(() => {
+    const blank = () => ({ week: [0, 0, 0, 0, 0], month: 0 });
+    const out = { gp: blank(), groups: {} };
+    DBD_GROUPS.forEach((g) => { out.groups[g.key] = blank(); });
+    data.forEach((t) => {
+      out.gp.month += t.gp.month;
+      t.gp.week.forEach((v, i) => { out.gp.week[i] += v; });
+      DBD_GROUPS.forEach((g) => {
+        out.groups[g.key].month += t.groups[g.key].month;
+        t.groups[g.key].week.forEach((v, i) => { out.groups[g.key].week[i] += v; });
+      });
+    });
+    return out;
+  }, [data]);
+
+  const Row = ({ label, bucket, bold, tone, indent, onToggle, isOpen, accent }) => {
+    const weekTotal = bucket.week.reduce((s, v) => s + v, 0);
     return (
       <tr style={{ borderTop: "1px solid var(--border)" }}>
-        <ReportLabel bold={bold} tone={tone} indent={indent}>{label}</ReportLabel>
-        <ReportCell value={m.month} money={money} bold tone={tone} highlight />
-        {m.week.map((v, i) => <ReportCell key={i} value={v} money={money} tone={tone} />)}
-        <ReportCell value={weekTotal} money={money} bold tone={tone} highlight />
+        <td className="px-3 py-1.5 whitespace-nowrap" style={{ position: "sticky", left: 0, background: "var(--surface)", paddingLeft: indent ? 34 : 12 }}>
+          {onToggle ? (
+            <button onClick={onToggle} className="sw-focus flex items-center gap-1.5 text-left">
+              <ChevronDown size={12} style={{ color: "var(--ink-faint)", transform: isOpen ? "rotate(0)" : "rotate(-90deg)", transition: "transform .15s" }} />
+              {accent && <span style={{ width: 3, height: 12, background: accent, borderRadius: 2, display: "inline-block" }} />}
+              <span style={{ fontSize: 12, fontWeight: bold ? 700 : 600, color: tone || "var(--ink-soft)" }}>{label}</span>
+            </button>
+          ) : (
+            <span style={{ fontSize: 12, fontWeight: bold ? 700 : 600, color: tone || "var(--ink-soft)" }}>{label}</span>
+          )}
+        </td>
+        <ForecastCell value={bucket.month} bold highlight />
+        {bucket.week.map((v, i) => <ForecastCell key={i} value={v} tone={tone} />)}
+        <ForecastCell value={weekTotal} bold highlight />
       </tr>
     );
   };
@@ -2833,64 +2902,92 @@ function DayByDayView({ orders }) {
         <CalendarDays size={18} style={{ color: "var(--primary)" }} />
         <h2 className="sw-display text-lg font-bold">Day by Day</h2>
         <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
-          Source: claimed Lilac Boxes · week commencing {fmtDate(wkStart)}
+          Claimed Lilac Boxes · week commencing {fmtDate(wkStart)}
         </span>
       </div>
 
-      <ReportFilters team={team} setTeam={setTeam} agent={agent} setAgent={setAgent} agentOptions={agentOptions} />
-
-      {product && (
-        <div className="rounded-xl p-2.5 mb-3 flex items-center justify-between" style={{ background: "var(--primary-soft)" }}>
-          <span className="text-xs font-semibold" style={{ color: "var(--primary)" }}>
-            Focused on {product} — every figure below is just this product.
-          </span>
-          <button onClick={() => setProduct(null)} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>Clear</button>
-        </div>
-      )}
+      <ReportFilters team={team} setTeam={setTeam} agent={agent} setAgent={setAgent} agentOptions={agentOptions}
+        right={product && (
+          <button onClick={() => setProduct(null)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1"
+            style={{ background: "var(--primary)", color: "#fff" }}>{product} <X size={12} /></button>
+        )} />
 
       <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="overflow-x-auto">
           <table className="w-full" style={{ borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: "var(--primary)" }}>
-                <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "#fff", position: "sticky", left: 0, background: "var(--primary)" }}>Metric</th>
-                <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Month Total</th>
+                <th className="px-3 py-2 text-left text-xs font-bold uppercase" style={{ color: "#fff", position: "sticky", left: 0, background: "var(--primary)" }}>Team</th>
+                <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Month</th>
                 {DAY_NAMES.map((d) => (
                   <th key={d} className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff" }}>{d.slice(0, 3)}</th>
                 ))}
-                <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Week Total</th>
+                <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "#fff", background: "#3B1370" }}>Week</th>
               </tr>
             </thead>
             <tbody>
-              <Row label="GP (Office DC Removed)" m={metrics.gp} bold tone="var(--green)" />
-              <Row label="ACQ Cloud Voice" m={metrics.acqCloud} />
-              <Row label="Cross Sell Cloud" m={metrics.crossSellCloud} />
-              <Row label="Modify Cloud" m={metrics.modifyCloud} />
-              <Row label="Resign Cloud" m={metrics.resignCloud} />
-              <Row label="DV4B" m={metrics.dv4b} />
-              <Row label="DV4B Units" m={metrics.dv4bUnits} money={false} indent />
-              <Row label="Broadband" m={metrics.broadband} />
-              <Row label="Broadband Units" m={metrics.broadbandUnits} money={false} indent />
-              <Row label="Mobile" m={metrics.mobile} />
-              <Row label="Mobile Units" m={metrics.mobileUnits} money={false} indent />
-              <Row label="Data" m={metrics.data} />
-              <Row label="Security SOV" m={metrics.security} />
-              <Row label="RESIGN Broadband" m={metrics.resignBroadband} />
-              <Row label="RESIGN Mobile" m={metrics.resignMobile} />
+              {data.map((t) => (
+                <React.Fragment key={t.team}>
+                  <tr style={{ background: "var(--surface-alt)", borderTop: "2px solid var(--border)" }}>
+                    <td colSpan={8} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "var(--primary)", position: "sticky", left: 0, background: "var(--surface-alt)" }}>
+                      {t.team}
+                    </td>
+                  </tr>
+                  <Row label="GP" bucket={t.gp} bold tone="var(--green)" />
+                  {DBD_GROUPS.map((g) => {
+                    const k = `${t.team}_${g.key}`;
+                    const open = !!expanded[k];
+                    const subs = Object.keys(t.subs[g.key]).sort();
+                    return (
+                      <React.Fragment key={g.key}>
+                        <Row label={`${g.label} SOV`} bucket={t.groups[g.key]} accent={g.accent}
+                          isOpen={open} onToggle={subs.length ? () => setExpanded((e) => ({ ...e, [k]: !e[k] })) : undefined} />
+                        {open && subs.map((s) => (
+                          <Row key={s} label={s} bucket={t.subs[g.key][s]} indent tone="var(--ink-faint)" />
+                        ))}
+                      </React.Fragment>
+                    );
+                  })}
+                </React.Fragment>
+              ))}
+
+              {data.length > 0 && (
+                <>
+                  <tr style={{ background: "var(--ink)", borderTop: "2px solid var(--ink)" }}>
+                    <td colSpan={8} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "#fff", position: "sticky", left: 0, background: "var(--ink)" }}>
+                      All teams
+                    </td>
+                  </tr>
+                  <Row label="GP" bucket={totalsRow.gp} bold tone="var(--green)" />
+                  {DBD_GROUPS.map((g) => (
+                    <Row key={g.key} label={`${g.label} SOV`} bucket={totalsRow.groups[g.key]} accent={g.accent} />
+                  ))}
+                </>
+              )}
+
+              {data.length === 0 && (
+                <tr><td colSpan={8} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                  Nothing claimed this month yet.
+                </td></tr>
+              )}
             </tbody>
           </table>
         </div>
       </div>
 
-      <ReportCharts treemapItems={chartItems} treemapTitle="GP THIS MONTH — BY PRODUCT" productSelected={product} onProductSelect={setProduct}
-        barItems={chartItems} barTitle="GP THIS MONTH — BY PRODUCT" agentSelected={product || "All"} onAgentSelect={(v) => setProduct(v === "All" ? null : v)} />
+      <ReportCharts
+        treemapItems={chartItems} treemapTitle="SOV THIS MONTH — SHARE"
+        productSelected={product ? DBD_GROUPS.find((g) => g.key === product)?.label : null}
+        onProductSelect={(name) => setProduct(name ? (DBD_GROUPS.find((g) => g.label === name)?.key || null) : null)}
+        barItems={chartItems} barTitle="SOV THIS MONTH — BY PRODUCT"
+        agentSelected={product ? DBD_GROUPS.find((g) => g.key === product)?.label : "All"}
+        onAgentSelect={(name) => setProduct(name && name !== "All" ? (DBD_GROUPS.find((g) => g.label === name)?.key || null) : null)} />
 
-      <div className="rounded-xl p-3 mt-3 text-xs" style={{ background: "var(--amber-soft)", color: "var(--ink-soft)" }}>
-        <b>Building up.</b> Deal type (ACQ / Cross Sell / Modify / Resign) and unit counts have only just started
-        being saved from the Lilac form, so those rows fill in from today's submissions onward. Older orders show
-        under the product rows but not the deal-type splits. Some rows from the original sheet — Leasing, SR's,
-        OSAS, IP-IP — need their own fields before they can be reported on.
-      </div>
+      <p className="text-xs mt-3" style={{ color: "var(--ink-faint)" }}>
+        DV4B counts within Cloud; BT Net, Broadband and Security within Connectivity. Click a product row
+        to break it down. Orders covering several products split their SOV evenly across them, so nothing
+        is counted twice.
+      </p>
     </div>
   );
 }
