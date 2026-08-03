@@ -1083,6 +1083,20 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
   const sovCountable = useMemo(() => productScoped.filter((o) => !isNSOV(o)), [productScoped, isNSOV]);
 
   const sovTotal = useMemo(() => totalSOV(sovCountable), [sovCountable]);
+  // Full claimed (every share added up) and the double-count that has to
+  // come off it. Shown on the card so the headline figure is explainable.
+  const gpWorking = useMemo(() => {
+    let claimed = 0, dc = 0;
+    gpCountable.forEach((o) => {
+      claimed += num(o.closer_share) + num(o.lead_gen_share);
+      dc += num(o.gp_same_team_excess);
+      // Any share claimed above the deal's real GP is double-counted
+      const over = (num(o.closer_share) + num(o.lead_gen_share)) - num(o.gp_office != null ? o.gp_office : o.sales_agent_gp);
+      if (over > 0 && !num(o.gp_same_team_excess)) dc += over;
+    });
+    return { claimed, dc, net: claimed - dc };
+  }, [gpCountable]);
+
   const gpTotal = useMemo(() => {
     // One agent selected -> THEIR share of each deal, not the whole deal.
     // Showing full deal GP for a single agent would credit them with their
@@ -1099,8 +1113,9 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
     // A specific team scope -> that team's docked GP.
     if (isOffice && scope !== "office") return teamGP(gpCountable, scope);
     if (is2ic && profile?.team) return teamGP(gpCountable, profile.team);
-    return officeGP(gpCountable);
-  }, [gpCountable, isOffice, is2ic, scope, profile, agentFilter]);
+    // Whole office: everything claimed, less the double-count.
+    return gpWorking.net;
+  }, [gpCountable, isOffice, is2ic, scope, profile, agentFilter, gpWorking]);
   const ngpCount = useMemo(() => viewRows.filter((r) => r.ngp).length, [viewRows]);
   const nsovCount = useMemo(() => productScoped.filter(isNSOV).length, [productScoped, isNSOV]);
   const activeOrders = useMemo(() => productScoped.filter((o) => {
@@ -1288,7 +1303,8 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
           <HeroCard
             label={gpLabel} value={fmtGBP(gpTotal)} accent="#1F7A3D"
-            target={targets.gp} rawValue={gpTotal} note="Single-counted" />
+            target={targets.gp} rawValue={gpTotal}
+            note={gpWorking.dc > 0 ? `${fmtGBP(gpWorking.claimed)} claimed − ${fmtGBP(gpWorking.dc)} DC` : "Single-counted"} />
           <HeroCard
             label="SOV" value={fmtGBP(sovTotal)} accent="#4C1D8F"
             note={`${productScoped.length} order${productScoped.length === 1 ? "" : "s"}`} />
@@ -1553,8 +1569,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                       <div className="rounded-full" style={{ width: `${(d.gp / max) * 100}%`, height: "100%", background: PRODUCT_SHADES[i % PRODUCT_SHADES.length] }} />
                     </div>
                   </div>
-                  <span className="text-xs shrink-0 truncate" style={{ color: "var(--ink-faint)", width: 110 }}>{d.agent}</span>
-                  <span className="sw-mono text-xs shrink-0" style={{ color: "var(--ink-soft)", width: 78, textAlign: "right" }}>{fmtGBP(d.sov)} SOV</span>
+                  <span className="text-xs shrink-0 truncate" style={{ color: "var(--ink-faint)", width: 120 }}>{d.agent}</span>
                 </div>
               );
             })}
@@ -3258,8 +3273,9 @@ function DayByDayView({ orders }) {
                   </td>
                 </tr>
                 <Row label="GP" bucket={totals.gp} bold tone="var(--green)" />
-                <Row label="Total SOV" bucket={totals.totalSov} bold tone="var(--primary)" />
-                <GroupRows scopeKey="all" src={totals} depth={0} />
+                <Row label="Total SOV" bucket={totals.totalSov} bold tone="var(--primary)"
+                  isOpen={!!open.all_sov} onToggle={() => toggle("all_sov")} />
+                {open.all_sov && <GroupRows scopeKey="all" src={totals} depth={1} />}
 
                 {/* Per team — GP and Total SOV, expanding into products */}
                 {data.length > 0 && (
@@ -3275,8 +3291,13 @@ function DayByDayView({ orders }) {
                     <React.Fragment key={t.team}>
                       <Row label={t.team} bucket={t.gp} bold tone="var(--ink)"
                         isOpen={!!open[tk]} onToggle={() => toggle(tk)} />
-                      <Row label="Total SOV" bucket={t.totalSov} depth={1} tone="var(--primary)" />
-                      {open[tk] && <GroupRows scopeKey={tk} src={t} depth={1} />}
+                      {open[tk] && (
+                        <>
+                          <Row label="Total SOV" bucket={t.totalSov} depth={1} tone="var(--primary)"
+                            isOpen={!!open[`${tk}_sov`]} onToggle={() => toggle(`${tk}_sov`)} />
+                          {open[`${tk}_sov`] && <GroupRows scopeKey={tk} src={t} depth={2} />}
+                        </>
+                      )}
                     </React.Fragment>
                   );
                 })}
@@ -5028,15 +5049,16 @@ function ForecastView({ netsuite, profile, staff }) {
                     <td colSpan={5} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "#fff" }}>All teams</td>
                   </tr>
                   <FcRow label="GP" v={breakdown.all.gp} sov={null} bold tone="var(--green)" />
-                  <FcRow label="Total SOV" v={null} sov={breakdown.all.sov} units={breakdown.all.units} lines={breakdown.all.lines} bold tone="var(--primary)" />
-                  {PILLAR_GROUPS.map((g) => {
+                  <FcRow label="Total SOV" v={null} sov={breakdown.all.sov} units={breakdown.all.units} lines={breakdown.all.lines} bold tone="var(--primary)"
+                    isOpen={!!fcOpen.all_sov} onToggle={() => setFcOpen((o) => ({ ...o, all_sov: !o.all_sov }))} />
+                  {fcOpen.all_sov && PILLAR_GROUPS.map((g) => {
                     const k = `all_${g.key || g}`;
                     const node = breakdown.all.groups[g];
                     if (!node || (!node.gp && !node.sov)) return null;
                     const subs = Object.keys(node.subs).sort();
                     return (
                       <React.Fragment key={g}>
-                        <FcRow label={g} v={node.gp} sov={node.sov} units={node.units} lines={node.lines}
+                        <FcRow label={g} v={node.gp} sov={node.sov} units={node.units} lines={node.lines} depth={1}
                           isOpen={!!fcOpen[k]} onToggle={subs.length ? () => setFcOpen((o) => ({ ...o, [k]: !o[k] })) : undefined} />
                         {fcOpen[k] && subs.map((s) => (
                           <FcRow key={s} label={s} v={node.subs[s].gp} sov={node.subs[s].sov}
@@ -5757,6 +5779,255 @@ function LandscapesView({ profile, staff }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  SALES DISTRIBUTION — who generates for whom                            */
+/* ---------------------------------------------------------------------- */
+
+function DistributionView({ orders, netsuite }) {
+  const [period, setPeriod] = useState("mtd");
+  const [productFilter, setProductFilter] = useState("All");
+  const [metric, setMetric] = useState("gp");     // gp | count
+  const [hover, setHover] = useState(null);       // {closer, leadGen}
+
+  const productOptions = useMemo(() => {
+    const s = new Set();
+    (orders || []).forEach((o) => {
+      String(o.item_name_grouped || o.product_group_2 || "").split(/\s*\+\s*/)
+        .forEach((p) => { const t = p.trim(); if (t) s.add(t); });
+    });
+    return Array.from(s).sort();
+  }, [orders]);
+
+  // Only deals with BOTH a closer and a lead gen — the point is the pairing.
+  const pairs = useMemo(() => {
+    const from = periodStart(period);
+    return (orders || []).filter((o) => {
+      if (o.removed_at) return false;
+      if (!o.closer_name || !o.lead_gen_name) return false;
+      if (from && (!o.submission_date || new Date(o.submission_date) < from)) return false;
+      if (productFilter !== "All") {
+        const hay = String(o.item_name_grouped || o.product_group_2 || "").toLowerCase();
+        if (!hay.includes(productFilter.toLowerCase())) return false;
+      }
+      return true;
+    });
+  }, [orders, period, productFilter]);
+
+  const { closers, leadGens, cell, closerTotal, leadGenTotal, grand, teamMatrix, teams } = useMemo(() => {
+    const cell = {};
+    const closerTotal = {}, leadGenTotal = {};
+    const teamMatrix = {};
+    const teamSet = new Set();
+    let grand = 0;
+
+    pairs.forEach((o) => {
+      const c = o.closer_name, l = o.lead_gen_name;
+      const v = metric === "gp"
+        ? num(o.gp_office != null ? o.gp_office : o.sales_agent_gp)
+        : 1;
+      const k = `${c}||${l}`;
+      cell[k] = (cell[k] || 0) + v;
+      closerTotal[c] = (closerTotal[c] || 0) + v;
+      leadGenTotal[l] = (leadGenTotal[l] || 0) + v;
+      grand += v;
+
+      const ct = o.closer_team || "Unassigned";
+      const lt = o.lead_gen_team || "Unassigned";
+      teamSet.add(ct); teamSet.add(lt);
+      const tk = `${ct}||${lt}`;
+      teamMatrix[tk] = (teamMatrix[tk] || 0) + v;
+    });
+
+    return {
+      cell, closerTotal, leadGenTotal, grand, teamMatrix,
+      closers: Object.keys(closerTotal).sort((a, b) => closerTotal[b] - closerTotal[a]),
+      leadGens: Object.keys(leadGenTotal).sort((a, b) => leadGenTotal[b] - leadGenTotal[a]),
+      teams: Array.from(teamSet).sort(),
+    };
+  }, [pairs, metric]);
+
+  const maxCell = useMemo(() => Math.max(1, ...Object.keys(cell).map((k) => cell[k])), [cell]);
+  const fmt = (v) => (metric === "gp" ? fmtGBP(v) : (v || 0).toLocaleString("en-GB"));
+
+  // Deeper purple the more they've generated together
+  const shade = (v) => (v ? `rgba(76, 29, 143, ${0.10 + (v / maxCell) * 0.82})` : "transparent");
+  const textOn = (v) => (v && v / maxCell > 0.45 ? "#fff" : "var(--ink)");
+
+  const maxTeamCell = useMemo(() => Math.max(1, ...Object.keys(teamMatrix).map((k) => teamMatrix[k])), [teamMatrix]);
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <Users size={18} style={{ color: "var(--primary)" }} />
+        <h2 className="sw-display text-lg font-bold">Sales Distribution</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Who generates business for whom</span>
+
+        <div className="ml-auto flex items-center gap-2 flex-wrap">
+          <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+            {[["gp", "GP"], ["count", "Deals"]].map(([k, lbl]) => (
+              <button key={k} onClick={() => setMetric(k)} className="sw-focus px-3 py-1.5 text-xs font-bold"
+                style={metric === k ? { background: "var(--primary)", color: "#fff" } : { background: "transparent", color: "var(--ink-soft)" }}>{lbl}</button>
+            ))}
+          </div>
+          <select className="sw-input sw-focus" style={{ width: 108 }} value={period} onChange={(e) => setPeriod(e.target.value)}>
+            {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+          </select>
+          <select className="sw-input sw-focus" style={{ width: 160 }} value={productFilter} onChange={(e) => setProductFilter(e.target.value)}>
+            <option value="All">All products</option>
+            {productOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* Team against team */}
+      <div className="rounded-2xl p-4 mb-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="flex items-baseline justify-between mb-3">
+          <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>TEAM RELATIONSHIPS</div>
+          <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+            {pairs.length} shared deal{pairs.length === 1 ? "" : "s"} · {fmt(grand)} total
+          </span>
+        </div>
+        {teams.length === 0 ? (
+          <div className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>No shared deals in this period.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table style={{ borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th className="px-3 py-1.5 text-left text-xs font-semibold uppercase" style={{ color: "var(--ink-faint)" }}>Lead gen ↓ / Closer →</th>
+                  {teams.map((t) => (
+                    <th key={t} className="px-3 py-1.5 text-center text-xs font-semibold whitespace-nowrap" style={{ color: "var(--ink-soft)" }}>{t}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {teams.map((lt) => (
+                  <tr key={lt}>
+                    <td className="px-3 py-1.5 text-xs font-semibold whitespace-nowrap" style={{ color: "var(--ink-soft)" }}>{lt}</td>
+                    {teams.map((ct) => {
+                      const v = teamMatrix[`${ct}||${lt}`] || 0;
+                      const same = ct === lt;
+                      return (
+                        <td key={ct} className="px-3 py-1.5 text-center sw-mono"
+                          style={{
+                            fontSize: 12, fontWeight: v ? 700 : 400,
+                            background: v ? `rgba(76, 29, 143, ${0.10 + (v / maxTeamCell) * 0.8})` : "var(--surface-alt)",
+                            color: v && v / maxTeamCell > 0.45 ? "#fff" : v ? "var(--ink)" : "var(--ink-faint)",
+                            border: same ? "1px dashed var(--border)" : "1px solid var(--surface)",
+                          }}
+                          title={same ? `${ct} — within the same team` : `${lt} generated for ${ct}`}>
+                          {v ? fmt(v) : "—"}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
+          Read down for the lead gen, across for the closer. The dashed diagonal is work kept inside one team.
+        </p>
+      </div>
+
+      {/* Person against person */}
+      <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="px-4 py-2.5 flex items-baseline justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
+          <div className="sw-display font-bold text-sm" style={{ color: "var(--ink-soft)" }}>AGENT MATRIX</div>
+          <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+            {hover ? `${hover.leadGen} → ${hover.closer}` : "Lead gens down the side, closers across the top"}
+          </span>
+        </div>
+
+        {closers.length === 0 ? (
+          <div className="text-xs text-center py-12" style={{ color: "var(--ink-faint)" }}>
+            No deals with both a closer and a lead gen in this period.
+          </div>
+        ) : (
+          <div style={{ overflow: "auto", maxHeight: "70vh" }}>
+            <table style={{ borderCollapse: "separate", borderSpacing: 0 }}>
+              <thead>
+                <tr>
+                  <th style={{ position: "sticky", left: 0, top: 0, zIndex: 3, background: "var(--surface-alt)", minWidth: 150 }}
+                    className="px-3 py-2 text-left text-xs font-semibold uppercase">
+                    <span style={{ color: "var(--ink-faint)" }}>Lead gen ↓</span>
+                  </th>
+                  {closers.map((c) => (
+                    <th key={c} style={{ position: "sticky", top: 0, zIndex: 2, background: "var(--surface-alt)", minWidth: 74 }}
+                      className="px-1 py-2">
+                      <div style={{ writingMode: "vertical-rl", transform: "rotate(180deg)", fontSize: 11, fontWeight: 600, color: "var(--ink-soft)", whiteSpace: "nowrap", maxHeight: 108, overflow: "hidden" }}>
+                        {c}
+                      </div>
+                    </th>
+                  ))}
+                  <th style={{ position: "sticky", top: 0, right: 0, zIndex: 3, background: "var(--primary)", minWidth: 82 }}
+                    className="px-2 py-2 text-center text-xs font-bold" >
+                    <span style={{ color: "#fff" }}>Total</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {leadGens.map((l) => (
+                  <tr key={l}>
+                    <td style={{ position: "sticky", left: 0, zIndex: 1, background: "var(--surface)", borderTop: "1px solid var(--border)" }}
+                      className="px-3 py-1.5 text-xs font-semibold whitespace-nowrap truncate">{l}</td>
+                    {closers.map((c) => {
+                      const v = cell[`${c}||${l}`] || 0;
+                      const self = c === l;
+                      return (
+                        <td key={c}
+                          onMouseEnter={() => setHover({ closer: c, leadGen: l })}
+                          onMouseLeave={() => setHover(null)}
+                          title={v ? `${l} → ${c}: ${fmt(v)}` : `${l} → ${c}: none`}
+                          className="px-1 py-1.5 text-center sw-mono"
+                          style={{
+                            fontSize: 11,
+                            fontWeight: v ? 700 : 400,
+                            background: self ? "var(--surface-alt)" : shade(v),
+                            color: v ? textOn(v) : "var(--ink-faint)",
+                            borderTop: "1px solid var(--border)",
+                            outline: hover && hover.closer === c && hover.leadGen === l ? "2px solid var(--ink)" : "none",
+                          }}>
+                          {v ? fmt(v) : ""}
+                        </td>
+                      );
+                    })}
+                    <td style={{ position: "sticky", right: 0, background: "var(--primary-soft)", borderTop: "1px solid var(--border)" }}
+                      className="px-2 py-1.5 text-center sw-mono text-xs font-bold">{fmt(leadGenTotal[l])}</td>
+                  </tr>
+                ))}
+                <tr>
+                  <td style={{ position: "sticky", left: 0, zIndex: 1, background: "var(--primary)", borderTop: "2px solid var(--border)" }}
+                    className="px-3 py-2 text-xs font-bold" >
+                    <span style={{ color: "#fff" }}>Closer total</span>
+                  </td>
+                  {closers.map((c) => (
+                    <td key={c} className="px-1 py-2 text-center sw-mono text-xs font-bold"
+                      style={{ background: "var(--primary-soft)", color: "var(--primary)", borderTop: "2px solid var(--border)" }}>
+                      {fmt(closerTotal[c])}
+                    </td>
+                  ))}
+                  <td style={{ position: "sticky", right: 0, background: "var(--primary)", borderTop: "2px solid var(--border)" }}
+                    className="px-2 py-2 text-center sw-mono text-xs font-bold">
+                    <span style={{ color: "#fff" }}>{fmt(grand)}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <p className="text-xs mt-3" style={{ color: "var(--ink-faint)" }}>
+        Only deals with both a closer and a lead gen appear here — the whole point is the pairing. Darker
+        cells mean more generated together. Blank means that pair hasn't worked on anything in this period,
+        which is often the more useful thing to spot.
+      </p>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /*  SIDEBAR NAVIGATION                                                     */
 /* ---------------------------------------------------------------------- */
 
@@ -5819,7 +6090,7 @@ function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSig
 
   const mainActive = ["dashboard", "forecast", "daybyday"].includes(tab);
   const submitActive = ["new", "landscapes", "quote"].includes(tab);
-  const dashboardsActive = ["breakdown"].includes(tab);
+  const dashboardsActive = ["breakdown", "distribution"].includes(tab);
   const settingsActive = ["admin", "statuses"].includes(tab);
 
   return (
@@ -5855,6 +6126,7 @@ function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSig
 
         <SidebarSection icon={LayoutDashboard} label="Dashboards" collapsed={collapsed} open={dashOpen} onToggle={() => setDashOpen((o) => !o)} childActive={dashboardsActive}>
           <SidebarItem icon={BarChart3} label="Sales Breakdown" collapsed={collapsed} active={tab === "breakdown"} indent onClick={() => setTab("breakdown")} />
+          <SidebarItem icon={Users} label="Sales Distribution" collapsed={collapsed} active={tab === "distribution"} indent onClick={() => setTab("distribution")} />
           <SidebarItem icon={Radio} label="TV Mode" collapsed={collapsed} active={false} indent href="#tv" onClick={() => setTimeout(() => window.location.reload(), 0)} />
         </SidebarSection>
 
@@ -6278,7 +6550,7 @@ export default function App() {
         onChangePassword={() => setChangingPassword(true)} onSignOut={signOut} />
 
       <div style={{ flex: 1, minWidth: 0 }}>
-      <main className={`p-6 mx-auto ${["breakdown", "daybyday", "forecast", "landscapes"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
+      <main className={`p-6 mx-auto ${["breakdown", "daybyday", "forecast", "landscapes", "dashboard", "distribution"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
         {submitted && (
           <div className="sw-rise rounded-2xl p-4 mb-5 flex items-center justify-between gap-4" style={{ background: "var(--green-soft)", border: "1px solid var(--green)" }}>
             <div className="flex items-center gap-3">
@@ -6300,6 +6572,7 @@ export default function App() {
         {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} />}
         {tab === "daybyday" && <DayByDayView orders={orders} />}
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuite} />}
+        {tab === "distribution" && <DistributionView orders={orders} netsuite={netsuite} />}
         {tab === "forecast" && <ForecastView netsuite={netsuite} profile={profile} staff={staff} />}
         {tab === "landscapes" && <LandscapesView profile={profile} staff={staff} />}
         {tab === "quote" && <QuoteBuilderView profile={profile} staff={staff} />}
