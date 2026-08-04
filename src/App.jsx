@@ -897,6 +897,62 @@ function RateCard({ label, pct, count, of, colour, hint }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  COMMISSION TIERS                                                       */
+/* ---------------------------------------------------------------------- */
+
+const METRIC_UNITS = ["money", "percent", "count"];
+
+// Common KPIs, offered as suggestions when adding one. Not a fixed list —
+// anything can be typed in, and the key is what the figure is looked up by.
+const METRIC_PRESETS = [
+  { key: "acq_pct", label: "ACQ %", unit: "percent" },
+  { key: "cloud_sov", label: "New Cloud SOV", unit: "money" },
+  { key: "connectivity_sov", label: "New Connectivity SOV", unit: "money" },
+  { key: "mobile_sov", label: "Mobile SOV", unit: "money" },
+  { key: "leads", label: "Leads Total", unit: "count" },
+];
+
+function fmtMetric(value, unit) {
+  if (value == null || value === "") return "—";
+  if (unit === "money") return fmtGBP(value);
+  if (unit === "percent") return `${num(value)}%`;
+  return num(value).toLocaleString("en-GB");
+}
+
+/* Which tier does a set of actuals land in?
+   A tier is met when GP falls inside the band and every threshold on it is
+   satisfied. Returns the best-paying met tier, plus the next one up so an
+   agent can see what they're reaching for. Returns nulls rather than
+   throwing when there's no plan or no tiers — that's a normal state. */
+function evaluateTiers(tiers, actuals) {
+  if (!tiers || !tiers.length) return { met: null, next: null, shortfalls: [] };
+  const gp = num(actuals.gp);
+
+  const inBand = (t) => gp >= num(t.gp_min) && (t.gp_max == null || gp <= num(t.gp_max));
+  const unmet = (t) => Object.keys(t.thresholds || {})
+    .filter((k) => num(actuals[k]) < num(t.thresholds[k]))
+    .map((k) => ({ key: k, needed: num(t.thresholds[k]), have: num(actuals[k]) }));
+
+  const sorted = [...tiers].sort((a, b) => num(a.gp_min) - num(b.gp_min));
+  let met = null;
+  let shortfalls = [];
+
+  for (const t of sorted) {
+    if (!inBand(t)) continue;
+    const gaps = unmet(t);
+    if (gaps.length === 0) {
+      if (!met || num(t.payment_pct) > num(met.payment_pct)) met = t;
+    } else {
+      shortfalls = gaps;   // in the band but missing KPIs — worth surfacing
+    }
+  }
+
+  // The next band up, whether or not the current one is met
+  const next = sorted.find((t) => num(t.gp_min) > gp) || null;
+  return { met, next, shortfalls };
+}
+
+/* ---------------------------------------------------------------------- */
 /*  GENERIC FORM CONTROLS                                                  */
 /* ---------------------------------------------------------------------- */
 
@@ -1076,7 +1132,7 @@ function ChangePasswordScreen({ forced, onDone, onCancel }) {
 /*  DASHBOARD                                                              */
 /* ---------------------------------------------------------------------- */
 
-function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrder, flashId, profile, loading, onNewOrder }) {
+function DashboardView({ orders, netsuite, forecasts, staff, payPlans, planTiers, planMetrics, onOpenOrder, flashId, profile, loading, onNewOrder }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [agentFilter, setAgentFilter] = useState("All");
@@ -1497,6 +1553,29 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
     };
   }, [gpCountable, isCampaignRow, isAcqRow]);
 
+  // ---- Which commission tier the current scope is hitting -------------
+  // Returns nulls when there's no plan or no tiers — a normal state, not
+  // an error, so nothing downstream needs a guard beyond checking `met`.
+  const tierStanding = useMemo(() => {
+    if (agentFilter === "All") return null;
+    const person = (staff || []).find((s) => s.full_name === agentFilter);
+    if (!person || !person.pay_plan_id) return null;
+    const tiers = (planTiers || []).filter((t) => t.plan_id === person.pay_plan_id);
+    if (!tiers.length) return null;
+    const plan = (payPlans || []).find((p) => p.id === person.pay_plan_id);
+    const mets = (planMetrics || []).filter((m) => m.plan_id === person.pay_plan_id);
+
+    const actuals = {
+      gp: gpTotal,
+      acq_pct: splits.acqPct,
+      cloud_sov: nsSovCards.cloud,
+      connectivity_sov: nsSovCards.connectivity,
+      mobile_sov: nsSovCards.mobile,
+      leads: 0,   // wired up when lead counts land
+    };
+    return { ...evaluateTiers(tiers, actuals), plan, metrics: mets, actuals };
+  }, [agentFilter, staff, planTiers, planMetrics, payPlans, gpTotal, splits, nsSovCards]);
+
   // ---- Ranked agents: claimed against each person's own target --------
   // Replaces the agent dropdown — the ranking is the selector.
   // Whose name gets softened wherever an order shows it
@@ -1726,6 +1805,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
 
   const SIDE_CARDS = [
     { key: "plan", label: "Pay plan" },
+    ...(tierStanding ? [{ key: "tier", label: "Commission" }] : []),
     { key: "rates", label: "Quality" },
     { key: "deal", label: "Avg deal" },
     { key: "accuracy", label: "Accuracy" },
@@ -1874,6 +1954,43 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
             ) : (
               <div className="text-xs py-4 text-center" style={{ color: "var(--ink-faint)" }}>No pay plan set for this view.</div>
             )
+          )}
+
+          {sideCard === "tier" && tierStanding && (
+            <div>
+              <div className="flex items-baseline justify-between">
+                <span className="sw-display" style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.025em", color: tierStanding.met ? "var(--green)" : "var(--ink)" }}>
+                  {tierStanding.met ? `${num(tierStanding.met.payment_pct)}%` : "—"}
+                </span>
+                <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                  {tierStanding.met ? tierStanding.met.label || "Tier met" : "No tier met"}
+                </span>
+              </div>
+
+              {tierStanding.shortfalls.length > 0 && (
+                <div className="mt-2 flex flex-col gap-1">
+                  {tierStanding.shortfalls.map((sf) => {
+                    const m = tierStanding.metrics.find((x) => x.key === sf.key);
+                    return (
+                      <div key={sf.key} className="flex items-baseline justify-between gap-2">
+                        <span className="text-xs" style={{ color: "var(--amber)" }}>{m ? m.label : sf.key}</span>
+                        <span className="sw-mono text-xs" style={{ color: "var(--ink-faint)" }}>
+                          {fmtMetric(sf.have, m?.unit)} / {fmtMetric(sf.needed, m?.unit)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {tierStanding.next && (
+                <div className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
+                  Next band {tierStanding.next.label ? `(${tierStanding.next.label})` : ""} at {fmtGBP(tierStanding.next.gp_min)} GP
+                  — {num(tierStanding.next.payment_pct)}%
+                </div>
+              )}
+              <div className="text-xs mt-1" style={{ color: "var(--ink-faint)" }}>{tierStanding.plan?.name}</div>
+            </div>
           )}
 
           {sideCard === "rates" && (
@@ -2043,12 +2160,12 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
             ))}
           </div>
 
-          <select className="sw-input sw-focus" style={{ width: 100, height: 32, fontSize: 12.5 }} value={period} onChange={(e) => setPeriod(e.target.value)} title={periodLabel}>
+          <select className="sw-input sw-focus" style={{ width: 112, height: 32, fontSize: 12.5 }} value={period} onChange={(e) => setPeriod(e.target.value)} title={periodLabel}>
             {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
           </select>
 
           {isOffice && (
-            <select className="sw-input sw-focus" style={{ width: 150, height: 32, fontSize: 12.5 }} value={scope} onChange={(e) => setScope(e.target.value)}>
+            <select className="sw-input sw-focus" style={{ width: 178, height: 32, fontSize: 12.5 }} value={scope} onChange={(e) => setScope(e.target.value)}>
               <option value="office">Whole Office</option>
               {teamOptions.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
@@ -2067,12 +2184,12 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
 
         {/* Row 2 — narrow it down */}
         <div className="sw-filter-row flex items-center gap-2 px-3 py-2.5 flex-wrap" style={{ borderTop: "1px solid var(--border)" }}>
-          <select className="sw-input sw-focus" style={{ width: 124, height: 32, fontSize: 12.5 }} value={productFilter} onChange={(e) => setProductFilter(e.target.value)}>
+          <select className="sw-input sw-focus" style={{ width: 140, height: 32, fontSize: 12.5 }} value={productFilter} onChange={(e) => setProductFilter(e.target.value)}>
             <option value="All">All products</option>
             {productOptions.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
 
-          <select className="sw-input sw-focus" style={{ width: 138, height: 32, fontSize: 12.5 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+          <select className="sw-input sw-focus" style={{ width: 152, height: 32, fontSize: 12.5 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
             <option value="All">All statuses</option>
             {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
             {dataView === "claimed" && <option value="__not_statted">Not Statted</option>}
@@ -4150,77 +4267,278 @@ function DayByDayView({ orders, staff }) {
 /*  PAY PLANS — office-only: monthly targets agents are measured against   */
 /* ---------------------------------------------------------------------- */
 
-function PayPlanForm({ plan, agentCount, onSave, onDelete }) {
+/* One commission band. Thresholds are whatever KPIs the plan declares. */
+function TierRow({ tier, metrics, onSave, onDelete }) {
   const [f, setF] = useState({
-    name: plan.name || "", target_gp: plan.target_gp ?? 0,
+    label: tier.label || "", gp_min: tier.gp_min ?? 0, gp_max: tier.gp_max ?? "",
+    payment_pct: tier.payment_pct ?? 0, notes: tier.notes || "",
+    thresholds: { ...(tier.thresholds || {}) },
+  });
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const dirty = f.label !== (tier.label || "")
+    || String(f.gp_min) !== String(tier.gp_min ?? 0)
+    || String(f.gp_max) !== String(tier.gp_max ?? "")
+    || String(f.payment_pct) !== String(tier.payment_pct ?? 0)
+    || f.notes !== (tier.notes || "")
+    || JSON.stringify(f.thresholds) !== JSON.stringify(tier.thresholds || {});
+
+  const cell = { fontSize: 12, height: 28, padding: "0 6px" };
+
+  return (
+    <tr style={{ borderTop: "1px solid var(--border)" }}>
+      <td className="px-2 py-1.5">
+        <input className="sw-input sw-focus" style={{ ...cell, width: 92 }} value={f.label}
+          placeholder="Tier" onChange={(e) => setF((p) => ({ ...p, label: e.target.value }))} />
+      </td>
+      <td className="px-2 py-1.5">
+        <div className="flex items-center gap-1">
+          <input className="sw-input sw-focus" style={{ ...cell, width: 74 }} value={f.gp_min}
+            onChange={(e) => setF((p) => ({ ...p, gp_min: e.target.value }))} />
+          <span style={{ fontSize: 11, color: "var(--ink-faint)" }}>–</span>
+          <input className="sw-input sw-focus" style={{ ...cell, width: 74 }} value={f.gp_max}
+            placeholder="no cap" onChange={(e) => setF((p) => ({ ...p, gp_max: e.target.value }))} />
+        </div>
+      </td>
+      {metrics.map((m) => (
+        <td key={m.id} className="px-2 py-1.5">
+          <input className="sw-input sw-focus" style={{ ...cell, width: 86 }}
+            value={f.thresholds[m.key] ?? ""}
+            placeholder={m.unit === "percent" ? "%" : m.unit === "count" ? "0" : "£"}
+            onChange={(e) => setF((p) => ({
+              ...p,
+              thresholds: e.target.value === ""
+                ? Object.fromEntries(Object.entries(p.thresholds).filter(([k]) => k !== m.key))
+                : { ...p.thresholds, [m.key]: e.target.value },
+            }))} />
+        </td>
+      ))}
+      <td className="px-2 py-1.5">
+        <div className="flex items-center gap-1">
+          <input className="sw-input sw-focus" style={{ ...cell, width: 60 }} value={f.payment_pct}
+            onChange={(e) => setF((p) => ({ ...p, payment_pct: e.target.value }))} />
+          <span style={{ fontSize: 11, color: "var(--ink-faint)" }}>%</span>
+        </div>
+      </td>
+      <td className="px-2 py-1.5">
+        <div className="flex items-center gap-1.5">
+          <button disabled={!dirty || saving}
+            onClick={async () => {
+              setSaving(true);
+              const th = {};
+              Object.keys(f.thresholds).forEach((k) => { if (f.thresholds[k] !== "") th[k] = parseFloat(f.thresholds[k]) || 0; });
+              await onSave(tier.id, {
+                label: f.label, gp_min: parseFloat(f.gp_min) || 0,
+                gp_max: f.gp_max === "" ? null : parseFloat(f.gp_max),
+                payment_pct: parseFloat(f.payment_pct) || 0,
+                notes: f.notes, thresholds: th,
+              });
+              setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 1500);
+            }}
+            className="sw-focus text-xs font-semibold px-2 py-1 rounded-lg"
+            style={{ background: dirty ? "var(--primary)" : "var(--surface-alt)", color: dirty ? "#fff" : "var(--ink-faint)" }}>
+            {saving ? "..." : saved ? "✓" : "Save"}
+          </button>
+          <button onClick={() => onDelete(tier.id)} className="sw-focus text-xs" style={{ color: "var(--red)" }}>✕</button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
+                      onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric }) {
+  const [f, setF] = useState({
+    name: plan.name || "", plan_kind: plan.plan_kind || "closer",
+    description: plan.description || "",
+    effective_from: plan.effective_from || "", effective_to: plan.effective_to || "",
+    target_gp: plan.target_gp ?? 0,
     target_cloud_sov: plan.target_cloud_sov ?? 0, target_connectivity_sov: plan.target_connectivity_sov ?? 0,
     target_mobile_sov: plan.target_mobile_sov ?? 0, active: plan.active !== false,
   });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const dirty = Object.keys(f).some((k) => String(f[k]) !== String(plan[k] ?? (k === "active" ? true : 0)));
+  const [addingMetric, setAddingMetric] = useState(false);
+  const [newMetric, setNewMetric] = useState({ key: "", label: "", unit: "money" });
+
+  const dirty = Object.keys(f).some((k) => String(f[k]) !== String(plan[k] ?? (k === "active" ? true : k === "plan_kind" ? "closer" : "")));
+  const planMetrics = metrics.filter((m) => m.plan_id === plan.id);
+  const planTiers = tiers.filter((t) => t.plan_id === plan.id);
 
   const Row = ({ label, children }) => (
-    <div style={{ display: "grid", gridTemplateColumns: "150px 1fr", gap: "0.75rem", alignItems: "center" }} className="py-2">
+    <div style={{ display: "grid", gridTemplateColumns: "150px 1fr", gap: "0.75rem", alignItems: "center" }} className="py-1.5">
       <label className="text-xs" style={{ color: "var(--ink-faint)" }}>{label}</label>
       {children}
     </div>
   );
   const moneyField = (key) => (
-    <div className="relative" style={{ maxWidth: 200 }}>
+    <div className="relative" style={{ maxWidth: 180 }}>
       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs" style={{ color: "var(--ink-faint)" }}>£</span>
       <input className="sw-input sw-focus" style={{ paddingLeft: 20 }} value={f[key]} onChange={(e) => setF((p) => ({ ...p, [key]: e.target.value }))} />
     </div>
   );
 
   return (
-    <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-      <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
-        <input className="sw-input sw-focus" style={{ fontWeight: 600, fontSize: 14, maxWidth: 260 }}
-          value={f.name} onChange={(e) => setF((p) => ({ ...p, name: e.target.value }))} />
-        <span className="text-xs font-semibold px-2 py-1 rounded-full" style={{ background: agentCount ? "var(--primary-soft)" : "var(--surface-alt)", color: agentCount ? "var(--primary)" : "var(--ink-faint)" }}>
-          {agentCount} on this plan
-        </span>
+    <div className="flex flex-col gap-3">
+
+      {/* Plan header */}
+      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="flex items-center justify-between px-4 py-3 gap-2" style={{ borderBottom: "1px solid var(--border)" }}>
+          <input className="sw-input sw-focus" style={{ fontWeight: 600, fontSize: 14, maxWidth: 300 }}
+            value={f.name} onChange={(e) => setF((p) => ({ ...p, name: e.target.value }))} />
+          <span className="text-xs font-semibold px-2 py-1 rounded-full shrink-0" style={{ background: agentCount ? "var(--primary-soft)" : "var(--surface-alt)", color: agentCount ? "var(--primary)" : "var(--ink-faint)" }}>
+            {agentCount} on this plan
+          </span>
+        </div>
+
+        <div className="px-4 py-2">
+          <Row label="Plan type">
+            <select className="sw-input sw-focus" style={{ maxWidth: 180 }} value={f.plan_kind} onChange={(e) => setF((p) => ({ ...p, plan_kind: e.target.value }))}>
+              <option value="closer">Closer</option>
+              <option value="lead_gen">Lead Gen</option>
+              <option value="other">Other</option>
+            </select>
+          </Row>
+          <Row label="In force from">
+            <div className="flex items-center gap-2 flex-wrap">
+              <input type="date" className="sw-input sw-focus" style={{ maxWidth: 160 }} value={f.effective_from || ""}
+                onChange={(e) => setF((p) => ({ ...p, effective_from: e.target.value }))} />
+              <span className="text-xs" style={{ color: "var(--ink-faint)" }}>until</span>
+              <input type="date" className="sw-input sw-focus" style={{ maxWidth: 160 }} value={f.effective_to || ""}
+                onChange={(e) => setF((p) => ({ ...p, effective_to: e.target.value }))} />
+              <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{f.effective_to ? "" : "leave blank while current"}</span>
+            </div>
+          </Row>
+          <Row label="Notes">
+            <input className="sw-input sw-focus" value={f.description} placeholder="What this plan is for"
+              onChange={(e) => setF((p) => ({ ...p, description: e.target.value }))} />
+          </Row>
+          <Row label="Headline GP target">{moneyField("target_gp")}</Row>
+          <Row label="Cloud SOV target">{moneyField("target_cloud_sov")}</Row>
+          <Row label="Connectivity SOV target">{moneyField("target_connectivity_sov")}</Row>
+          <Row label="Mobile SOV target">{moneyField("target_mobile_sov")}</Row>
+          <Row label="Active">
+            <label className="flex items-center gap-2 text-xs" style={{ color: "var(--ink-soft)" }}>
+              <input type="checkbox" checked={f.active} onChange={(e) => setF((p) => ({ ...p, active: e.target.checked }))} />
+              Available to assign, and counted in KPI targets
+            </label>
+          </Row>
+        </div>
+
+        <div className="flex items-center gap-2 px-4 py-3" style={{ borderTop: "1px solid var(--border)", background: "var(--surface-alt)" }}>
+          <button disabled={!dirty || saving}
+            onClick={async () => {
+              setSaving(true);
+              await onSave(plan.id, {
+                name: f.name, plan_kind: f.plan_kind, description: f.description,
+                effective_from: f.effective_from || null, effective_to: f.effective_to || null,
+                target_gp: parseFloat(f.target_gp) || 0,
+                target_cloud_sov: parseFloat(f.target_cloud_sov) || 0,
+                target_connectivity_sov: parseFloat(f.target_connectivity_sov) || 0,
+                target_mobile_sov: parseFloat(f.target_mobile_sov) || 0, active: f.active,
+              });
+              setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 1600);
+            }}
+            className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg"
+            style={{ background: dirty ? "var(--primary)" : "var(--surface)", color: dirty ? "#fff" : "var(--ink-faint)", border: "1px solid var(--border)" }}>
+            {saving ? "Saving..." : "Save plan"}
+          </button>
+          {saved && <span className="text-xs" style={{ color: "var(--green)" }}>Saved</span>}
+          {agentCount === 0 && (
+            <button onClick={() => onDelete(plan.id, plan.name)} className="sw-focus text-xs ml-auto" style={{ color: "var(--red)" }}>Delete plan</button>
+          )}
+        </div>
       </div>
 
-      <div className="px-4 py-2">
-        <Row label="GP (monthly)">{moneyField("target_gp")}</Row>
-        <Row label="Cloud SOV (monthly)">{moneyField("target_cloud_sov")}</Row>
-        <Row label="Connectivity SOV (monthly)">{moneyField("target_connectivity_sov")}</Row>
-        <Row label="Mobile SOV (monthly)">{moneyField("target_mobile_sov")}</Row>
-        <Row label="Active">
-          <label className="flex items-center gap-2 text-xs" style={{ color: "var(--ink-soft)" }}>
-            <input type="checkbox" checked={f.active} onChange={(e) => setF((p) => ({ ...p, active: e.target.checked }))} />
-            Available to assign, and counted in KPI targets
-          </label>
-        </Row>
-      </div>
+      {/* KPIs this plan is judged on */}
+      <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>KPIs on this plan</span>
+          <button onClick={() => setAddingMetric((v) => !v)} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>
+            {addingMetric ? "Cancel" : "+ Add KPI"}
+          </button>
+        </div>
 
-      <div className="flex items-center gap-2 px-4 py-3" style={{ borderTop: "1px solid var(--border)", background: "var(--surface-alt)" }}>
-        <button disabled={!dirty || saving}
-          onClick={async () => {
-            setSaving(true);
-            await onSave(plan.id, {
-              name: f.name, target_gp: parseFloat(f.target_gp) || 0,
-              target_cloud_sov: parseFloat(f.target_cloud_sov) || 0, target_connectivity_sov: parseFloat(f.target_connectivity_sov) || 0,
-              target_mobile_sov: parseFloat(f.target_mobile_sov) || 0, active: f.active,
-            });
-            setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 1600);
-          }}
-          className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg"
-          style={{ background: dirty ? "var(--primary)" : "var(--surface)", color: dirty ? "#fff" : "var(--ink-faint)", border: "1px solid var(--border)" }}>
-          {saving ? "Saving..." : "Save plan"}
-        </button>
-        {saved && <span className="text-xs" style={{ color: "var(--green)" }}>Saved</span>}
-        {agentCount === 0 && (
-          <button onClick={() => onDelete(plan.id, plan.name)} className="sw-focus text-xs ml-auto" style={{ color: "var(--red)" }}>Delete plan</button>
+        <div className="flex gap-1.5 flex-wrap">
+          {planMetrics.map((m) => (
+            <span key={m.id} className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs"
+              style={{ background: "var(--surface-alt)", color: "var(--ink-soft)" }}>
+              {m.label} <span style={{ color: "var(--ink-faint)", fontSize: 10 }}>{m.unit}</span>
+              <button onClick={() => onDeleteMetric(m.id)} className="sw-focus" style={{ color: "var(--red)" }}>✕</button>
+            </span>
+          ))}
+          {planMetrics.length === 0 && (
+            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>None yet — tiers will be judged on GP alone.</span>
+          )}
+        </div>
+
+        {addingMetric && (
+          <div className="flex items-end gap-2 mt-3 flex-wrap">
+            <select className="sw-input sw-focus" style={{ width: 190 }} value=""
+              onChange={(e) => {
+                const p = METRIC_PRESETS.find((x) => x.key === e.target.value);
+                if (p) setNewMetric({ key: p.key, label: p.label, unit: p.unit });
+              }}>
+              <option value="">Pick a common KPI…</option>
+              {METRIC_PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+            </select>
+            <input className="sw-input sw-focus" style={{ width: 150 }} placeholder="Label" value={newMetric.label}
+              onChange={(e) => setNewMetric((p) => ({ ...p, label: e.target.value }))} />
+            <input className="sw-input sw-focus" style={{ width: 130 }} placeholder="key_name" value={newMetric.key}
+              onChange={(e) => setNewMetric((p) => ({ ...p, key: e.target.value.replace(/\s+/g, "_").toLowerCase() }))} />
+            <select className="sw-input sw-focus" style={{ width: 110 }} value={newMetric.unit}
+              onChange={(e) => setNewMetric((p) => ({ ...p, unit: e.target.value }))}>
+              {METRIC_UNITS.map((u) => <option key={u} value={u}>{u}</option>)}
+            </select>
+            <button disabled={!newMetric.key || !newMetric.label}
+              onClick={async () => { await onAddMetric(plan.id, newMetric.key, newMetric.label, newMetric.unit); setNewMetric({ key: "", label: "", unit: "money" }); setAddingMetric(false); }}
+              className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg"
+              style={{ background: newMetric.key && newMetric.label ? "var(--primary)" : "var(--surface-alt)", color: newMetric.key && newMetric.label ? "#fff" : "var(--ink-faint)" }}>
+              Add
+            </button>
+          </div>
         )}
+      </div>
+
+      {/* The bands */}
+      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="flex items-center justify-between px-4 py-2.5" style={{ borderBottom: "1px solid var(--border)" }}>
+          <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Commission tiers</span>
+          <button onClick={() => onAddTier(plan.id)} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>+ Add tier</button>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table className="w-full" style={{ borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "var(--surface-alt)" }}>
+                {["Tier", "GP band", ...planMetrics.map((m) => m.label), "Payment", ""].map((h, i) => (
+                  <th key={i} className="text-left px-2 py-2 text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)", whiteSpace: "nowrap" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {planTiers.map((t) => (
+                <TierRow key={t.id} tier={t} metrics={planMetrics} onSave={onSaveTier} onDelete={onDeleteTier} />
+              ))}
+              {planTiers.length === 0 && (
+                <tr><td colSpan={3 + planMetrics.length} className="px-4 py-8 text-center text-xs" style={{ color: "var(--ink-faint)" }}>
+                  No tiers yet. Add one to start banding this plan.
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-xs px-4 py-2.5" style={{ color: "var(--ink-faint)", borderTop: "1px solid var(--border)" }}>
+          A tier pays out when GP lands inside its band <b>and</b> every KPI on that row is met. Leave a KPI
+          blank on a row if that tier doesn't gate on it. Leave the upper GP figure blank for an open-ended top band.
+        </p>
       </div>
     </div>
   );
 }
 
-function PayPlansView({ plans, staff, onSave, onAdd, onDelete }) {
+function PayPlansView({ plans, staff, tiers, metrics, onSave, onAdd, onDelete,
+                       onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric }) {
   const [selectedId, setSelectedId] = useState(null);
   const [newName, setNewName] = useState("");
   const [adding, setAdding] = useState(false);
@@ -4272,7 +4590,10 @@ function PayPlansView({ plans, staff, onSave, onAdd, onDelete }) {
                 className="sw-focus w-full text-left px-3 py-2.5"
                 style={{ background: sel ? "var(--primary-soft)" : "transparent", borderBottom: "1px solid var(--border)", opacity: p.active === false ? 0.55 : 1 }}>
                 <div className="text-xs truncate" style={{ color: sel ? "var(--primary)" : "var(--ink)", fontWeight: sel ? 600 : 500 }}>{p.name}</div>
-                <div className="text-xs truncate" style={{ color: "var(--ink-faint)", fontSize: 10.5 }}>{fmtGBP(p.target_gp)} GP · {countByPlan[p.id] || 0} people</div>
+                <div className="text-xs truncate" style={{ color: "var(--ink-faint)", fontSize: 10.5 }}>
+                  {fmtGBP(p.target_gp)} GP · {countByPlan[p.id] || 0} people
+                  {p.effective_to ? ` · ended ${fmtDate(p.effective_to)}` : ""}
+                </div>
               </button>
             );
           })}
@@ -4302,7 +4623,11 @@ function PayPlansView({ plans, staff, onSave, onAdd, onDelete }) {
         {/* DETAIL */}
         <div>
           {selected ? (
-            <PayPlanForm key={selected.id} plan={selected} agentCount={countByPlan[selected.id] || 0} onSave={onSave} onDelete={onDelete} />
+            <PayPlanForm key={selected.id} plan={selected} agentCount={countByPlan[selected.id] || 0}
+              tiers={tiers || []} metrics={metrics || []}
+              onSave={onSave} onDelete={onDelete}
+              onSaveTier={onSaveTier} onAddTier={onAddTier} onDeleteTier={onDeleteTier}
+              onAddMetric={onAddMetric} onDeleteMetric={onDeleteMetric} />
           ) : (
             <div className="rounded-xl p-10 text-center" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
               <div className="text-sm" style={{ color: "var(--ink-faint)" }}>Select a plan from the list to edit its targets.</div>
@@ -4732,6 +5057,7 @@ function OtherVisualsView({ orders, netsuite, forecasts, staff }) {
 /* ---------------------------------------------------------------------- */
 
 function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSavePlan, onAddPlan, onDeletePlan,
+                       planTiers, planMetrics, onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric,
                        coachScenarios, coachSettings, onSaveCoachScenario, onAddCoachScenario, onDeleteCoachScenario, onSaveCoachSettings,
                        orders, netsuite, forecasts }) {
   const [section, setSection] = useState("statuses");
@@ -4774,7 +5100,16 @@ function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSave
 
 const ROLE_OPTIONS = ["office", "2ic", "agent"];
 
-function StaffDetailForm({ s, profileForStaff, onSaveStaff, onSaveProfile, onResetPassword, onSetActive, plans }) {
+function StaffDetailForm({ s, profileForStaff, onSaveStaff, onSaveProfile, onResetPassword, onSetActive, plans,
+                          planHistory, onAssignPlan, onDeleteAssignment }) {
+  const [assigning, setAssigning] = useState(false);
+  const [newPlan, setNewPlan] = useState("");
+  const [newFrom, setNewFrom] = useState(new Date().toISOString().slice(0, 10));
+  const myHistory = useMemo(
+    () => (planHistory || []).filter((h) => h.staff_id === s.id)
+      .sort((a, b) => String(b.effective_from).localeCompare(String(a.effective_from))),
+    [planHistory, s.id]
+  );
   const [f, setF] = useState({
     full_name: s.full_name || "", alt_name: s.alt_name || "", uin: s.uin || "", email: s.email || "",
     team: s.team || "", sells: !!s.sells, pay_plan_id: s.pay_plan_id || "",
@@ -4854,6 +5189,58 @@ function StaffDetailForm({ s, profileForStaff, onSaveStaff, onSaveProfile, onRes
           {savingStaff ? "Saving..." : "Save details"}
         </button>
         {saved && <span className="text-xs" style={{ color: "var(--green)" }}>{saved}</span>}
+      </div>
+
+      {/* What they've been on, and when */}
+      <div className="px-4 py-3" style={{ borderTop: "1px solid var(--border)" }}>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Pay plan history</span>
+          <button onClick={() => setAssigning((v) => !v)} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>
+            {assigning ? "Cancel" : "+ Change plan"}
+          </button>
+        </div>
+
+        {assigning && (
+          <div className="flex items-end gap-2 mb-2 flex-wrap">
+            <select className="sw-input sw-focus" style={{ width: 220 }} value={newPlan} onChange={(e) => setNewPlan(e.target.value)}>
+              <option value="">No plan</option>
+              {(plans || []).filter((p) => p.active !== false).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            <input type="date" className="sw-input sw-focus" style={{ width: 150 }} value={newFrom} onChange={(e) => setNewFrom(e.target.value)} />
+            <button disabled={!newFrom}
+              onClick={async () => { await onAssignPlan(s.id, newPlan || null, newFrom); setAssigning(false); }}
+              className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg"
+              style={{ background: newFrom ? "var(--primary)" : "var(--surface-alt)", color: newFrom ? "#fff" : "var(--ink-faint)" }}>
+              Apply from this date
+            </button>
+          </div>
+        )}
+
+        {myHistory.length === 0 ? (
+          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+            No plan history. Assigning one above starts the record — figures still work without a plan, they just
+            won't be measured against a target.
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <tbody>
+              {myHistory.map((h) => {
+                const p = (plans || []).find((x) => x.id === h.pay_plan_id);
+                return (
+                  <tr key={h.id} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td className="py-1.5 text-xs font-medium">{p ? p.name : "No plan"}</td>
+                    <td className="py-1.5 text-xs" style={{ color: "var(--ink-faint)" }}>
+                      {fmtDate(h.effective_from)} → {h.effective_to ? fmtDate(h.effective_to) : "current"}
+                    </td>
+                    <td className="py-1.5 text-right">
+                      <button onClick={() => onDeleteAssignment(h.id)} className="sw-focus text-xs" style={{ color: "var(--red)" }}>✕</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
       </div>
 
       {/* Role + password — only meaningful once they've signed in at least once */}
@@ -5096,7 +5483,7 @@ function AdminIssues({ staff, netsuite, aliases, onAddAlias, onDeleteAlias, plan
 }
 
 function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, onResetPassword, onSetActive, plans,
-                    netsuite, aliases, onAddAlias, onDeleteAlias }) {
+                    netsuite, aliases, onAddAlias, onDeleteAlias, planHistory, onAssignPlan, onDeleteAssignment }) {
   const teamOptions = useMemo(() => Array.from(new Set(staff.map((s) => s.team).filter(Boolean))), [staff]);
   const profileByUserId = useMemo(() => {
     const m = {};
@@ -5175,7 +5562,8 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
             <StaffDetailForm key={selected.id} s={selected}
               profileForStaff={selected.user_id ? profileByUserId[selected.user_id] : null}
               onSaveStaff={onSaveStaff} onSaveProfile={onSaveProfile}
-              onResetPassword={onResetPassword} onSetActive={onSetActive} plans={plans} />
+              onResetPassword={onResetPassword} onSetActive={onSetActive} plans={plans}
+              planHistory={planHistory} onAssignPlan={onAssignPlan} onDeleteAssignment={onDeleteAssignment} />
           )}
           {!adding && !selected && (
             <div className="rounded-xl p-10 text-center" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
@@ -7524,6 +7912,9 @@ export default function App() {
   const [netsuite, setNetsuite] = useState([]);
   const [statusRows, setStatusRows] = useState([]);
   const [payPlans, setPayPlans] = useState([]);
+  const [planTiers, setPlanTiers] = useState([]);
+  const [planMetrics, setPlanMetrics] = useState([]);
+  const [planHistory, setPlanHistory] = useState([]);
   const [forecasts, setForecasts] = useState([]);
   const [aliases, setAliases] = useState([]);
   const [coachScenarios, setCoachScenarios] = useState([]);
@@ -7695,9 +8086,63 @@ export default function App() {
 
   // Pay plans — monthly targets the KPI cards are measured against
   const loadPayPlans = useCallback(async () => {
-    const { data } = await supabase.from("pay_plans").select("*").order("name");
-    setPayPlans(data || []);
+    const [plans, tiers, metrics, history] = await Promise.all([
+      supabase.from("pay_plans").select("*").order("name"),
+      supabase.from("pay_plan_tiers").select("*").order("sort_order"),
+      supabase.from("pay_plan_metrics").select("*").order("sort_order"),
+      supabase.from("staff_pay_plans").select("*").order("effective_from", { ascending: false }),
+    ]);
+    setPayPlans(plans.data || []);
+    setPlanTiers(tiers.data || []);
+    setPlanMetrics(metrics.data || []);
+    setPlanHistory(history.data || []);
   }, []);
+
+  // --- Tier / metric / assignment editing -----------------------------
+  const savePlanTier = useCallback(async (id, patch) => {
+    const { error } = await supabase.from("pay_plan_tiers").update(patch).eq("id", id);
+    if (error) { setToast(`Couldn't save tier: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    loadPayPlans();
+  }, [loadPayPlans]);
+
+  const addPlanTier = useCallback(async (planId) => {
+    const { error } = await supabase.from("pay_plan_tiers").insert({ plan_id: planId, label: "New tier", gp_min: 0, payment_pct: 0, sort_order: 999 });
+    if (error) { setToast(`Couldn't add tier: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    loadPayPlans();
+  }, [loadPayPlans]);
+
+  const deletePlanTier = useCallback(async (id) => {
+    await supabase.from("pay_plan_tiers").delete().eq("id", id);
+    loadPayPlans();
+  }, [loadPayPlans]);
+
+  const addPlanMetric = useCallback(async (planId, key, label, unit) => {
+    const { error } = await supabase.from("pay_plan_metrics").insert({ plan_id: planId, key, label, unit, sort_order: 100 });
+    if (error) { setToast(`Couldn't add KPI: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    loadPayPlans();
+  }, [loadPayPlans]);
+
+  const deletePlanMetric = useCallback(async (id) => {
+    await supabase.from("pay_plan_metrics").delete().eq("id", id);
+    loadPayPlans();
+  }, [loadPayPlans]);
+
+  const assignPlan = useCallback(async (staffId, planId, from) => {
+    // Close off whatever they were on, then open the new one
+    await supabase.from("staff_pay_plans")
+      .update({ effective_to: from })
+      .eq("staff_id", staffId).is("effective_to", null);
+    const { error } = await supabase.from("staff_pay_plans")
+      .insert({ staff_id: staffId, pay_plan_id: planId || null, effective_from: from });
+    if (error) { setToast(`Couldn't assign: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    await supabase.from("staff").update({ pay_plan_id: planId || null }).eq("id", staffId);
+    loadPayPlans(); loadStaff();
+  }, [loadPayPlans, loadStaff]);
+
+  const deleteAssignment = useCallback(async (id) => {
+    await supabase.from("staff_pay_plans").delete().eq("id", id);
+    loadPayPlans();
+  }, [loadPayPlans]);
   useEffect(() => { if (session?.user) loadPayPlans(); }, [session, loadPayPlans]);
 
   const savePayPlan = useCallback(async (id, patch) => {
@@ -8013,7 +8458,7 @@ export default function App() {
             </div>
           </div>
         )}
-        {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuiteResolved} forecasts={forecasts} staff={staff} payPlans={payPlans} onNewOrder={() => setTab("new")} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
+        {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuiteResolved} forecasts={forecasts} staff={staff} payPlans={payPlans} planTiers={planTiers} planMetrics={planMetrics} onNewOrder={() => setTab("new")} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
         {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} />}
         {tab === "daybyday" && <DayByDayView orders={orders} staff={staff} />}
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuiteResolved} />}
@@ -8023,8 +8468,12 @@ export default function App() {
         {tab === "quote" && <QuoteBuilderView profile={profile} staff={staff} />}
         {tab === "coach" && <SalesCoachView />}
         {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onResetPassword={resetPassword} onSetActive={setStaffActive} plans={payPlans}
-          netsuite={netsuiteResolved} aliases={aliases} onAddAlias={addAlias} onDeleteAlias={deleteAlias} />}
+          netsuite={netsuiteResolved} aliases={aliases} onAddAlias={addAlias} onDeleteAlias={deleteAlias}
+          planHistory={planHistory} onAssignPlan={assignPlan} onDeleteAssignment={deleteAssignment} />}
         {tab === "statuses" && profile?.role === "office" && <SettingsView statusRows={statusRows} onSaveStatus={saveStatusCfg} newCount={newStatusCount} plans={payPlans} staff={staff} onSavePlan={savePayPlan} onAddPlan={addPayPlan} onDeletePlan={deletePayPlan}
+          planTiers={planTiers} planMetrics={planMetrics}
+          onSaveTier={savePlanTier} onAddTier={addPlanTier} onDeleteTier={deletePlanTier}
+          onAddMetric={addPlanMetric} onDeleteMetric={deletePlanMetric}
           coachScenarios={coachScenarios} coachSettings={coachSettings}
           onSaveCoachScenario={saveCoachScenario} onAddCoachScenario={addCoachScenario}
           onDeleteCoachScenario={deleteCoachScenario} onSaveCoachSettings={saveCoachSettings}
