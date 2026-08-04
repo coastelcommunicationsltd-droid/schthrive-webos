@@ -6,7 +6,7 @@ import {
   Loader2, Users, Eye, EyeOff, ArrowLeft, LogIn, KeyRound, Palette, MapPin,
   BarChart3, CalendarDays, Target, Headphones, Phone,
   ChevronDown, ClipboardList, LayoutDashboard, Settings as SettingsIcon,
-  History, FileText, Inbox, Menu,
+  History, FileText, Inbox, Menu, Lock,
 } from "lucide-react";
 
 /* ====================================================================== */
@@ -148,6 +148,21 @@ const STYLE = `
 .sw-req{color:var(--red);margin-left:2px;}
 .sw-err{color:var(--red);font-size:12px;margin-top:4px;}
 .sw-clamp2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;}
+
+/* ---- Micro-interactions ----------------------------------------------
+   Quick, subtle, and consistent: clickable cards lift a pixel on hover,
+   freshly mounted table rows rise in. Both are disabled for anyone who
+   prefers reduced motion. */
+.sw-lift{transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease,background .15s ease;}
+.sw-lift:hover{transform:translateY(-1px);box-shadow:0 3px 10px rgba(33,30,50,.07);}
+.sw-lift:active{transform:translateY(0);}
+.sw-anim-rows tbody tr{animation:sw-rise .18s ease-out both;}
+.sw-bar-anim{transition:width .25s ease;}
+@media (prefers-reduced-motion: reduce){
+  .sw-lift,.sw-lift:hover{transition:none;transform:none;box-shadow:none;}
+  .sw-anim-rows tbody tr{animation:none;}
+  .sw-bar-anim{transition:none;}
+}
 
 /* ---- Mobile ----------------------------------------------------------
    Below 900px the two- and four-column layouts stack, the sidebar becomes
@@ -8391,8 +8406,13 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         order: o,
       }));
 
-    // Unallocated work sits at the top — it's the thing that needs a decision
+    // Lilac submissions lead — they're the ones waiting on delivery to
+    // action — then unallocated work, then newest first. This holds when
+    // the list is filtered to an individual, so their action items are
+    // always at the top.
     return [...awaiting, ...rows].sort((a, b) => {
+      const aLilac = a.kind === "lilac", bLilac = b.kind === "lilac";
+      if (aLilac !== bLilac) return aLilac ? -1 : 1;
       if (!a.agent !== !b.agent) return a.agent ? 1 : -1;
       return String(b.date || "").localeCompare(String(a.date || ""));
     });
@@ -8424,6 +8444,18 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
     });
     return { buckets: out, cols };
   }, [unplacedRows]);
+
+  // One place to sum a product (or roll-up of products), either for a
+  // single placement bucket or across all of them — the same reduce was
+  // copy-pasted four times through the card grid below.
+  const sumProducts = useCallback((keys, bucketKey = null) => {
+    const bucketKeys = bucketKey ? [bucketKey] : PLACEMENT_BUCKETS.map((b) => b.key);
+    return bucketKeys.reduce((acc, bk) => keys.reduce((s, k) => {
+      const x = placement.buckets[bk].byProduct[k];
+      return { count: s.count + x.count, sov: s.sov + x.sov };
+    }, acc), { count: 0, sov: 0 });
+  }, [placement]);
+
   const unplacedValue = useMemo(() => unplacedRows.reduce((s, r) => s + num(r.sov), 0), [unplacedRows]);
 
   const productOptions = useMemo(() => {
@@ -8437,7 +8469,10 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
     return unplacedRows.filter((r) => {
       if (q && !String(r.company).toLowerCase().includes(q)
             && !String(r.doc || "").toLowerCase().includes(q)) return false;
-      if (placementView === "to_be_placed" && !isToBePlaced(r.placed)) return false;
+      // Lilac submissions haven't reached NetSuite, so they carry no
+      // placement status — they're still work to place, so the default
+      // view must include them.
+      if (placementView === "to_be_placed" && !isToBePlaced(r.placed) && r.kind !== "lilac") return false;
       if (placementView !== "all" && placementView !== "to_be_placed"
           && placementOf(r.placed) !== placementView) return false;
       if (productFilter !== "All") {
@@ -8458,7 +8493,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   // and the table always describe the same set of orders.
   const scopedForWork = useMemo(() => {
     if (placementView === "all") return unplacedRows;
-    if (placementView === "to_be_placed") return unplacedRows.filter((r) => isToBePlaced(r.placed));
+    if (placementView === "to_be_placed") return unplacedRows.filter((r) => r.kind === "lilac" || isToBePlaced(r.placed));
     return unplacedRows.filter((r) => placementOf(r.placed) === placementView);
   }, [unplacedRows, placementView]);
 
@@ -8475,7 +8510,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name)),
       none,
     };
-  }, [unplacedRows]);
+  }, [scopedForWork]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -8487,7 +8522,15 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
       else if (agentFilter !== "All" && alloc.name !== agentFilter) return false;
       if (stateFilter !== "All" && statusOf(o) !== stateFilter) return false;
       return true;
-    }).sort((a, b) => String(b.submission_date || "").localeCompare(String(a.submission_date || "")));
+    }).sort((a, b) => {
+      // When looking at one person's list, their Lilac Submitted orders
+      // lead — that's the work waiting on them.
+      if (agentFilter !== "All" && agentFilter !== "__unallocated") {
+        const aLilac = /lilac/i.test(statusOf(a)), bLilac = /lilac/i.test(statusOf(b));
+        if (aLilac !== bLilac) return aLilac ? -1 : 1;
+      }
+      return String(b.submission_date || "").localeCompare(String(a.submission_date || ""));
+    });
   }, [inPeriod, query, agentFilter, stateFilter, allocationOf, statusOf]);
 
   const totals = useMemo(() => {
@@ -8516,8 +8559,8 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
             <button key={k} onClick={() => setView(k)}
               className="sw-focus px-3 text-xs whitespace-nowrap"
               style={view === k
-                ? { background: "var(--primary)", color: "#fff", fontWeight: 600, height: "100%" }
-                : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
+                ? { background: "var(--primary)", color: "#fff", fontWeight: 600, height: "100%", transition: "background .15s ease, color .15s ease" }
+                : { background: "transparent", color: "var(--ink-faint)", height: "100%", transition: "background .15s ease, color .15s ease" }}>
               {lbl}
             </button>
           ))}
@@ -8527,28 +8570,16 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
       {/* Placement: where everything has got to, and what it's worth */}
       {view === "unplaced" ? (
         <div className="mb-3">
-          <div className="sw-cols-2" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: "0.75rem" }}>
-            {PLACEMENT_BUCKETS.map((b) => {
-              const d = placement.buckets[b.key];
-              const active = placementView === b.key;
-              return (
-                <button key={b.key}
-                  onClick={() => setPlacementView(active ? "to_be_placed" : b.key)}
-                  className="sw-focus rounded-xl p-4 text-left"
-                  style={{ background: "var(--surface)", border: `1px solid ${active ? b.tone : "var(--border)"}` }}>
-                  <div className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{b.label}</div>
-                  <div className="sw-display" style={{ fontSize: 27, fontWeight: 600, letterSpacing: "-0.025em", color: b.tone }}>{d.count}</div>
-                  <div className="sw-mono text-xs mt-1" style={{ color: "var(--ink-soft)" }}>{fmtGBP(d.sov)}</div>
-                </button>
-              );
-            })}
-          </div>
+          {/* Products fill the row; the four placement states sit as a
+              compact 2×2 block on the right. Inline grid styles on
+              purpose — critical layout, no Tailwind JIT dependence. */}
+          <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(230px, 264px)", gap: "0.75rem", alignItems: "stretch" }}>
 
           {/* One card per product rather than a matrix — easier to scan and
               each one is clickable to filter the list. */}
           {/* Product cards. The three that make up Connectivity sit stacked
               to its left, so the relationship is visible without a matrix. */}
-          <div className="sw-cols-2 mt-3" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "0.75rem", alignItems: "stretch" }}>
+          <div className="sw-cols-2" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "0.75rem", alignItems: "stretch", alignContent: "start" }}>
             {[
               { key: "cloud",  label: "Cloud" },
               { key: "mobile", label: "Mobile" },
@@ -8560,22 +8591,18 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
             ].map((p) => {
               // The stacked column of Connectivity's parts
               if (p.key === "__connectivity_parts") {
-                const anyPart = SD_CONNECTIVITY.some((k) =>
-                  PLACEMENT_BUCKETS.some((b) => placement.buckets[b.key].byProduct[k].count > 0));
+                const anyPart = SD_CONNECTIVITY.some((k) => sumProducts([k]).count > 0);
                 if (!anyPart) return null;
                 return (
                   <div key={p.key} className="flex flex-col gap-2" style={{ justifyContent: "stretch" }}>
                     {SD_CONNECTIVITY.map((k) => {
                       const def = SD_PRODUCTS.find((x) => x.key === k);
                       if (!def) return null;
-                      const t = PLACEMENT_BUCKETS.reduce((acc, b) => {
-                        const c = placement.buckets[b.key].byProduct[k];
-                        return { count: acc.count + c.count, sov: acc.sov + c.sov };
-                      }, { count: 0, sov: 0 });
+                      const t = sumProducts([k]);
                       const sel = productFilter === k;
                       return (
                         <button key={k} onClick={() => setProductFilter(sel ? "All" : k)}
-                          className="sw-focus rounded-xl px-3 py-2 text-left"
+                          className="sw-focus sw-lift rounded-xl px-3 py-2 text-left"
                           style={{
                             flex: 1, minHeight: 0,
                             background: "var(--surface)",
@@ -8595,18 +8622,12 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
               }
 
               const keys = p.rollup || [p.key];
-              const totalsForProduct = PLACEMENT_BUCKETS.reduce((acc, b) => {
-                const c = keys.reduce((s, k) => {
-                  const x = placement.buckets[b.key].byProduct[k];
-                  return { count: s.count + x.count, sov: s.sov + x.sov };
-                }, { count: 0, sov: 0 });
-                return { count: acc.count + c.count, sov: acc.sov + c.sov };
-              }, { count: 0, sov: 0 });
+              const totalsForProduct = sumProducts(keys);
               if (totalsForProduct.count === 0) return null;
               const sel = productFilter === p.key;
               return (
                 <button key={p.key} onClick={() => setProductFilter(sel ? "All" : p.key)}
-                  className="sw-focus rounded-xl p-3.5 text-left"
+                  className="sw-focus sw-lift rounded-xl p-3.5 text-left"
                   style={{ background: "var(--surface)", border: `1px solid ${sel ? "var(--primary)" : "var(--border)"}` }}>
                   <div className="flex items-baseline justify-between gap-2">
                     <span className="text-xs font-medium uppercase truncate" style={{ color: sel ? "var(--primary)" : "var(--ink-faint)", letterSpacing: "0.04em" }}>
@@ -8620,10 +8641,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
 
                   <div className="flex mt-2 rounded-full overflow-hidden" style={{ height: 5, background: "var(--surface-alt)" }}>
                     {PLACEMENT_BUCKETS.map((b) => {
-                      const c = keys.reduce((s, k) => {
-                        const x = placement.buckets[b.key].byProduct[k];
-                        return { count: s.count + x.count, sov: s.sov + x.sov };
-                      }, { count: 0, sov: 0 });
+                      const c = sumProducts(keys, b.key);
                       if (!c.count) return null;
                       return (
                         <div key={b.key} title={`${b.label}: ${c.count} · ${fmtGBP(c.sov)}`}
@@ -8633,10 +8651,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                   </div>
                   <div className="flex flex-col gap-0.5 mt-1.5">
                     {PLACEMENT_BUCKETS.map((b) => {
-                      const c = keys.reduce((s, k) => {
-                        const x = placement.buckets[b.key].byProduct[k];
-                        return { count: s.count + x.count, sov: s.sov + x.sov };
-                      }, { count: 0, sov: 0 });
+                      const c = sumProducts(keys, b.key);
                       if (!c.count) return null;
                       return (
                         <div key={b.key} className="flex items-center gap-1.5">
@@ -8651,6 +8666,26 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                 </button>
               );
             })}
+          </div>
+
+          {/* Placement states — 2×2, scaled down to sit beside the products */}
+          <div className="sw-cols-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: "0.75rem" }}>
+            {PLACEMENT_BUCKETS.map((b) => {
+              const d = placement.buckets[b.key];
+              const active = placementView === b.key;
+              return (
+                <button key={b.key}
+                  onClick={() => setPlacementView(active ? "to_be_placed" : b.key)}
+                  className="sw-focus sw-lift rounded-xl text-left"
+                  style={{ padding: "10px 12px", background: "var(--surface)", border: `1px solid ${active ? b.tone : "var(--border)"}` }}>
+                  <div className="font-medium uppercase" style={{ fontSize: 10.5, color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{b.label}</div>
+                  <div className="sw-display" style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.025em", color: b.tone }}>{d.count}</div>
+                  <div className="sw-mono" style={{ fontSize: 11, color: "var(--ink-soft)" }}>{fmtGBP(d.sov)}</div>
+                </button>
+              );
+            })}
+          </div>
+
           </div>
 
           <p className="text-xs mt-2 px-1" style={{ color: "var(--ink-faint)" }}>
@@ -8736,8 +8771,8 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                 title="Orders where the NetSuite date is more than 89 days ago"
                 className="sw-focus px-2 text-xs whitespace-nowrap"
                 style={agedOnly
-                  ? { background: "var(--red)", color: "#fff", fontWeight: 600, height: "100%" }
-                  : { background: "transparent", color: unplacedAged ? "var(--red)" : "var(--ink-faint)", height: "100%" }}>
+                  ? { background: "var(--red)", color: "#fff", fontWeight: 600, height: "100%", transition: "background .15s ease, color .15s ease" }
+                  : { background: "transparent", color: unplacedAged ? "var(--red)" : "var(--ink-faint)", height: "100%", transition: "background .15s ease, color .15s ease" }}>
                 90+ days{unplacedAged ? <b style={{ fontWeight: 700 }}> ({unplacedAged})</b> : ""}
               </button>
               <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
@@ -8745,8 +8780,8 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                 title="Orders flagged as dirty on the Lilac Box"
                 className="sw-focus px-2 text-xs whitespace-nowrap"
                 style={dirtyOnly
-                  ? { background: "var(--amber)", color: "#fff", fontWeight: 600, height: "100%" }
-                  : { background: "transparent", color: dirtyCountUnplaced ? "var(--amber)" : "var(--ink-faint)", height: "100%" }}>
+                  ? { background: "var(--amber)", color: "#fff", fontWeight: 600, height: "100%", transition: "background .15s ease, color .15s ease" }
+                  : { background: "transparent", color: dirtyCountUnplaced ? "var(--amber)" : "var(--ink-faint)", height: "100%", transition: "background .15s ease, color .15s ease" }}>
                 Dirty{dirtyCountUnplaced ? <b style={{ fontWeight: 700 }}> ({dirtyCountUnplaced})</b> : ""}
               </button>
             </div>
@@ -8814,7 +8849,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                         <span className="sw-mono ml-auto shrink-0" style={{ fontSize: 13.5, fontWeight: 600 }}>{r.total}</span>
                       </div>
                       <div className="rounded-full mt-1" style={{ height: 5, background: "var(--surface-alt)" }}>
-                        <div className="rounded-full" style={{ width: `${(r.total / max) * 100}%`, height: "100%", background: "var(--primary)" }} />
+                        <div className="rounded-full sw-bar-anim" style={{ width: `${(r.total / max) * 100}%`, height: "100%", background: "var(--primary)" }} />
                       </div>
                     </button>
                   );
@@ -8835,8 +8870,8 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                       </div>
                       <div className="flex items-center gap-1.5 mt-1">
                         <div className="rounded-full flex-1" style={{ height: 5, background: "var(--surface-alt)", overflow: "hidden", display: "flex" }}>
-                          <div style={{ width: `${(r.done / max) * 100}%`, background: "var(--green)" }} />
-                          <div style={{ width: `${(r.open / max) * 100}%`, background: "var(--blue)" }} />
+                          <div className="sw-bar-anim" style={{ width: `${(r.done / max) * 100}%`, background: "var(--green)" }} />
+                          <div className="sw-bar-anim" style={{ width: `${(r.open / max) * 100}%`, background: "var(--blue)" }} />
                         </div>
                         <span className="text-xs shrink-0" style={{ color: "var(--ink-faint)", fontSize: 10.5 }}>
                           {r.open} open · {r.done} done
@@ -8858,7 +8893,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         {/* Unplaced — the NetSuite sheet plus Lilac boxes not yet picked up */}
         {view === "unplaced" ? (
         <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <table className="w-full text-sm sw-orders" style={{ tableLayout: "fixed" }}>
+          <table className="w-full text-sm sw-orders sw-anim-rows" style={{ tableLayout: "fixed" }}>
             <colgroup>
               <col style={{ width: "21%" }} />
               <col style={{ width: "13%" }} />
@@ -8879,7 +8914,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
             </thead>
             <tbody>
               {unplacedFiltered.map((r) => (
-                <tr key={r.id} style={{ borderTop: "1px solid var(--border)" }}>
+                <tr key={r.id} style={{ borderTop: "1px solid var(--border)", background: r.kind === "lilac" ? "var(--primary-soft)" : undefined }}>
                   <td className="px-3 py-2">
                     <div className="font-medium text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>
                       {r.kind === "lilac" && (
@@ -8926,8 +8961,33 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                       );
                     })()}
                   </td>
-                  <td className="px-3 py-2 text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>
-                    {r.agent ? r.agent : (
+                  <td className="px-2 py-2 text-xs" style={{ lineHeight: 1.3 }}>
+                    {r.kind === "lilac" && canAllocate ? (
+                      /* Not in NetSuite yet, so allocation happens here */
+                      <select className="sw-input sw-focus" style={{ height: 30, fontSize: 11.5 }}
+                        value={r.agent || ""}
+                        disabled={busyId === r.order.id}
+                        onChange={async (e) => {
+                          setBusyId(r.order.id);
+                          const person = team.find((t) => t.full_name === e.target.value) || null;
+                          await onAllocate(r.order.id, person, e.target.value);
+                          setBusyId(null);
+                        }}>
+                        <option value="">Unallocated</option>
+                        {team.map((t) => <option key={t.id} value={t.full_name}>{t.full_name}</option>)}
+                        {r.agent && !team.some((t) => t.full_name === r.agent) && (
+                          <option value={r.agent}>{r.agent}</option>
+                        )}
+                      </select>
+                    ) : r.agent ? (
+                      /* NetSuite owns this allocation — read only here */
+                      <span className="sw-clamp2" title={r.kind === "netsuite" ? "Allocated in NetSuite — change it there" : undefined}>
+                        {r.agent}
+                        {r.kind === "netsuite" && (
+                          <Lock size={10} className="inline ml-1" style={{ color: "var(--ink-faint)", verticalAlign: -1 }} />
+                        )}
+                      </span>
+                    ) : (
                       <span className="inline-block rounded px-1.5 py-0.5"
                         style={{ fontSize: 10, fontWeight: 700, color: "var(--amber)", background: "var(--amber-soft)" }}>
                         UNALLOCATED
@@ -8954,7 +9014,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         </div>
         ) : (
         <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <table className="w-full text-sm sw-orders" style={{ tableLayout: "fixed" }}>
+          <table className="w-full text-sm sw-orders sw-anim-rows" style={{ tableLayout: "fixed" }}>
             <colgroup>
               <col style={{ width: "19%" }} />
               <col style={{ width: "11%" }} />
@@ -8979,8 +9039,9 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
             <tbody>
               {filtered.map((o) => {
                 const alloc = allocationOf(o);
+                const isLilac = /lilac/i.test(statusOf(o));
                 return (
-                <tr key={o.id} style={{ borderTop: "1px solid var(--border)" }}>
+                <tr key={o.id} style={{ borderTop: "1px solid var(--border)", background: isLilac ? "var(--primary-soft)" : undefined }}>
                   <td className="px-3 py-2">
                     <button onClick={() => onOpenOrder(o)} className="sw-focus text-left">
                       <div className="font-medium text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>{o.company_name}</div>
@@ -8990,26 +9051,29 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                   <td className="px-3 py-2 text-xs sw-clamp2" style={{ color: "var(--ink-soft)", lineHeight: 1.3 }}>{o.closer_name || "—"}</td>
 
                   <td className="px-2 py-2">
-                    {canAllocate ? (
-                      <>
-                        <select className="sw-input sw-focus" style={{ height: 32, fontSize: 12 }}
-                          value={alloc.name || ""}
-                          disabled={busyId === o.id}
-                          onChange={async (e) => {
-                            setBusyId(o.id);
-                            const person = team.find((t) => t.full_name === e.target.value) || null;
-                            await onAllocate(o.id, person, e.target.value);
-                            setBusyId(null);
-                          }}>
-                          <option value="">Unallocated</option>
-                          {team.map((t) => <option key={t.id} value={t.full_name}>{t.full_name}</option>)}
-                          {alloc.name && !team.some((t) => t.full_name === alloc.name) && (
-                            <option value={alloc.name}>{alloc.name}</option>
-                          )}
-                        </select>
-                      </>
+                    {canAllocate && !alloc.fromNetsuite ? (
+                      <select className="sw-input sw-focus" style={{ height: 32, fontSize: 12 }}
+                        value={alloc.name || ""}
+                        disabled={busyId === o.id}
+                        onChange={async (e) => {
+                          setBusyId(o.id);
+                          const person = team.find((t) => t.full_name === e.target.value) || null;
+                          await onAllocate(o.id, person, e.target.value);
+                          setBusyId(null);
+                        }}>
+                        <option value="">Unallocated</option>
+                        {team.map((t) => <option key={t.id} value={t.full_name}>{t.full_name}</option>)}
+                        {alloc.name && !team.some((t) => t.full_name === alloc.name) && (
+                          <option value={alloc.name}>{alloc.name}</option>
+                        )}
+                      </select>
                     ) : (
-                      <span className="text-xs">{alloc.name || <span style={{ color: "var(--ink-faint)" }}>Unallocated</span>}</span>
+                      <span className="text-xs" title={alloc.fromNetsuite ? "Allocated in NetSuite — change it there" : undefined}>
+                        {alloc.name || <span style={{ color: "var(--ink-faint)" }}>Unallocated</span>}
+                        {alloc.fromNetsuite && (
+                          <Lock size={10} className="inline ml-1" style={{ color: "var(--ink-faint)", verticalAlign: -1 }} />
+                        )}
+                      </span>
                     )}
                   </td>
 
