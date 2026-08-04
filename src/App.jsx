@@ -7563,12 +7563,6 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
     return Array.from(s).sort();
   }, [inPeriod, statusOf]);
 
-  const statusOptions = useMemo(() => {
-    const s = new Set();
-    inPeriod.forEach((o) => { const st = statusOf(o); if (st) s.add(st); });
-    return Array.from(s).sort();
-  }, [inPeriod, statusOf]);
-
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return inPeriod.filter((o) => {
