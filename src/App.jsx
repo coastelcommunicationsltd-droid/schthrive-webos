@@ -6,7 +6,7 @@ import {
   Loader2, Users, Eye, EyeOff, ArrowLeft, LogIn, KeyRound, Palette, MapPin,
   BarChart3, CalendarDays, Target, Headphones, Phone,
   ChevronDown, ClipboardList, LayoutDashboard, Settings as SettingsIcon,
-  PanelLeftClose, PanelLeftOpen, History, FileText, Inbox, Menu,
+  History, FileText, Inbox, Menu,
 } from "lucide-react";
 
 /* ====================================================================== */
@@ -154,18 +154,12 @@ const STYLE = `
   .sw-hero-num { font-size: 26px !important; }
 }
 
-/* Slide-over sidebar on small screens */
+/* The top bar collapses to a hamburger below 900px */
 @media (max-width: 900px) {
-  .sw-sidebar {
-    position: fixed !important; top: 0; left: 0; z-index: 60;
-    transform: translateX(-100%); transition: transform .2s ease;
-    box-shadow: 0 0 40px rgba(0,0,0,0.18);
-  }
-  .sw-sidebar.sw-open { transform: translateX(0); }
-  .sw-scrim { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 55; }
   .sw-menu-btn { display: inline-flex !important; }
 }
 .sw-menu-btn { display: none; }
+.sw-menu-panel { max-height: 70vh; overflow-y: auto; }
 `;
 
 /* ---------------------------------------------------------------------- */
@@ -1943,7 +1937,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "300px minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }}>
 
         {/* LEFT */}
-        <div className="sw-sticky-col flex flex-col gap-3 pr-0.5" style={{ position: "sticky", top: 12, maxHeight: "calc(100vh - 24px)", overflowY: "auto" }}>
+        <div className="sw-sticky-col flex flex-col gap-3 pr-0.5" style={{ position: "sticky", top: 66, maxHeight: "calc(100vh - 78px)", overflowY: "auto" }}>
 
           {/* The ranking is the agent picker */}
           <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
@@ -6393,7 +6387,7 @@ function ForecastView({ netsuite, profile, staff }) {
           </div>
 
           {/* Charts, pinned beside the table */}
-          <div className="sw-sticky-col flex flex-col gap-3 pr-0.5" style={{ position: "sticky", top: 12, maxHeight: "calc(100vh - 24px)", overflowY: "auto" }}>
+          <div className="sw-sticky-col flex flex-col gap-3 pr-0.5" style={{ position: "sticky", top: 66, maxHeight: "calc(100vh - 78px)", overflowY: "auto" }}>
             <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
               <div className="flex items-baseline justify-between mb-2">
                 <span className="sw-display font-bold text-xs" style={{ color: "var(--ink-soft)" }}>GP BY PILLAR</span>
@@ -7320,141 +7314,200 @@ function DistributionView({ orders, netsuite, staff }) {
 }
 
 /* ---------------------------------------------------------------------- */
-/*  SIDEBAR NAVIGATION                                                     */
+/*  TOP BAR NAVIGATION                                                     */
 /* ---------------------------------------------------------------------- */
 
-const SIDEBAR_KEY = "sw-sidebar-pinned";
-
-function SidebarItem({ icon: Icon, label, active, collapsed, badge, indent, onClick, href }) {
-  const content = (
-    <>
-      <Icon size={16} className="shrink-0" />
-      {!collapsed && <span className="text-sm font-semibold truncate flex-1 text-left">{label}</span>}
-      {!collapsed && badge > 0 && (
-        <span className="rounded-full px-1.5 text-xs font-bold shrink-0" style={{ background: "var(--amber)", color: "#fff" }}>{badge}</span>
-      )}
-    </>
-  );
+function NavLink({ icon: Icon, label, active, badge, onClick, href }) {
   const style = {
     background: active ? "var(--primary)" : "transparent",
     color: active ? "#fff" : "var(--ink-soft)",
-    paddingLeft: indent && !collapsed ? 30 : 12,
+    height: 34,
   };
-  const cls = "sw-focus w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition-colors";
-  if (href) {
-    return <a href={href} onClick={onClick} title={collapsed ? label : undefined} className={cls} style={style}>{content}</a>;
-  }
-  return <button onClick={onClick} title={collapsed ? label : undefined} className={cls} style={style}>{content}</button>;
+  const cls = "sw-focus flex items-center gap-1.5 px-3 rounded-lg text-sm font-medium whitespace-nowrap";
+  const body = (
+    <>
+      {Icon && <Icon size={14} className="shrink-0" />}
+      {label}
+      {badge > 0 && (
+        <span className="rounded-full px-1.5 text-xs font-bold" style={{ background: "var(--amber)", color: "#fff" }}>{badge}</span>
+      )}
+    </>
+  );
+  if (href) return <a href={href} onClick={onClick} className={cls} style={style}>{body}</a>;
+  return <button onClick={onClick} className={cls} style={style}>{body}</button>;
 }
 
-function SidebarSection({ icon: Icon, label, collapsed, open, onToggle, childActive, children }) {
+/* A nav group that opens on click. Closes when you pick something, click
+   away, or press Escape. */
+function NavMenu({ icon: Icon, label, childActive, badge, items }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const away = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const esc = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", esc); };
+  }, [open]);
+
   return (
-    <div>
-      <button onClick={onToggle} title={collapsed ? label : undefined}
-        className="sw-focus w-full flex items-center gap-2.5 px-3 py-2 rounded-xl"
-        style={{ color: childActive ? "var(--primary)" : "var(--ink-soft)" }}>
-        <Icon size={16} className="shrink-0" />
-        {!collapsed && <span className="text-sm font-semibold truncate flex-1 text-left">{label}</span>}
-        {!collapsed && <ChevronDown size={14} className="shrink-0" style={{ transform: open ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform .15s" }} />}
+    <div ref={ref} style={{ position: "relative" }}>
+      <button onClick={() => setOpen((v) => !v)}
+        className="sw-focus flex items-center gap-1.5 px-3 rounded-lg text-sm font-medium whitespace-nowrap"
+        style={{
+          height: 34,
+          background: childActive ? "var(--primary-soft)" : "transparent",
+          color: childActive ? "var(--primary)" : "var(--ink-soft)",
+        }}>
+        {Icon && <Icon size={14} className="shrink-0" />}
+        {label}
+        {badge > 0 && (
+          <span className="rounded-full px-1.5 text-xs font-bold" style={{ background: "var(--amber)", color: "#fff" }}>{badge}</span>
+        )}
+        <ChevronDown size={13} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .15s", opacity: 0.6 }} />
       </button>
-      {(open || collapsed) && <div className={collapsed ? "" : "flex flex-col gap-0.5 mt-0.5"}>{children}</div>}
+
+      {open && (
+        <div className="rounded-xl overflow-hidden"
+          style={{
+            position: "absolute", top: 40, left: 0, minWidth: 210, zIndex: 60,
+            background: "var(--surface)", border: "1px solid var(--border)",
+            boxShadow: "0 8px 28px rgba(29,26,46,0.12)",
+          }}>
+          {items.map((it) => (
+            it.href ? (
+              <a key={it.label} href={it.href} onClick={() => { setOpen(false); it.onClick && it.onClick(); }}
+                className="sw-focus flex items-center gap-2 px-3 py-2 text-sm"
+                style={{ color: "var(--ink-soft)" }}>
+                {it.icon && <it.icon size={14} />} {it.label}
+              </a>
+            ) : (
+              <button key={it.label} onClick={() => { setOpen(false); it.onClick(); }}
+                className="sw-focus w-full flex items-center gap-2 px-3 py-2 text-sm text-left"
+                style={{
+                  background: it.active ? "var(--primary-soft)" : "transparent",
+                  color: it.active ? "var(--primary)" : "var(--ink-soft)",
+                  fontWeight: it.active ? 600 : 400,
+                }}>
+                {it.icon && <it.icon size={14} />} {it.label}
+                {it.badge > 0 && (
+                  <span className="ml-auto rounded-full px-1.5 text-xs font-bold" style={{ background: "var(--amber)", color: "#fff" }}>{it.badge}</span>
+                )}
+              </button>
+            )
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSignOut, mobileOpen, onCloseMobile }) {
-  const [collapsed, setCollapsed] = useState(() => {
-    try { return localStorage.getItem(SIDEBAR_KEY) === "collapsed"; } catch (_) { return false; }
-  });
-  const [mainOpen, setMainOpen] = useState(true);
-  // Closed by default, but a section opens itself if you're already on one
-  // of its pages — refreshing shouldn't hide where you are.
-  const [submitOpen, setSubmitOpen] = useState(() => ["new", "landscapes", "quote"].includes(tab));
-  const [dashOpen, setDashOpen] = useState(() => ["breakdown", "distribution"].includes(tab));
-  const [settingsOpen, setSettingsOpen] = useState(() => ["admin", "statuses"].includes(tab));
+function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSignOut, mobileOpen, setMobileOpen }) {
   const isOffice = profile?.role === "office";
+  const go = (t) => () => { setTab(t); setMobileOpen(false); };
 
-  // On mobile the sidebar is a slide-over, so choosing something closes it
-  const go = (fn) => () => { fn(); if (onCloseMobile) onCloseMobile(); };
+  const dashboards = [
+    { label: "Day by Day", icon: CalendarDays, active: tab === "daybyday", onClick: go("daybyday") },
+    { label: "Forecasting", icon: TrendingUp, active: tab === "forecast", onClick: go("forecast") },
+    { label: "Sales Breakdown", icon: BarChart3, active: tab === "breakdown", onClick: go("breakdown") },
+    { label: "Sales Distribution", icon: Users, active: tab === "distribution", onClick: go("distribution") },
+    { label: "TV Mode", icon: Radio, href: "#tv", onClick: () => setTimeout(() => window.location.reload(), 0) },
+  ];
+  const submissions = [
+    { label: "Submit Lilac Box", icon: Plus, active: tab === "new", onClick: go("new") },
+    { label: "Landscapes", icon: MapPin, active: tab === "landscapes", onClick: go("landscapes") },
+    { label: "Quote Builder", icon: FileText, active: tab === "quote", onClick: go("quote") },
+  ];
+  const settings = [
+    { label: "Admin", icon: Users, active: tab === "admin", onClick: go("admin") },
+    { label: "Settings", icon: Palette, active: tab === "statuses", badge: newStatusCount, onClick: go("statuses") },
+    { label: "Change Password", icon: KeyRound, onClick: () => { onChangePassword(); setMobileOpen(false); } },
+  ];
 
-  const toggleCollapsed = () => {
-    setCollapsed((c) => {
-      const next = !c;
-      try { localStorage.setItem(SIDEBAR_KEY, next ? "collapsed" : "pinned"); } catch (_) {}
-      return next;
-    });
-  };
-
-  const mainActive = ["dashboard", "forecast", "daybyday"].includes(tab);
-  const submitActive = ["new", "landscapes", "quote"].includes(tab);
-  const dashboardsActive = ["breakdown", "distribution"].includes(tab);
-  const settingsActive = ["admin", "statuses"].includes(tab);
+  const dashActive = ["daybyday", "forecast", "breakdown", "distribution"].includes(tab);
+  const subActive = ["new", "landscapes", "quote"].includes(tab);
+  const setActive = ["admin", "statuses"].includes(tab);
 
   return (
-    <div className={`sw-sidebar shrink-0 flex flex-col ${mobileOpen ? "sw-open" : ""}`}
-      style={{ width: collapsed ? 64 : 226, borderRight: "1px solid var(--border)", background: "var(--surface)", height: "100vh", position: "sticky", top: 0, transition: "width .15s" }}>
-      <div className="flex items-center gap-2 px-3 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
-        <Logo height={28} />
-        {!collapsed && (
-          <div className="min-w-0">
-            <div className="sw-display font-bold text-sm leading-none truncate">SchThrive WebOS</div>
-            <div className="text-xs flex items-center gap-1" style={{ color: "var(--ink-faint)" }}>
-              <Radio size={8} className="sw-live-dot" style={{ color: "var(--green)" }} /> Live
+    <header style={{ position: "sticky", top: 0, zIndex: 50, background: "var(--surface)", borderBottom: "1px solid var(--border)" }}>
+      <div className="flex items-center gap-2 px-4" style={{ height: 54 }}>
+
+        <div className="flex items-center gap-2.5 shrink-0">
+          <Logo height={26} />
+          <span className="sw-display sw-hide-sm" style={{ fontWeight: 600, fontSize: 14, letterSpacing: "-0.015em" }}>SchThrive</span>
+        </div>
+
+        <span className="sw-hide-sm" style={{ width: 1, height: 22, background: "var(--border)", marginLeft: 6, marginRight: 2 }} />
+
+        {/* Desktop nav */}
+        <nav className="sw-hide-sm flex items-center gap-1">
+          <NavLink icon={ClipboardList} label="Claimed" active={tab === "dashboard"} onClick={go("dashboard")} />
+          <NavMenu icon={LayoutDashboard} label="Dashboards" childActive={dashActive} items={dashboards} />
+          <NavMenu icon={Inbox} label="Submission Boxes" childActive={subActive} items={submissions} />
+          <NavLink icon={Headphones} label="Sales Coach" active={tab === "coach"} onClick={go("coach")} />
+          {isOffice && (
+            <NavMenu icon={SettingsIcon} label="Settings" childActive={setActive} badge={newStatusCount} items={settings} />
+          )}
+        </nav>
+
+        <div className="ml-auto flex items-center gap-2 shrink-0">
+          <span className="sw-hide-sm text-xs" style={{ color: "var(--ink-faint)" }}>
+            {profile?.role === "office" ? "Office" : profile?.role === "2ic" ? "2IC" : "Agent"}
+            {profile?.team ? ` · ${profile.team}` : ""}
+          </span>
+          <button onClick={onSignOut} title="Sign out" className="sw-focus p-1.5 rounded-lg" style={{ color: "var(--ink-faint)" }}>
+            <LogOut size={16} />
+          </button>
+          {/* Mobile toggle */}
+          <button onClick={() => setMobileOpen(!mobileOpen)} className="sw-menu-btn sw-focus p-1.5 rounded-lg"
+            style={{ color: "var(--ink-soft)" }} aria-label="Menu">
+            <Menu size={18} />
+          </button>
+        </div>
+      </div>
+
+      {/* Mobile nav — everything flat, no nested menus to fight with */}
+      {mobileOpen && (
+        <div className="sw-menu-panel px-3 pb-3" style={{ borderTop: "1px solid var(--border)" }}>
+          {[
+            { heading: null, items: [{ label: "Claimed", icon: ClipboardList, active: tab === "dashboard", onClick: go("dashboard") }] },
+            { heading: "Dashboards", items: dashboards },
+            { heading: "Submission Boxes", items: submissions },
+            { heading: null, items: [{ label: "Sales Coach", icon: Headphones, active: tab === "coach", onClick: go("coach") }] },
+            ...(isOffice ? [{ heading: "Settings", items: settings }] : []),
+          ].map((group, gi) => (
+            <div key={gi} className="mt-2">
+              {group.heading && (
+                <div className="text-xs font-medium uppercase px-1 mb-1" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{group.heading}</div>
+              )}
+              {group.items.map((it) => (
+                it.href ? (
+                  <a key={it.label} href={it.href} onClick={() => { setMobileOpen(false); it.onClick && it.onClick(); }}
+                    className="sw-focus flex items-center gap-2 px-2 py-2 rounded-lg text-sm" style={{ color: "var(--ink-soft)" }}>
+                    {it.icon && <it.icon size={14} />} {it.label}
+                  </a>
+                ) : (
+                  <button key={it.label} onClick={it.onClick}
+                    className="sw-focus w-full flex items-center gap-2 px-2 py-2 rounded-lg text-sm text-left"
+                    style={{
+                      background: it.active ? "var(--primary-soft)" : "transparent",
+                      color: it.active ? "var(--primary)" : "var(--ink-soft)",
+                      fontWeight: it.active ? 600 : 400,
+                    }}>
+                    {it.icon && <it.icon size={14} />} {it.label}
+                    {it.badge > 0 && (
+                      <span className="ml-auto rounded-full px-1.5 text-xs font-bold" style={{ background: "var(--amber)", color: "#fff" }}>{it.badge}</span>
+                    )}
+                  </button>
+                )
+              ))}
             </div>
-          </div>
-        )}
-      </div>
-
-      <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-0.5">
-        <SidebarSection icon={ClipboardList} label="Main Views" collapsed={collapsed} open={mainOpen} onToggle={() => setMainOpen((o) => !o)} childActive={mainActive}>
-          <SidebarItem icon={ClipboardList} label="Claimed" collapsed={collapsed} active={tab === "dashboard"} indent onClick={go(() => setTab("dashboard"))} />
-          <SidebarItem icon={TrendingUp} label="Forecasting" collapsed={collapsed} active={tab === "forecast"} indent onClick={go(() => setTab("forecast"))} />
-          <SidebarItem icon={CalendarDays} label="Day by Day" collapsed={collapsed} active={tab === "daybyday"} indent onClick={go(() => setTab("daybyday"))} />
-        </SidebarSection>
-
-        <div className="my-1" />
-
-        <SidebarSection icon={Inbox} label="Submission Boxes" collapsed={collapsed} open={submitOpen} onToggle={() => setSubmitOpen((o) => !o)} childActive={submitActive}>
-          <SidebarItem icon={Plus} label="Submit Lilac Box" collapsed={collapsed} active={tab === "new"} indent onClick={go(() => setTab("new"))} />
-          <SidebarItem icon={MapPin} label="Landscapes" collapsed={collapsed} active={tab === "landscapes"} indent onClick={go(() => setTab("landscapes"))} />
-          <SidebarItem icon={FileText} label="Quote Builder" collapsed={collapsed} active={tab === "quote"} indent onClick={go(() => setTab("quote"))} />
-        </SidebarSection>
-
-        <div className="my-1" />
-
-        <SidebarSection icon={LayoutDashboard} label="Dashboards" collapsed={collapsed} open={dashOpen} onToggle={() => setDashOpen((o) => !o)} childActive={dashboardsActive}>
-          <SidebarItem icon={BarChart3} label="Sales Breakdown" collapsed={collapsed} active={tab === "breakdown"} indent onClick={go(() => setTab("breakdown"))} />
-          <SidebarItem icon={Users} label="Sales Distribution" collapsed={collapsed} active={tab === "distribution"} indent onClick={go(() => setTab("distribution"))} />
-          <SidebarItem icon={Radio} label="TV Mode" collapsed={collapsed} active={false} indent href="#tv" onClick={() => setTimeout(() => window.location.reload(), 0)} />
-        </SidebarSection>
-
-        <div className="my-1" />
-
-        <SidebarItem icon={Headphones} label="Sales Coach" collapsed={collapsed} active={tab === "coach"} onClick={go(() => setTab("coach"))} />
-
-        {isOffice && (
-          <>
-            <div className="my-1" />
-            <SidebarSection icon={SettingsIcon} label="Settings" collapsed={collapsed} open={settingsOpen} onToggle={() => setSettingsOpen((o) => !o)} childActive={settingsActive}>
-              <SidebarItem icon={Users} label="Admin" collapsed={collapsed} active={tab === "admin"} indent onClick={go(() => setTab("admin"))} />
-              <SidebarItem icon={Palette} label="Settings" collapsed={collapsed} active={tab === "statuses"} indent badge={newStatusCount} onClick={go(() => setTab("statuses"))} />
-              <SidebarItem icon={KeyRound} label="Change Password" collapsed={collapsed} active={false} indent onClick={onChangePassword} />
-            </SidebarSection>
-          </>
-        )}
-      </div>
-
-      <div className="p-2" style={{ borderTop: "1px solid var(--border)" }}>
-        {!collapsed && profile && (
-          <div className="px-2 pb-2 text-xs truncate" style={{ color: "var(--ink-faint)" }}>
-            {profile.role === "office" ? "Office" : profile.role === "2ic" ? "2IC" : "Agent"}{profile.team ? ` · ${profile.team}` : ""}
-          </div>
-        )}
-        <SidebarItem icon={KeyRound} label="Change Password" collapsed={collapsed} active={false} onClick={onChangePassword} />
-        <SidebarItem icon={LogOut} label="Sign Out" collapsed={collapsed} active={false} onClick={onSignOut} />
-        <SidebarItem icon={collapsed ? PanelLeftOpen : PanelLeftClose} label={collapsed ? "Expand" : "Collapse"} collapsed={collapsed} active={false} onClick={toggleCollapsed} />
-      </div>
-    </div>
+          ))}
+        </div>
+      )}
+    </header>
   );
 }
 
@@ -7934,26 +7987,14 @@ export default function App() {
   return (
     <StatusCfgContext.Provider value={statusCfgMap}>
     <StaffContext.Provider value={staffValue}>
-    <div className="sw-root" style={{ display: "flex", minHeight: "100vh" }}>
+    <div className="sw-root" style={{ minHeight: "100vh" }}>
       <style>{STYLE}</style>
 
-      {menuOpen && <div className="sw-scrim" onClick={() => setMenuOpen(false)} />}
-      <Sidebar tab={tab} setTab={setTab} profile={profile} newStatusCount={newStatusCount}
+      <TopBar tab={tab} setTab={setTab} profile={profile} newStatusCount={newStatusCount}
         onChangePassword={() => { setChangingPassword(true); setMenuOpen(false); }} onSignOut={signOut}
-        mobileOpen={menuOpen} onCloseMobile={() => setMenuOpen(false)} />
+        mobileOpen={menuOpen} setMobileOpen={setMenuOpen} />
 
-      <div style={{ flex: 1, minWidth: 0 }}>
-        {/* Mobile header — the only way back to navigation on a phone */}
-        <div className="sw-menu-btn items-center gap-2 px-3 py-2.5"
-          style={{ borderBottom: "1px solid var(--border)", background: "var(--surface)", position: "sticky", top: 0, zIndex: 40 }}>
-          <button onClick={() => setMenuOpen(true)} className="sw-focus p-1.5 rounded-lg" style={{ color: "var(--ink-soft)" }} aria-label="Open menu">
-            <Menu size={18} />
-          </button>
-          <Logo height={22} />
-          <span className="text-xs ml-auto" style={{ color: "var(--ink-faint)" }}>
-            {profile?.role === "office" ? "Office" : profile?.role === "2ic" ? "2IC" : "Agent"}
-          </span>
-        </div>
+      <div style={{ minWidth: 0 }}>
       <main className={`sw-main p-6 mx-auto ${["breakdown", "daybyday", "forecast", "landscapes", "dashboard", "distribution", "admin", "statuses"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
         {submitted && (
           <div className="sw-rise rounded-2xl p-4 mb-5 flex items-center justify-between gap-4" style={{ background: "var(--green-soft)", border: "1px solid var(--green)" }}>
