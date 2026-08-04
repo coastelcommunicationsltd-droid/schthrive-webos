@@ -57,9 +57,13 @@ const useStatusCfg = () => React.useContext(StatusCfgContext);
 // the alias back to the real person so figures land on the right agent.
 const AliasContext = React.createContext({});
 const useAliases = () => React.useContext(AliasContext);
+// Names arrive from three systems with inconsistent spacing, so every
+// lookup goes through the same key: trimmed, single-spaced, lowercased.
+const nameKey = (n) => String(n || "").trim().replace(/\s+/g, " ").toLowerCase();
+
 const resolveName = (name, aliases) => {
   if (!name) return name;
-  const hit = aliases[String(name).trim().toLowerCase()];
+  const hit = aliases[nameKey(name)];
   return hit || name;
 };
 
@@ -2092,7 +2096,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                 style={ngpMode === k && focusFilter === "All"
                   ? { background: "var(--surface-alt)", color: "var(--ink)", fontWeight: 600, height: "100%" }
                   : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
-                {lbl}{n ? ` ${n}` : ""}
+                {lbl}{n ? <b style={{ fontWeight: 700 }}> ({n})</b> : ""}
               </button>
             ))}
           </div>
@@ -2104,7 +2108,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
               style={nsovMode === "only" && focusFilter === "All"
                 ? { background: "var(--amber-soft)", color: "var(--amber)", fontWeight: 600, height: "100%" }
                 : { background: "transparent", color: nsovCount ? "var(--ink-soft)" : "var(--ink-faint)", height: "100%" }}>
-              Non SOV{nsovCount ? ` ${nsovCount}` : ""}
+              Non SOV{nsovCount ? <b style={{ fontWeight: 700 }}> ({nsovCount})</b> : ""}
             </button>
             <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
             <button onClick={() => setFocusFilter(focusFilter === "attention" ? "All" : "attention")}
@@ -2113,7 +2117,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
               style={focusFilter === "attention"
                 ? { background: "var(--amber-soft)", color: "var(--amber)", fontWeight: 600, height: "100%" }
                 : { background: "transparent", color: attentionCount ? "var(--ink-soft)" : "var(--ink-faint)", height: "100%" }}>
-              Need Actions{attentionCount ? ` ${attentionCount}` : ""}
+              Need Actions{attentionCount ? <b style={{ fontWeight: 700 }}> ({attentionCount})</b> : ""}
             </button>
             <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
             <button onClick={() => setFocusFilter(focusFilter === "aged" ? "All" : "aged")}
@@ -2122,7 +2126,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
               style={focusFilter === "aged"
                 ? { background: "var(--red-soft)", color: "var(--red)", fontWeight: 600, height: "100%" }
                 : { background: "transparent", color: agedCount ? "var(--ink-soft)" : "var(--ink-faint)", height: "100%" }}>
-              90d+{agedCount ? ` ${agedCount}` : ""}
+              90d+{agedCount ? <b style={{ fontWeight: 700 }}> ({agedCount})</b> : ""}
             </button>
           </div>
 
@@ -3851,7 +3855,27 @@ const DBD_GROUPS = [
   { key: "mobile",       label: "Mobile",       accent: "#8659CE", tags: ["Mobile"] },
 ];
 
-function DayByDayView({ orders }) {
+function DayByDayView({ orders, staff }) {
+  const aliases = useAliases();
+
+  // Resolve the team from the staff record, not the team stored on the
+  // order — that was written at submission time and can be stale or blank.
+  const teamByName = useMemo(() => {
+    const m = {};
+    (staff || []).forEach((s) => {
+      if (!s.full_name || !s.team) return;
+      m[nameKey(s.full_name)] = s.team;
+      if (s.alt_name) m[nameKey(s.alt_name)] = s.team;
+    });
+    return m;
+  }, [staff]);
+
+  const teamOf = useCallback((name, fallback) => {
+    if (!name) return fallback || "Unassigned";
+    const canon = resolveName(name, aliases);
+    return teamByName[nameKey(canon)] || teamByName[nameKey(name)] || fallback || "Unassigned";
+  }, [teamByName, aliases]);
+
   const now = new Date();
   const wkStart = weekStart(now);
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -3871,10 +3895,10 @@ function DayByDayView({ orders }) {
   const filtered = useMemo(() => (orders || []).filter((o) => {
     if (o.removed_at || !o.submission_date) return false;
     if (new Date(o.submission_date) < monthStart) return false;
-    if (team !== "All" && o.closer_team !== team && o.lead_gen_team !== team) return false;
+    if (team !== "All" && teamOf(o.closer_name, o.closer_team) !== team && teamOf(o.lead_gen_name, o.lead_gen_team) !== team) return false;
     if (agent !== "All" && o.closer_name !== agent && o.lead_gen_name !== agent) return false;
     return true;
-  }), [orders, team, agent, monthStart]);
+  }), [orders, team, agent, monthStart, teamOf]);
 
   const tagsOf = (o) => String(o.item_name_grouped || o.product_group_2 || "")
     .split(/\s*\+\s*/).map((t) => t.trim()).filter(Boolean);
@@ -3905,7 +3929,7 @@ function DayByDayView({ orders }) {
     };
 
     filtered.forEach((o) => {
-      const t = ensure(o.closer_team || "Unassigned");
+      const t = ensure(teamOf(o.closer_name, o.closer_team));
       const d = o.submission_date;
 
       // Each side claims their own share; anything claimed above the deal's
@@ -3915,7 +3939,7 @@ function DayByDayView({ orders }) {
       const leadGenGp = num(o.lead_gen_share);
       addTo(t.gp, d, closerGp);
       if (o.lead_gen_name && leadGenGp) {
-        const lt = ensure(o.lead_gen_team || "Unassigned");
+        const lt = ensure(teamOf(o.lead_gen_name, o.lead_gen_team));
         addTo(lt.gp, d, leadGenGp);
       }
       const overlap = (closerGp + leadGenGp) - dealGp;
@@ -3940,7 +3964,7 @@ function DayByDayView({ orders }) {
     const list = Object.keys(teams).map((k) => teams[k]).sort((a, b) => b.gp.month - a.gp.month);
     list.dc = dcBucket;
     return list;
-  }, [filtered, addTo, product]);
+  }, [filtered, addTo, product, teamOf]);
 
   const totals = useMemo(() => {
     const out = { gp: blank(), totalSov: blank(), groups: {}, subs: {}, claimed: blank() };
@@ -7037,9 +7061,9 @@ function DistributionView({ orders, netsuite, staff }) {
   const teamByName = useMemo(() => {
     const m = {};
     (staff || []).forEach((s) => {
-      if (!s.full_name) return;
-      if (s.team) m[s.full_name.toLowerCase()] = s.team;
-      if (s.alt_name && s.team) m[String(s.alt_name).trim().toLowerCase()] = s.team;
+      if (!s.full_name || !s.team) return;
+      m[nameKey(s.full_name)] = s.team;
+      if (s.alt_name) m[nameKey(s.alt_name)] = s.team;
     });
     return m;
   }, [staff]);
@@ -7048,7 +7072,7 @@ function DistributionView({ orders, netsuite, staff }) {
   const teamOf = useCallback((name, fallback) => {
     if (!name) return fallback || "Unassigned";
     const canon = canonName(name);
-    return teamByName[String(canon).toLowerCase()] || fallback || "Unassigned";
+    return teamByName[nameKey(canon)] || teamByName[nameKey(name)] || fallback || "Unassigned";
   }, [teamByName, canonName]);
 
   const [period, setPeriod] = useState("mtd");
@@ -7545,9 +7569,11 @@ export default function App() {
     // A second name on the staff record is the simplest fix for one person
     // with one odd spelling; the alias table handles anything more.
     staff.forEach((s) => {
-      if (s.alt_name && s.full_name) m[String(s.alt_name).trim().toLowerCase()] = s.full_name;
+      if (s.alt_name && s.full_name) m[nameKey(s.alt_name)] = s.full_name;
+      // The staff name itself, normalised — catches double spaces in the data
+      if (s.full_name) m[nameKey(s.full_name)] = s.full_name;
     });
-    aliases.forEach((a) => { if (a.alias) m[a.alias.trim().toLowerCase()] = a.staff_full_name; });
+    aliases.forEach((a) => { if (a.alias) m[nameKey(a.alias)] = a.staff_full_name; });
     return m;
   }, [aliases, staff]);
 
@@ -7948,7 +7974,7 @@ export default function App() {
         )}
         {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuiteResolved} forecasts={forecasts} staff={staff} payPlans={payPlans} onNewOrder={() => setTab("new")} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
         {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} />}
-        {tab === "daybyday" && <DayByDayView orders={orders} />}
+        {tab === "daybyday" && <DayByDayView orders={orders} staff={staff} />}
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuiteResolved} />}
         {tab === "distribution" && <DistributionView orders={orders} netsuite={netsuiteResolved} staff={staff} />}
         {tab === "forecast" && <ForecastView netsuite={netsuiteResolved} profile={profile} staff={staff} />}
