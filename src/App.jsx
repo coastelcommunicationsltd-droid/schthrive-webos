@@ -699,6 +699,17 @@ function HealthItem({ label, value, colour, hint }) {
   );
 }
 
+/* Blend from the base purple toward green as commission tiers are passed,
+   so progress reads at a glance without needing the numbers. */
+function tierBlend(step, total) {
+  if (total <= 0) return "#4C1D8F";
+  const t = Math.min(1, Math.max(0, step / total));
+  const from = [76, 29, 143];    // --primary
+  const to   = [27, 112, 56];    // --green
+  const mix = from.map((c, i) => Math.round(c + (to[i] - c) * t));
+  return `rgb(${mix[0]}, ${mix[1]}, ${mix[2]})`;
+}
+
 /* ---------------------------------------------------------------------- */
 /*  CHARTS — small SVG primitives, no chart library needed                 */
 /* ---------------------------------------------------------------------- */
@@ -2196,35 +2207,52 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
                           {fmtGBP(a.gp)}
                         </span>
                       </div>
-                      {/* GP against the pay plan's commission tiers. Each
-                          threshold is a notch on the bar; the rate they're
-                          currently earning sits at the end. No plan means
-                          nothing to measure against, so a flat red line
-                          rather than a bar implying a target that isn't set. */}
+                      {/* GP against the pay plan's tiers. The bar is split at
+                          each threshold and each passed segment shades further
+                          from purple toward green, so progress is legible
+                          without reading the numbers. Clear the top tier and
+                          the whole bar goes green. */}
                       {a.hasPlan ? (() => {
-                        // Use whichever is higher of claimed and statted, so the
-                        // bar always matches the figure shown beside the name —
-                        // an empty bar next to £8,859 reads as broken.
                         const earned = Math.max(num(a.gp), num(a.statted));
                         const top = a.tiers.length ? a.tiers[a.tiers.length - 1].gp : a.target;
-                        const exceeded = top > 0 && earned >= top;
-                        // Once past the top tier the bar is simply full
-                        const scaleMax = exceeded ? earned : Math.max(top, earned, 1);
-                        const pct = Math.min(100, (earned / scaleMax) * 100);
+                        const allHit = top > 0 && earned >= top;
+                        const scaleMax = allHit ? earned : Math.max(top, earned, 1);
+                        const n = a.tiers.length;
+
+                        // Segment boundaries: 0, each threshold, then the end
+                        const bounds = [0, ...a.tiers.map((t) => t.gp)];
+                        const segments = [];
+                        bounds.forEach((from, i) => {
+                          const to = i + 1 < bounds.length ? bounds[i + 1] : scaleMax;
+                          const filledTo = Math.min(earned, to);
+                          if (filledTo <= from) return;
+                          segments.push({
+                            left: (from / scaleMax) * 100,
+                            width: ((filledTo - from) / scaleMax) * 100,
+                            colour: allHit ? "var(--green)" : tierBlend(i, Math.max(1, n)),
+                          });
+                        });
+
                         return (
                           <div className="flex items-center gap-2 mt-1.5">
-                            <div style={{ flex: 1, height: 7, background: "var(--surface-alt)", borderRadius: 4, position: "relative" }}
+                            <div style={{ flex: 1, height: 7, background: "var(--surface-alt)", borderRadius: 4, position: "relative", overflow: "hidden" }}
                               title={`${fmtGBP(earned)} of ${fmtGBP(top || a.target)}${a.statted !== a.gp ? ` · ${fmtGBP(a.gp)} claimed, ${fmtGBP(a.statted)} statted` : ""}`}>
-                              <div style={{ width: `${pct}%`, height: "100%", background: "var(--primary)", borderRadius: 4, transition: "width .3s" }} />
-                              {!exceeded && a.tiers.map((t, ti) => {
+                              {segments.map((s, si) => (
+                                <div key={si} style={{
+                                  position: "absolute", left: `${s.left}%`, width: `${s.width}%`,
+                                  top: 0, bottom: 0, background: s.colour,
+                                }} />
+                              ))}
+                              {/* Threshold notches, hidden once they're all behind */}
+                              {!allHit && a.tiers.map((t, ti) => {
                                 const left = Math.min(100, (t.gp / scaleMax) * 100);
                                 const hit = earned >= t.gp;
                                 return (
                                   <div key={ti}
                                     title={`${t.label || "Tier"} — ${fmtGBP(t.gp)} pays ${t.pct}%`}
                                     style={{
-                                      position: "absolute", left: `calc(${left}% - 1px)`, top: -2, bottom: -2,
-                                      width: 2, borderRadius: 1,
+                                      position: "absolute", left: `calc(${left}% - 1px)`, top: 0, bottom: 0,
+                                      width: 2,
                                       background: hit ? "rgba(255,255,255,0.9)" : "var(--ink-faint)",
                                       opacity: hit ? 1 : 0.55,
                                     }} />
@@ -2233,7 +2261,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
                             </div>
                             <span className="sw-mono shrink-0" style={{
                               fontSize: 11, fontWeight: 700, width: 32, textAlign: "right",
-                              color: a.reached ? "var(--green)" : "var(--ink-faint)",
+                              color: allHit ? "var(--green)" : a.reached ? tierBlend(a.tiers.findIndex((t) => t === a.reached) + 1, Math.max(1, n)) : "var(--ink-faint)",
                             }}
                               title={a.reached
                                 ? `${a.reached.label || "Tier"} — earning ${a.reached.pct}% of statted GP`
@@ -4111,8 +4139,27 @@ const DBD_GROUPS = [
   { key: "mobile",       label: "Mobile",       accent: "#8659CE", tags: ["Mobile"] },
 ];
 
-function DayByDayView({ orders, staff }) {
+function DayByDayView({ orders, staff, netsuite }) {
   const aliases = useAliases();
+  const statusCfg = useStatusCfg();
+
+  // NGP means claimed but already rejected — it shouldn't count toward
+  // anyone's GP or SOV, but it does need to be visible so agents can see
+  // what fell out and chase it.
+  const nsByDoc = useMemo(() => {
+    const m = {};
+    (netsuite || []).forEach((n) => { if (n.document_number) m[String(n.document_number)] = n; });
+    return m;
+  }, [netsuite]);
+
+  const isNgpOrder = useCallback((o) => {
+    const n = o.document_number ? nsByDoc[String(o.document_number)] : null;
+    if (!n) return false;
+    const suffex = String(n.status_flags || "").toUpperCase();
+    if (suffex) return /\bNGP\b/.test(suffex);
+    const cfg = n.order_status ? statusCfg[n.order_status] : null;
+    return cfg ? cfg.count_gp === false : n.count_gp === false;
+  }, [nsByDoc, statusCfg]);
 
   // Resolve the team from the staff record, not the team stored on the
   // order — that was written at submission time and can be stale or blank.
@@ -4176,6 +4223,7 @@ function DayByDayView({ orders, staff }) {
   const data = useMemo(() => {
     const teams = {};
     const dcBucket = blank();
+    const ngpBucket = { gp: blank(), sov: blank(), teams: {} };
     const ensure = (t) => {
       if (!teams[t]) {
         teams[t] = { team: t, gp: blank(), totalSov: blank(), groups: {}, subs: {} };
@@ -4187,6 +4235,18 @@ function DayByDayView({ orders, staff }) {
     filtered.forEach((o) => {
       const t = ensure(teamOf(o.closer_name, o.closer_team));
       const d = o.submission_date;
+
+      // Rejected work is tracked on its own line and kept out of every
+      // total — it was claimed, but it isn't going to pay.
+      if (isNgpOrder(o)) {
+        addTo(ngpBucket.gp, d, num(o.gp_office != null ? o.gp_office : o.sales_agent_gp));
+        addTo(ngpBucket.sov, d, num(o.contract_value));
+        const tn = teamOf(o.closer_name, o.closer_team);
+        if (!ngpBucket.teams[tn]) ngpBucket.teams[tn] = { gp: blank(), sov: blank() };
+        addTo(ngpBucket.teams[tn].gp, d, num(o.gp_office != null ? o.gp_office : o.sales_agent_gp));
+        addTo(ngpBucket.teams[tn].sov, d, num(o.contract_value));
+        return;
+      }
 
       // Each side claims their own share; anything claimed above the deal's
       // real GP is the overlap and comes off as DC.
@@ -4219,8 +4279,9 @@ function DayByDayView({ orders, staff }) {
 
     const list = Object.keys(teams).map((k) => teams[k]).sort((a, b) => b.gp.month - a.gp.month);
     list.dc = dcBucket;
+    list.ngp = ngpBucket;
     return list;
-  }, [filtered, addTo, product, teamOf]);
+  }, [filtered, addTo, product, teamOf, isNgpOrder]);
 
   const totals = useMemo(() => {
     const out = { gp: blank(), totalSov: blank(), groups: {}, subs: {}, claimed: blank() };
@@ -4241,6 +4302,7 @@ function DayByDayView({ orders, staff }) {
         });
       });
     });
+    out.ngp = data.ngp || { gp: blank(), sov: blank(), teams: {} };
     // Take the overlap back off so the office GP is the real figure
     const dcB = data.dc || blank();
     out.gp.month += dcB.month;
@@ -4370,6 +4432,26 @@ function DayByDayView({ orders, staff }) {
                 {/* Reconciles the team rows above to the office GP at the top */}
                 {totals.dc && totals.dc.month !== 0 && (
                   <Row label="DC (lead-gen overlap)" bucket={totals.dc} tone="var(--red)" />
+                )}
+
+                {/* Claimed but already rejected — excluded from everything
+                    above, shown here so it can be chased. */}
+                {totals.ngp && totals.ngp.gp.month !== 0 && (
+                  <>
+                    <Row label="NGP — rejected GP" bucket={totals.ngp.gp} tone="var(--red)"
+                      isOpen={!!open.ngp} onToggle={() => toggle("ngp")} />
+                    {open.ngp && (
+                      <>
+                        <Row label="Rejected SOV" bucket={totals.ngp.sov} depth={1} tone="var(--ink-faint)" />
+                        {Object.keys(totals.ngp.teams).sort().map((tn) => (
+                          <React.Fragment key={tn}>
+                            <Row label={`${tn} — GP`} bucket={totals.ngp.teams[tn].gp} depth={1} tone="var(--red)" />
+                            <Row label={`${tn} — SOV`} bucket={totals.ngp.teams[tn].sov} depth={2} tone="var(--ink-faint)" />
+                          </React.Fragment>
+                        ))}
+                      </>
+                    )}
+                  </>
                 )}
 
                 {data.length === 0 && (
@@ -10111,7 +10193,7 @@ export default function App() {
         )}
         {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuiteResolved} forecasts={forecasts} staff={staff} profiles={allProfiles} payPlans={payPlans} planTiers={planTiers} planMetrics={planMetrics} onNewOrder={() => setTab("new")} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
         {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} />}
-        {tab === "daybyday" && <DayByDayView orders={orders} staff={staff} />}
+        {tab === "daybyday" && <DayByDayView orders={orders} staff={staff} netsuite={netsuiteResolved} />}
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuiteResolved} />}
         {tab === "distribution" && <DistributionView orders={orders} netsuite={netsuiteResolved} staff={staff} />}
         {tab === "delivery" && (profile?.role === "office" || profile?.role === "sd" || profile?.role === "sd_2ic") && (
