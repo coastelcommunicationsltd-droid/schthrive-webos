@@ -4373,7 +4373,11 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
     </div>
   );
 
-  const cols = `170px 150px repeat(${planTiers.length}, minmax(110px, 1fr)) 30px`;
+  // repeat(0, …) is invalid CSS and would invalidate the whole rule, so the
+  // no-tiers case is spelled out separately.
+  const cols = planTiers.length
+    ? `170px 150px repeat(${planTiers.length}, minmax(120px, 1fr)) 34px`
+    : "170px 150px 1fr 34px";
   const lbl = { fontSize: 12, color: "var(--ink-soft)", display: "flex", alignItems: "center" };
 
   return (
@@ -4419,7 +4423,15 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
             {/* Header */}
             <div />
             <div className="text-xs font-semibold uppercase text-center" style={{ color: "var(--ink-faint)", letterSpacing: "0.03em" }}>Plan target</div>
-            {planTiers.map((t) => <TierName key={t.id} tier={t} />)}
+            {planTiers.length === 0 ? (
+              <button onClick={() => onAddTier(plan.id)}
+                className="sw-focus rounded-lg text-xs font-semibold"
+                style={{ height: 30, background: "var(--primary-soft)", color: "var(--primary)", border: "1px dashed var(--primary)" }}>
+                + Add your first tier
+              </button>
+            ) : (
+              planTiers.map((t) => <TierName key={t.id} tier={t} />)
+            )}
             <button onClick={() => onAddTier(plan.id)} title="Add a tier"
               className="sw-focus rounded-lg text-sm font-bold"
               style={{ height: 30, background: "var(--primary-soft)", color: "var(--primary)" }}>+</button>
@@ -4430,33 +4442,39 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
             {planTiers.map((t) => (
               <TierCell key={t.id} tier={t} field="payment_pct" unit="percent" placeholder="0" />
             ))}
+            {planTiers.length === 0 && <div />}
             <div />
 
             {/* GP */}
             <label style={{ ...lbl, fontWeight: 600 }}>Headline GP target</label>
             {baseField("target_gp")}
             {planTiers.map((t) => <TierCell key={t.id} tier={t} field="gp_min" unit="money" placeholder="from" />)}
+            {planTiers.length === 0 && <div />}
             <div />
 
             <label style={{ ...lbl, color: "var(--ink-faint)" }}>GP upper limit</label>
             <div className="text-xs text-center" style={{ color: "var(--ink-faint)" }}>—</div>
             {planTiers.map((t) => <TierCell key={t.id} tier={t} field="gp_max" unit="money" placeholder="no cap" />)}
+            {planTiers.length === 0 && <div />}
             <div />
 
             {/* Fixed product targets */}
             <label style={lbl}>Cloud SOV target</label>
             {baseField("target_cloud_sov")}
             {planTiers.map((t) => <TierCell key={t.id} tier={t} metricKey="cloud_sov" unit="money" placeholder="—" />)}
+            {planTiers.length === 0 && <div />}
             <div />
 
             <label style={lbl}>Connectivity SOV target</label>
             {baseField("target_connectivity_sov")}
             {planTiers.map((t) => <TierCell key={t.id} tier={t} metricKey="connectivity_sov" unit="money" placeholder="—" />)}
+            {planTiers.length === 0 && <div />}
             <div />
 
             <label style={lbl}>Mobile SOV target</label>
             {baseField("target_mobile_sov")}
             {planTiers.map((t) => <TierCell key={t.id} tier={t} metricKey="mobile_sov" unit="money" placeholder="—" />)}
+            {planTiers.length === 0 && <div />}
             <div />
 
             {/* Any extra KPIs this plan declares */}
@@ -4468,6 +4486,7 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
                 </label>
                 <div className="text-xs text-center" style={{ color: "var(--ink-faint)" }}>—</div>
                 {planTiers.map((t) => <TierCell key={t.id} tier={t} metricKey={m.key} unit={m.unit} placeholder="—" />)}
+                {planTiers.length === 0 && <div />}
                 <div />
               </React.Fragment>
             ))}
@@ -7456,9 +7475,8 @@ function LandscapesView({ profile, staff }) {
 /*  SALES DELIVERY — allocation and progress on claimed orders             */
 /* ---------------------------------------------------------------------- */
 
-const DELIVERY_STATES = ["Unallocated", "With agent", "Awaiting docs", "Submitted", "Complete", "On hold"];
-
 function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAllocate, onSaveOrder, onOpenOrder }) {
+  const statusCfg = useStatusCfg();
   const [period, setPeriod] = useState("mtd");
   const [query, setQuery] = useState("");
   const [agentFilter, setAgentFilter] = useState("All");
@@ -7476,6 +7494,13 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
     (netsuite || []).forEach((n) => { if (n.document_number) m[String(n.document_number)] = n; });
     return m;
   }, [netsuite]);
+
+  // NetSuite carries the live status once an order is matched; before that
+  // the order's own status is all there is.
+  const statusOf = useCallback((o) => {
+    const n = o.document_number ? nsByDoc[String(o.document_number)] : null;
+    return (n && n.order_status) || o.order_status || "";
+  }, [nsByDoc]);
 
   const allocationOf = useCallback((o) => {
     if (o.allocated_to_name) return { name: o.allocated_to_name, fromNetsuite: false };
@@ -7511,7 +7536,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
       const k = alloc.name;
       if (!counts[k]) counts[k] = { total: 0, open: 0, done: 0 };
       counts[k].total += 1;
-      if (String(o.delivery_status || "") === "Complete") counts[k].done += 1;
+      if (/complete|closed|billed|won/i.test(statusOf(o))) counts[k].done += 1;
       else counts[k].open += 1;
     });
     const rows = team.map((s) => ({
@@ -7523,7 +7548,19 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
       if (!rows.some((r) => r.name === nm)) rows.push({ name: nm, ...counts[nm] });
     });
     return { rows: rows.sort((a, b) => b.total - a.total || a.name.localeCompare(b.name)), unallocated };
-  }, [inPeriod, team, allocationOf]);
+  }, [inPeriod, team, allocationOf, statusOf]);
+
+  const statusOptions = useMemo(() => {
+    const s = new Set();
+    inPeriod.forEach((o) => { const st = statusOf(o); if (st) s.add(st); });
+    return Array.from(s).sort();
+  }, [inPeriod, statusOf]);
+
+  const statusOptions = useMemo(() => {
+    const s = new Set();
+    inPeriod.forEach((o) => { const st = statusOf(o); if (st) s.add(st); });
+    return Array.from(s).sort();
+  }, [inPeriod, statusOf]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -7533,20 +7570,23 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
       const alloc = allocationOf(o);
       if (agentFilter === "__unallocated") { if (alloc.name) return false; }
       else if (agentFilter !== "All" && alloc.name !== agentFilter) return false;
-      if (stateFilter !== "All") {
-        const st = o.delivery_status || "Unallocated";
-        if (st !== stateFilter) return false;
-      }
+      if (stateFilter !== "All" && statusOf(o) !== stateFilter) return false;
       return true;
     }).sort((a, b) => String(b.submission_date || "").localeCompare(String(a.submission_date || "")));
-  }, [inPeriod, query, agentFilter, stateFilter, allocationOf]);
+  }, [inPeriod, query, agentFilter, stateFilter, allocationOf, statusOf]);
 
-  const totals = useMemo(() => ({
-    all: inPeriod.length,
-    unallocated: ranking.unallocated,
-    complete: inPeriod.filter((o) => o.delivery_status === "Complete").length,
-    noDrive: inPeriod.filter((o) => !o.drive_link).length,
-  }), [inPeriod, ranking]);
+  const totals = useMemo(() => {
+    const gp = inPeriod.reduce((s, o) => s + num(o.gp_office != null ? o.gp_office : o.sales_agent_gp), 0);
+    const sov = inPeriod.reduce((s, o) => s + num(o.contract_value), 0);
+    const aged = inPeriod.filter((o) => o.submission_date
+      && Math.floor((Date.now() - new Date(o.submission_date).getTime()) / 86400000) >= 90).length;
+    return {
+      all: inPeriod.length, gp, sov,
+      unallocated: ranking.unallocated,
+      aged,
+      dirty: inPeriod.filter((o) => o.dirty_order === "Yes").length,
+    };
+  }, [inPeriod, ranking]);
 
   return (
     <div>
@@ -7560,15 +7600,29 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
 
       {/* Headline counts */}
       <div className="sw-cols-2 mb-3" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: "0.75rem" }}>
+        {/* Orders in period carries the money underneath it */}
+        <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Orders in period</div>
+          <div className="sw-display" style={{ fontSize: 27, fontWeight: 600, letterSpacing: "-0.025em" }}>{totals.all}</div>
+          <div className="flex items-center gap-3 mt-1.5">
+            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+              GP <b className="sw-mono" style={{ color: "var(--ink-soft)" }}>{fmtGBP(totals.gp)}</b>
+            </span>
+            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+              SOV <b className="sw-mono" style={{ color: "var(--ink-soft)" }}>{fmtGBP(totals.sov)}</b>
+            </span>
+          </div>
+        </div>
+
         {[
-          ["Orders in period", totals.all, "var(--ink)"],
-          ["Unallocated", totals.unallocated, totals.unallocated ? "var(--amber)" : "var(--ink-faint)"],
-          ["Complete", totals.complete, "var(--green)"],
-          ["No Drive link", totals.noDrive, totals.noDrive ? "var(--red)" : "var(--ink-faint)"],
-        ].map(([label, value, colour]) => (
-          <div key={label} className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          ["Unallocated", totals.unallocated, totals.unallocated ? "var(--amber)" : "var(--ink-faint)", "Not yet handed to anyone"],
+          ["Over 90 days", totals.aged, totals.aged ? "var(--red)" : "var(--ink-faint)", "Submitted more than 90 days ago"],
+          ["Dirty orders", totals.dirty, totals.dirty ? "var(--red)" : "var(--ink-faint)", "Flagged for review"],
+        ].map(([label, value, colour, hint]) => (
+          <div key={label} className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }} title={hint}>
             <div className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{label}</div>
             <div className="sw-display" style={{ fontSize: 27, fontWeight: 600, letterSpacing: "-0.025em", color: colour }}>{value}</div>
+            <div className="text-xs mt-1.5" style={{ color: "var(--ink-faint)" }}>{hint}</div>
           </div>
         ))}
       </div>
@@ -7584,9 +7638,9 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
             <option value="__unallocated">Unallocated only</option>
             {ranking.rows.map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
           </select>
-          <select className="sw-input sw-focus" style={{ width: 152, height: 32, fontSize: 12.5 }} value={stateFilter} onChange={(e) => setStateFilter(e.target.value)}>
-            <option value="All">All states</option>
-            {DELIVERY_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+          <select className="sw-input sw-focus" style={{ width: 170, height: 32, fontSize: 12.5 }} value={stateFilter} onChange={(e) => setStateFilter(e.target.value)}>
+            <option value="All">All statuses</option>
+            {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
           <div className="relative" style={{ flex: 1, minWidth: 180 }}>
             <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: "var(--ink-faint)" }} />
@@ -7660,17 +7714,22 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
         <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <table className="w-full text-sm sw-orders" style={{ tableLayout: "fixed" }}>
             <colgroup>
-              <col style={{ width: "26%" }} />
-              <col style={{ width: "17%" }} />
               <col style={{ width: "20%" }} />
-              <col style={{ width: "17%" }} />
               <col style={{ width: "12%" }} />
-              <col style={{ width: "8%" }} />
+              <col style={{ width: "16%" }} />
+              <col style={{ width: "14%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: "13%" }} />
+              <col style={{ width: "7%" }} />
             </colgroup>
             <thead>
               <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
-                {["Company", "Closer", "Allocated to", "Delivery state", "Drive", "Date"].map((h, i) => (
-                  <th key={i} className={`text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide ${i >= 4 ? "sw-hide-sm" : ""}`}
+                {[
+                  ["Company", ""], ["Closer", ""], ["Allocated to", ""], ["Product", "sw-hide-sm"],
+                  ["SOV", "sw-hide-xs"], ["GP", ""], ["Status", ""], ["Drive", "sw-hide-sm"],
+                ].map(([h, hide], i) => (
+                  <th key={i} className={`text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide ${hide}`}
                     style={{ color: "var(--ink-soft)" }}>{h}</th>
                 ))}
               </tr>
@@ -7706,22 +7765,34 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
                             <option value={alloc.name}>{alloc.name}</option>
                           )}
                         </select>
-                        {alloc.fromNetsuite && (
-                          <div style={{ fontSize: 9.5, color: "var(--ink-faint)", marginTop: 2 }}>from NetSuite</div>
-                        )}
                       </>
                     ) : (
                       <span className="text-xs">{alloc.name || <span style={{ color: "var(--ink-faint)" }}>Unallocated</span>}</span>
                     )}
                   </td>
 
+                  <td className="px-3 py-2 text-xs sw-clamp2 sw-hide-sm" style={{ color: "var(--ink-soft)", lineHeight: 1.3 }}>
+                    {o.item_name_grouped || o.product_group_2 || "—"}
+                  </td>
+
+                  <td className="px-3 py-2 sw-mono text-xs sw-hide-xs">{fmtGBP(o.contract_value)}</td>
+
+                  <td className="px-3 py-2 sw-mono text-xs" style={{ fontWeight: 600 }}>
+                    {fmtGBP(o.gp_office != null ? o.gp_office : o.sales_agent_gp)}
+                  </td>
+
                   <td className="px-2 py-2">
-                    <select className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }}
-                      value={o.delivery_status || ""}
-                      onChange={(e) => onSaveOrder(o.id, { delivery_status: e.target.value || null })}>
-                      <option value="">—</option>
-                      {DELIVERY_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
-                    </select>
+                    {(() => {
+                      const st = statusOf(o);
+                      const tone = TONE_MAP[(statusCfg[st] || {}).tone] || TONE_MAP.neutral;
+                      return (
+                        <span className="inline-block rounded px-1.5 py-0.5 sw-clamp2"
+                          style={{ color: tone.fg, background: tone.bg, fontSize: 10.5, fontWeight: 600, lineHeight: 1.3 }}
+                          title={st}>
+                          {st || "—"}
+                        </span>
+                      );
+                    })()}
                   </td>
 
                   <td className="px-2 py-2 sw-hide-sm">
