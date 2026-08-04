@@ -4606,7 +4606,7 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
   );
 }
 
-function PayPlansView({ plans, staff, tiers, metrics, onSave, onAdd, onDelete,
+function PayPlansView({ plans, staff, tiers, metrics, tablesMissing, onSave, onAdd, onDelete,
                        onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric }) {
   const [selectedId, setSelectedId] = useState(null);
   const [newName, setNewName] = useState("");
@@ -4642,6 +4642,16 @@ function PayPlansView({ plans, staff, tiers, metrics, onSave, onAdd, onDelete,
         <h2 className="sw-display text-lg" style={{ fontWeight: 600 }}>Pay Plans</h2>
         <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Monthly targets · assign to people on the Admin page</span>
       </div>
+
+      {tablesMissing && (
+        <div className="rounded-xl p-3 mb-3 flex items-start gap-2" style={{ background: "var(--amber-soft)", border: "1px solid var(--amber)" }}>
+          <AlertTriangle size={15} style={{ color: "var(--amber)", flexShrink: 0, marginTop: 1 }} />
+          <div className="text-sm" style={{ color: "var(--ink-soft)" }}>
+            <b>Tiers aren't set up yet.</b> Run <code>add_pay_plan_tiers.sql</code> in the Supabase SQL editor,
+            then reload this page. Until then the Add tier button has nowhere to save to.
+          </div>
+        </div>
+      )}
 
       <p className="text-sm mb-4 p-3 rounded-xl" style={{ background: "var(--primary-soft)", color: "var(--ink-soft)" }}>
         Targets are monthly and pro-rated by working day. This month has <b>{wd} working days</b>, <b>{wdDone}</b> have
@@ -5126,7 +5136,7 @@ function OtherVisualsView({ orders, netsuite, forecasts, staff }) {
 /* ---------------------------------------------------------------------- */
 
 function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSavePlan, onAddPlan, onDeletePlan,
-                       planTiers, planMetrics, onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric,
+                       planTiers, planMetrics, planTablesMissing, onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric,
                        coachScenarios, coachSettings, onSaveCoachScenario, onAddCoachScenario, onDeleteCoachScenario, onSaveCoachSettings,
                        orders, netsuite, forecasts }) {
   const [section, setSection] = useState("statuses");
@@ -8468,6 +8478,7 @@ export default function App() {
   const [planTiers, setPlanTiers] = useState([]);
   const [planMetrics, setPlanMetrics] = useState([]);
   const [planHistory, setPlanHistory] = useState([]);
+  const [planTablesMissing, setPlanTablesMissing] = useState(false);
   const [forecasts, setForecasts] = useState([]);
   const [aliases, setAliases] = useState([]);
   const [appSettings, setAppSettings] = useState({});
@@ -8661,20 +8672,43 @@ export default function App() {
     setPlanTiers(tiers.data || []);
     setPlanMetrics(metrics.data || []);
     setPlanHistory(history.data || []);
+    // If the tier tables aren't there, say so once rather than silently
+    // rendering an empty tier list that looks like a broken button.
+    if (tiers.error) setPlanTablesMissing(true);
+    else setPlanTablesMissing(false);
   }, []);
 
   // --- Tier / metric / assignment editing -----------------------------
   const savePlanTier = useCallback(async (id, patch) => {
     const { error } = await supabase.from("pay_plan_tiers").update(patch).eq("id", id);
-    if (error) { setToast(`Couldn't save tier: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    if (error) { setToast(explainDbError(error, "Saving the tier")); setTimeout(() => setToast(""), 12000); return; }
     loadPayPlans();
-  }, [loadPayPlans]);
+  }, [loadPayPlans, explainDbError]);
+
+  // A missing table or an RLS refusal both surface as opaque Postgres
+  // errors, so they're translated into something actionable here.
+  const explainDbError = useCallback((error, what) => {
+    const msg = String(error?.message || error || "");
+    if (/relation .* does not exist|Could not find the table|schema cache/i.test(msg)) {
+      return `${what} needs the pay plan tables. Run add_pay_plan_tiers.sql in the Supabase SQL editor, then reload.`;
+    }
+    if (/row-level security|permission denied|violates row-level/i.test(msg)) {
+      return `${what} was blocked by permissions — you need the office role for this.`;
+    }
+    return `${what} failed: ${msg}`;
+  }, []);
 
   const addPlanTier = useCallback(async (planId) => {
-    const { error } = await supabase.from("pay_plan_tiers").insert({ plan_id: planId, label: "New tier", gp_min: 0, payment_pct: 0, sort_order: 999 });
-    if (error) { setToast(`Couldn't add tier: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    if (!planId) { setToast("Select a plan first."); setTimeout(() => setToast(""), 4000); return; }
+    const { error } = await supabase.from("pay_plan_tiers")
+      .insert({ plan_id: planId, label: "New tier", gp_min: 0, payment_pct: 0, sort_order: 999 });
+    if (error) {
+      setToast(explainDbError(error, "Adding a tier"));
+      setTimeout(() => setToast(""), 12000);   // long enough to actually read
+      return;
+    }
     loadPayPlans();
-  }, [loadPayPlans]);
+  }, [loadPayPlans, explainDbError]);
 
   const deletePlanTier = useCallback(async (id) => {
     await supabase.from("pay_plan_tiers").delete().eq("id", id);
@@ -8683,9 +8717,9 @@ export default function App() {
 
   const addPlanMetric = useCallback(async (planId, key, label, unit) => {
     const { error } = await supabase.from("pay_plan_metrics").insert({ plan_id: planId, key, label, unit, sort_order: 100 });
-    if (error) { setToast(`Couldn't add KPI: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    if (error) { setToast(explainDbError(error, "Adding a KPI")); setTimeout(() => setToast(""), 12000); return; }
     loadPayPlans();
-  }, [loadPayPlans]);
+  }, [loadPayPlans, explainDbError]);
 
   const deletePlanMetric = useCallback(async (id) => {
     await supabase.from("pay_plan_metrics").delete().eq("id", id);
@@ -9055,7 +9089,7 @@ export default function App() {
           netsuite={netsuiteResolved} aliases={aliases} onAddAlias={addAlias} onDeleteAlias={deleteAlias}
           planHistory={planHistory} onAssignPlan={assignPlan} onDeleteAssignment={deleteAssignment} />}
         {tab === "statuses" && profile?.role === "office" && <SettingsView statusRows={statusRows} onSaveStatus={saveStatusCfg} newCount={newStatusCount} plans={payPlans} staff={staff} onSavePlan={savePayPlan} onAddPlan={addPayPlan} onDeletePlan={deletePayPlan}
-          planTiers={planTiers} planMetrics={planMetrics}
+          planTiers={planTiers} planMetrics={planMetrics} planTablesMissing={planTablesMissing}
           onSaveTier={savePlanTier} onAddTier={addPlanTier} onDeleteTier={deletePlanTier}
           onAddMetric={addPlanMetric} onDeleteMetric={deletePlanMetric}
           coachScenarios={coachScenarios} coachSettings={coachSettings}
