@@ -126,6 +126,24 @@ const STYLE = `
 .sw-input{width:100%;font-size:13.5px;font-family:'Inter',sans-serif;padding:9px 11px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--ink);transition:border-color .15s,box-shadow .15s;}
 .sw-input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft);}
 .sw-input::placeholder{color:var(--ink-faint);}
+
+/* Selects get an explicit height in a lot of places (filter bars, table
+   cells). The 9px vertical padding above then leaves less room than the
+   text needs and clips the descenders, so selects manage their own
+   vertical space and let the browser centre the text. */
+.sw-root select.sw-input{
+  padding-top:0; padding-bottom:0;
+  line-height:normal;
+  padding-right:26px;                 /* clear of the chevron */
+  appearance:none; -webkit-appearance:none; -moz-appearance:none;
+  background-image:url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236B6584' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+  background-repeat:no-repeat;
+  background-position:right 8px center;
+  background-size:12px;
+  text-overflow:ellipsis;
+}
+/* Any input given a fixed height needs the same treatment */
+.sw-root input.sw-input[style*="height"]{ padding-top:0; padding-bottom:0; line-height:normal; }
 .sw-label{display:block;font-size:12px;font-weight:600;color:var(--ink-soft);margin-bottom:5px;}
 .sw-req{color:var(--red);margin-left:2px;}
 .sw-err{color:var(--red);font-size:12px;margin-top:4px;}
@@ -1335,7 +1353,10 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, planTiers
       // but sometimes chasing them is the job, hence "only".
       if (ngpMode === "hide" && r.ngp) return false;
       if (ngpMode === "only" && !r.ngp) return false;
-      if (nsovMode === "only" && !r.nsov) return false;
+      // Non SOV means exactly that: excluded from SOV but still counting
+      // toward GP. Anything also carrying NGP belongs in the Non GP filter,
+      // not here.
+      if (nsovMode === "only" && (!r.nsov || r.ngp)) return false;
       const q = query.trim().toLowerCase();
       const raw = r.raw || {};
       const mq = !q
@@ -1431,7 +1452,8 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, planTiers
   const ngpCount = useMemo(() => viewRows.filter((r) => r.ngp).length, [viewRows]);
   const agedCount = useMemo(() => viewRows.filter((r) => r.ageDays != null && r.ageDays >= 90).length, [viewRows]);
   const attentionCount = useMemo(() => viewRows.filter((r) => r.needsAction).length, [viewRows]);
-  const nsovCount = useMemo(() => productScoped.filter(isNSOV).length, [productScoped, isNSOV]);
+  // Counts only pure-NSOV rows, matching the filter above
+  const nsovCount = useMemo(() => productScoped.filter((o) => isNSOV(o) && !isNGP(o)).length, [productScoped, isNSOV, isNGP]);
   const activeOrders = useMemo(() => productScoped.filter((o) => {
     const n = nsFor(o);
     const live = (n && n.order_status) || o.order_status || "";
@@ -2578,7 +2600,7 @@ function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove }) 
             )}
           </div>
           {canEdit ? (
-            <input className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }}
+            <input className="sw-input sw-focus" style={{ height: 32, fontSize: 12 }}
               defaultValue={order.drive_link || ""} placeholder="Paste the Google Drive folder link"
               onBlur={(e) => { if (e.target.value !== (order.drive_link || "")) onSave(order.id, { drive_link: e.target.value || null }); }} />
           ) : (
@@ -4649,7 +4671,7 @@ function PayPlansView({ plans, staff, tiers, metrics, onSave, onAdd, onDelete,
           )}
           {adding ? (
             <div className="p-2 flex items-center gap-1.5" style={{ borderTop: "1px solid var(--border)" }}>
-              <input className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }} placeholder="Plan name" value={newName}
+              <input className="sw-input sw-focus" style={{ height: 32, fontSize: 12 }} placeholder="Plan name" value={newName}
                 onChange={(e) => setNewName(e.target.value)} autoFocus />
               <button disabled={!newName.trim()}
                 onClick={async () => { await onAdd(newName.trim()); setNewName(""); setAdding(false); }}
@@ -7751,7 +7773,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
                   <td className="px-2 py-2">
                     {canAllocate ? (
                       <>
-                        <select className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }}
+                        <select className="sw-input sw-focus" style={{ height: 32, fontSize: 12 }}
                           value={alloc.name || ""}
                           disabled={busyId === o.id}
                           onChange={async (e) => {
