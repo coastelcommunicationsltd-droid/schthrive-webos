@@ -5652,6 +5652,53 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
 }
 
 /* ---------------------------------------------------------------------- */
+/*  VOICE SELECTION                                                        */
+/* ---------------------------------------------------------------------- */
+
+/* Browser voices vary wildly. The flat, robotic ones are the offline
+   system voices; the network ones (Google, Microsoft "Natural"/"Online")
+   are markedly better. Voices carry no gender flag, so it comes from the
+   name — imperfect, but the well-known ones cover most installs. */
+const FEMALE_NAMES = /\b(zira|hazel|susan|samantha|karen|serena|fiona|moira|tessa|libby|sonia|aria|jenny|michelle|ana|amelie|catherine|linda|heather|female|woman)\b/i;
+const MALE_NAMES   = /\b(david|george|mark|daniel|alex|oliver|ryan|guy|brandon|christopher|eric|roger|thomas|james|william|male|man)\b/i;
+
+function voiceGender(v) {
+  const n = String(v.name || "");
+  if (FEMALE_NAMES.test(n)) return "female";
+  if (MALE_NAMES.test(n)) return "male";
+  return null;
+}
+
+// Higher is better. Network voices and the "Natural" family sound most human.
+function voiceQuality(v) {
+  const n = String(v.name || "").toLowerCase();
+  let score = 0;
+  if (v.localService === false) score += 40;      // network voice
+  if (/natural|neural/.test(n)) score += 30;
+  if (/google/.test(n)) score += 25;
+  if (/online/.test(n)) score += 10;
+  if (/^en-GB/i.test(v.lang)) score += 15;        // right accent for the patch
+  else if (/^en/i.test(v.lang)) score += 5;
+  if (/compact|espeak/.test(n)) score -= 30;      // the really robotic ones
+  return score;
+}
+
+/* Pick at random, but only from the better half of what's installed, and
+   honour a preferred gender so the customer isn't always the same person.
+   Returns null when nothing usable is available. */
+function pickRandomVoice(voices, preferGender) {
+  const english = (voices || []).filter((v) => /^en/i.test(v.lang));
+  if (!english.length) return null;
+
+  const ranked = [...english].sort((a, b) => voiceQuality(b) - voiceQuality(a));
+  const pool = ranked.slice(0, Math.max(3, Math.ceil(ranked.length / 2)));
+
+  const wanted = pool.filter((v) => voiceGender(v) === preferGender);
+  const from = wanted.length ? wanted : pool;
+  return from[Math.floor(Math.random() * from.length)];
+}
+
+/* ---------------------------------------------------------------------- */
 /*  LIVE SALES COACH — AI roleplay practice calls                          */
 /*  Isolated by design: the coach function has no database access.         */
 /* ---------------------------------------------------------------------- */
@@ -5765,14 +5812,78 @@ function SalesCoachView() {
     return res.json();
   }, [scenario, activeScenario, coachCfg]);
 
+  // Speech synthesis has two traps: getVoices() is populated asynchronously
+  // in Chrome, so the first call can find nothing and silently do nothing;
+  // and audio needs a user gesture to unlock. Both are handled here.
+  const [voices, setVoices] = useState([]);
+  const [speaking, setSpeaking] = useState(false);
+  // The voice for this call — chosen fresh each time so the customer isn't
+  // always the same person. Pitch and rate are nudged per call too, which
+  // does more for realism than the voice choice alone.
+  const voiceRef = useRef(null);
+  const [voiceLabel, setVoiceLabel] = useState("");
+  const proseRef = useRef({ rate: 1.0, pitch: 1.0 });
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    const load = () => {
+      const v = window.speechSynthesis.getVoices();
+      if (v.length) setVoices(v);
+    };
+    load();
+    window.speechSynthesis.addEventListener("voiceschanged", load);
+    return () => window.speechSynthesis.removeEventListener("voiceschanged", load);
+  }, []);
+
+  // Roll a new customer voice. Called at the start of every session.
+  const rollVoice = useCallback(() => {
+    const list = (typeof window !== "undefined" && window.speechSynthesis)
+      ? (voices.length ? voices : window.speechSynthesis.getVoices())
+      : [];
+    const gender = Math.random() < 0.5 ? "female" : "male";
+    const v = pickRandomVoice(list, gender);
+    voiceRef.current = v || null;
+    // Small variation so two calls with the same voice still differ
+    proseRef.current = {
+      rate: 0.95 + Math.random() * 0.2,    // 0.95 – 1.15
+      pitch: 0.9 + Math.random() * 0.35,   // 0.90 – 1.25
+    };
+    setVoiceLabel(v ? `${v.name}` : "");
+    return v;
+  }, [voices]);
+
   const say = useCallback((text) => {
     if (!speakBack || typeof window === "undefined" || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.05;
-    u.lang = "en-GB";
-    window.speechSynthesis.speak(u);
+    if (!text) return;
+    try {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(String(text));
+      const v = voiceRef.current;
+      if (v) u.voice = v;
+      u.lang = v?.lang || "en-GB";
+      u.rate = proseRef.current.rate;
+      u.pitch = proseRef.current.pitch;
+      u.onstart = () => setSpeaking(true);
+      u.onend = () => setSpeaking(false);
+      u.onerror = () => setSpeaking(false);
+      // Chrome occasionally leaves the queue paused after a cancel()
+      if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+      window.speechSynthesis.speak(u);
+    } catch {
+      setSpeaking(false);
+    }
   }, [speakBack]);
+
+  // Browsers block audio until the user has interacted. Speaking a silent
+  // utterance on the first click unlocks it so the real reply is audible.
+  const unlockSpeech = useCallback(() => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    try {
+      const u = new SpeechSynthesisUtterance(" ");
+      u.volume = 0;
+      window.speechSynthesis.speak(u);
+    } catch { /* nothing to do */ }
+  }, []);
 
   // ---- submit one agent turn ----------------------------------------
   const submitTurn = useCallback(async (text) => {
@@ -5853,6 +5964,8 @@ function SalesCoachView() {
 
   // ---- call lifecycle ------------------------------------------------
   const startCall = useCallback(async () => {
+    unlockSpeech();   // must happen inside the click for audio to be allowed
+    rollVoice();      // a different customer each time
     setTurns([]); setSummary(null); setError(""); setInterim("");
     setStatus("thinking");
     try {
@@ -5865,7 +5978,7 @@ function SalesCoachView() {
       setError(e && e.message ? String(e.message) : String(e));
       setStatus("idle");
     }
-  }, [callCoach, say, startListening]);
+  }, [callCoach, say, startListening, unlockSpeech, rollVoice]);
 
   const endCall = useCallback(async () => {
     stopListening();
@@ -5973,9 +6086,25 @@ function SalesCoachView() {
               </span>
             )}
             <div className="ml-auto flex items-center gap-2">
-              <label className="flex items-center gap-1.5 text-xs cursor-pointer" style={{ color: "var(--ink-soft)" }}>
+              <label className="flex items-center gap-1.5 text-xs cursor-pointer" style={{ color: "var(--ink-soft)" }}
+                title={voiceLabel ? `Voice: ${voiceLabel}` : "No speech voice available in this browser"}>
                 <input type="checkbox" checked={speakBack} onChange={(e) => setSpeakBack(e.target.checked)} /> Customer speaks
+                {speaking && (
+                  <span style={{ display: "inline-flex", gap: 2, alignItems: "flex-end", height: 10, marginLeft: 2 }}>
+                    {[0, 1, 2].map((i) => (
+                      <span key={i} className="sw-live-dot"
+                        style={{ width: 2, height: 4 + i * 3, background: "var(--green)", borderRadius: 1, animationDelay: `${i * 0.15}s` }} />
+                    ))}
+                  </span>
+                )}
               </label>
+              {speakBack && (
+                <button onClick={() => { const v = rollVoice(); if (v) say("Hello, thanks for calling."); }}
+                  className="sw-focus text-xs px-2 py-1 rounded-lg" style={{ color: "var(--ink-faint)", border: "1px solid var(--border)" }}
+                  title={voiceLabel ? `Currently ${voiceLabel} — click for a different voice` : "Try a different voice"}>
+                  Change voice
+                </button>
+              )}
               {status !== "ended" && (
                 <button onClick={endCall} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold text-white"
                   style={{ background: "var(--red)" }}>End call</button>
