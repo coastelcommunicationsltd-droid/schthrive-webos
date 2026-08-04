@@ -8679,12 +8679,6 @@ export default function App() {
   }, []);
 
   // --- Tier / metric / assignment editing -----------------------------
-  const savePlanTier = useCallback(async (id, patch) => {
-    const { error } = await supabase.from("pay_plan_tiers").update(patch).eq("id", id);
-    if (error) { setToast(explainDbError(error, "Saving the tier")); setTimeout(() => setToast(""), 12000); return; }
-    loadPayPlans();
-  }, [loadPayPlans, explainDbError]);
-
   // A missing table or an RLS refusal both surface as opaque Postgres
   // errors, so they're translated into something actionable here.
   const explainDbError = useCallback((error, what) => {
@@ -8697,6 +8691,12 @@ export default function App() {
     }
     return `${what} failed: ${msg}`;
   }, []);
+
+  const savePlanTier = useCallback(async (id, patch) => {
+    const { error } = await supabase.from("pay_plan_tiers").update(patch).eq("id", id);
+    if (error) { setToast(explainDbError(error, "Saving the tier")); setTimeout(() => setToast(""), 12000); return; }
+    loadPayPlans();
+  }, [loadPayPlans, explainDbError]);
 
   const addPlanTier = useCallback(async (planId) => {
     if (!planId) { setToast("Select a plan first."); setTimeout(() => setToast(""), 4000); return; }
