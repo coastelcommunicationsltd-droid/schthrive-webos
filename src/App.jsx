@@ -1676,19 +1676,37 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
       if (n.referrer_name) statted[n.referrer_name] = (statted[n.referrer_name] || 0) + num(n.referrer_gp);
     });
 
+    // Commission tiers for the bar: each threshold marked along it, and
+    // the rate they're currently earning shown at the end.
+    const tiersFor = (planId) => (planTiers || [])
+      .filter((t) => t.plan_id === planId)
+      .sort((a, b) => num(a.gp_min) - num(b.gp_min))
+      .map((t) => ({
+        label: t.label || "",
+        gp: fullPeriodTarget(num(t.gp_min), period),
+        pct: num(t.payment_pct),
+      }))
+      .filter((t) => t.gp > 0);
+
     const rows = people.map((s) => {
       const plan = s.pay_plan_id ? planById[s.pay_plan_id] : null;
       const hasPlan = !!(plan && plan.active !== false);
       const monthly = hasPlan ? num(plan.target_gp) : 0;
+      const tiers = hasPlan ? tiersFor(plan.id) : [];
+      const gpStatted = statted[s.full_name] || 0;
+      // The best tier their GP has actually reached
+      const reached = [...tiers].reverse().find((t) => gpStatted >= t.gp) || null;
       return {
         name: s.full_name,
         team: s.team,
         gp: claimed[s.full_name] || 0,
-        statted: statted[s.full_name] || 0,
+        statted: gpStatted,
         mix: mix[s.full_name] || {},
         target: fullPeriodTarget(monthly, period),
         pace: proRatedTarget(monthly, period),
         hasPlan,
+        tiers,
+        reached,
       };
     });
 
@@ -1704,6 +1722,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
         rows.push({
           name: nm, team: null, gp: claimed[nm], statted: statted[nm] || 0,
           mix: mix[nm] || {}, target: 0, pace: 0, hasPlan: false,
+          tiers: [], reached: null,
         });
       }
     });
@@ -1963,11 +1982,10 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
             targets.people > 0 ? (
               <div className="flex flex-col gap-1.5">
                 {[
-                  // GP only. The SOV lines were measuring team-wide product
-                  // totals against a single agent's target, so they read as
-                  // wildly over or under and drowned out the GP line.
-                  ["GP claimed", gpTotal, targets.full.gp, targets.gp],
-                  ["GP statted", planVsStatted.gp, targets.full.gp, targets.gp],
+                  ["GP", gpTotal, targets.full.gp, targets.gp],
+                  ["Cloud", planVsStatted.cloud, targets.full.cloud, targets.cloud],
+                  ["Connectivity", planVsStatted.conn, targets.full.conn, targets.conn],
+                  ["Mobile", planVsStatted.mobile, targets.full.mobile, targets.mobile],
                 ].map(([label, actual, full, pace]) => {
                   const tone = paceTone(actual, pace);
                   const pct = full > 0 ? Math.round((actual / full) * 100) : 0;
@@ -2146,30 +2164,46 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
                           {fmtGBP(a.gp)}
                         </span>
                       </div>
-                      {/* Statted GP vs pay plan target. The bar scales to
-                          150% of target so there's room to show going over —
-                          the part beyond target renders in green regardless
-                          of the base colour, since exceeding is always good.
-                          No plan at all means there's nothing to measure
-                          against, shown as a flat red line instead. */}
+                      {/* GP against the pay plan's commission tiers. Each
+                          threshold is a notch on the bar; the rate they're
+                          currently earning sits at the end. No plan means
+                          nothing to measure against, so a flat red line
+                          rather than a bar implying a target that isn't set. */}
                       {a.hasPlan ? (() => {
-                        const scaleMax = a.target * 1.5;
-                        const baseAmt = Math.min(a.statted, a.target);
-                        const overAmt = Math.max(0, a.statted - a.target);
-                        const basePct = scaleMax > 0 ? Math.min(100, (baseAmt / scaleMax) * 100) : 0;
-                        const overPct = scaleMax > 0 ? Math.min(100 - basePct, (overAmt / scaleMax) * 100) : 0;
-                        const pacePct = scaleMax > 0 ? Math.min(100, (a.pace / scaleMax) * 100) : 0;
-                        const baseTone = paceTone(a.statted, a.pace);
+                        const top = a.tiers.length ? a.tiers[a.tiers.length - 1].gp : a.target;
+                        const scaleMax = Math.max(top * 1.15, a.statted * 1.05, 1);
+                        const pct = Math.min(100, (a.statted / scaleMax) * 100);
+                        const tone = paceTone(a.statted, a.pace);
+                        const fill = a.reached ? "var(--green)" : (tone ? tone.fg : "var(--ink-faint)");
                         return (
-                          <div className="mt-1.5" style={{ height: 6, background: "var(--surface-alt)", borderRadius: 3, position: "relative", overflow: "hidden" }}
-                            title={`Statted: ${fmtGBP(a.statted)} of ${fmtGBP(a.target)} target${overAmt > 0 ? ` — ${fmtGBP(overAmt)} over` : ""}`}>
-                            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${basePct}%`, background: baseTone ? baseTone.fg : "var(--ink-faint)" }} />
-                            {overPct > 0 && (
-                              <div style={{ position: "absolute", left: `${basePct}%`, top: 0, bottom: 0, width: `${overPct}%`, background: "var(--green)" }} />
-                            )}
-                            {pacePct > 0 && pacePct < 100 && (
-                              <div style={{ position: "absolute", left: `calc(${pacePct}% - 1px)`, top: -1, bottom: -1, width: 2, background: "var(--ink)", opacity: 0.4 }} />
-                            )}
+                          <div className="flex items-center gap-2 mt-1.5">
+                            <div style={{ flex: 1, height: 7, background: "var(--surface-alt)", borderRadius: 4, position: "relative" }}
+                              title={`${fmtGBP(a.statted)} statted · target ${fmtGBP(a.target)}`}>
+                              <div style={{ width: `${pct}%`, height: "100%", background: fill, borderRadius: 4, transition: "width .3s" }} />
+                              {a.tiers.map((t, ti) => {
+                                const left = Math.min(100, (t.gp / scaleMax) * 100);
+                                const hit = a.statted >= t.gp;
+                                return (
+                                  <div key={ti}
+                                    title={`${t.label || "Tier"} — ${fmtGBP(t.gp)} pays ${t.pct}%`}
+                                    style={{
+                                      position: "absolute", left: `calc(${left}% - 1px)`, top: -2, bottom: -2,
+                                      width: 2, borderRadius: 1,
+                                      background: hit ? "rgba(255,255,255,0.9)" : "var(--ink-faint)",
+                                      opacity: hit ? 1 : 0.55,
+                                    }} />
+                                );
+                              })}
+                            </div>
+                            <span className="sw-mono shrink-0" style={{
+                              fontSize: 11, fontWeight: 700, width: 32, textAlign: "right",
+                              color: a.reached ? "var(--green)" : "var(--ink-faint)",
+                            }}
+                              title={a.reached
+                                ? `${a.reached.label || "Tier"} — earning ${a.reached.pct}% of statted GP`
+                                : a.tiers.length ? `Next tier at ${fmtGBP(a.tiers[0].gp)}` : "No tiers set on this plan"}>
+                              {a.reached ? `${a.reached.pct}%` : "—"}
+                            </span>
                           </div>
                         );
                       })() : (
@@ -9569,7 +9603,8 @@ export default function App() {
   }, [loadPlanDetail]);
   useEffect(() => { if (session?.user) loadPayPlans(); }, [session, loadPayPlans]);
   useEffect(() => {
-    loadWhenNeeded("planDetail", session?.user && (tab === "statuses" || tab === "admin" || tab === "payplans"), loadPlanDetail);
+    // The ranked list on Claimed needs the tiers too, not just settings
+    loadWhenNeeded("planDetail", session?.user && ["dashboard", "statuses", "admin", "payplans"].includes(tab), loadPlanDetail);
   }, [session, tab, loadPlanDetail, loadWhenNeeded]);
 
   const savePayPlan = useCallback(async (id, patch) => {
