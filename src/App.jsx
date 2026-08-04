@@ -7965,9 +7965,12 @@ function LandscapesView({ profile, staff }) {
 /*  SALES DELIVERY — allocation and progress on claimed orders             */
 /* ---------------------------------------------------------------------- */
 
-function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAllocate, onSaveOrder, onOpenOrder }) {
+function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced = [], onAllocate, onSaveOrder, onOpenOrder }) {
   const statusCfg = useStatusCfg();
-  const [period, setPeriod] = useState("mtd");
+  const [period, setPeriod] = useState("ytd");     // delivery works across the year
+  const [view, setView] = useState("unplaced");    // unplaced | claimed
+  const [productFilter, setProductFilter] = useState("All");
+  const [placedFilter, setPlacedFilter] = useState("All");
   const [query, setQuery] = useState("");
   const [agentFilter, setAgentFilter] = useState("All");
   const [stateFilter, setStateFilter] = useState("All");
@@ -8046,6 +8049,90 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
     return Array.from(s).sort();
   }, [inPeriod, statusOf]);
 
+  /* ---- Unplaced / progressing --------------------------------------
+     Two sources feed this. The Unplaced Rep sheet is the authority on
+     what NetSuite still has open. Lilac submissions that haven't reached
+     NetSuite yet sit alongside as unallocated — once NetSuite picks them
+     up they drop out, because the sheet then covers them. */
+  const unplacedRows = useMemo(() => {
+    const from = periodStart(period);
+    const inRange = (d) => !from || (d && new Date(d) >= from);
+
+    const rows = (unplaced || [])
+      .filter((u) => !u.order_date || inRange(u.order_date))
+      .map((u) => ({
+        id: `up_${u.id}`,
+        kind: "netsuite",
+        company: u.company_name || u.data?.["Customer"] || "—",
+        product: u.product || "—",
+        placed: u.placed_status || "—",
+        agent: u.admin_agent || null,
+        date: u.order_date,
+        doc: u.document_number,
+        raw: u,
+      }));
+
+    // Lilac boxes with no NetSuite match yet — still to be picked up
+    const awaiting = (orders || [])
+      .filter((o) => {
+        if (o.removed_at) return false;
+        if (!inRange(o.submission_date)) return false;
+        const n = o.document_number ? nsByDoc[String(o.document_number)] : null;
+        return !n;   // once NetSuite has it, the sheet covers it
+      })
+      .map((o) => ({
+        id: `lb_${o.id}`,
+        kind: "lilac",
+        company: o.company_name || "—",
+        product: o.item_name_grouped || o.product_group_2 || "—",
+        placed: "Awaiting NetSuite",
+        agent: o.allocated_to_name || null,
+        date: o.submission_date,
+        doc: o.document_number,
+        order: o,
+      }));
+
+    return [...awaiting, ...rows]
+      .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+  }, [unplaced, orders, period, nsByDoc]);
+
+  const productOptions = useMemo(
+    () => Array.from(new Set(unplacedRows.map((r) => r.product).filter((p) => p && p !== "—"))).sort(),
+    [unplacedRows]
+  );
+  const placedOptions = useMemo(
+    () => Array.from(new Set(unplacedRows.map((r) => r.placed).filter((p) => p && p !== "—"))).sort(),
+    [unplacedRows]
+  );
+
+  const unplacedFiltered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return unplacedRows.filter((r) => {
+      if (q && !String(r.company).toLowerCase().includes(q)
+            && !String(r.doc || "").toLowerCase().includes(q)) return false;
+      if (productFilter !== "All" && r.product !== productFilter) return false;
+      if (placedFilter !== "All" && r.placed !== placedFilter) return false;
+      if (agentFilter === "__unallocated") { if (r.agent) return false; }
+      else if (agentFilter !== "All" && r.agent !== agentFilter) return false;
+      return true;
+    });
+  }, [unplacedRows, query, productFilter, placedFilter, agentFilter]);
+
+  // Workload by admin agent, from column K
+  const unplacedByAgent = useMemo(() => {
+    const m = {};
+    let none = 0;
+    unplacedRows.forEach((r) => {
+      if (!r.agent) { none += 1; return; }
+      m[r.agent] = (m[r.agent] || 0) + 1;
+    });
+    return {
+      rows: Object.keys(m).map((name) => ({ name, total: m[name] }))
+        .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name)),
+      none,
+    };
+  }, [unplacedRows]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return inPeriod.filter((o) => {
@@ -8080,14 +8167,29 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
         <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
           {deliveryTeam} · allocation and progress
         </span>
+        <div className="ml-auto flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 32 }}>
+          {[["unplaced", `Unplaced (${unplacedRows.length})`], ["claimed", "Claimed orders"]].map(([k, lbl]) => (
+            <button key={k} onClick={() => setView(k)}
+              className="sw-focus px-3 text-xs whitespace-nowrap"
+              style={view === k
+                ? { background: "var(--primary)", color: "#fff", fontWeight: 600, height: "100%" }
+                : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
+              {lbl}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Headline counts */}
       <div className="sw-cols-2 mb-3" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: "0.75rem" }}>
         {/* Orders in period carries the money underneath it */}
         <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Orders in period</div>
-          <div className="sw-display" style={{ fontSize: 27, fontWeight: 600, letterSpacing: "-0.025em" }}>{totals.all}</div>
+          <div className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>
+            {view === "unplaced" ? "Unplaced orders" : "Orders in period"}
+          </div>
+          <div className="sw-display" style={{ fontSize: 27, fontWeight: 600, letterSpacing: "-0.025em" }}>
+            {view === "unplaced" ? unplacedRows.length : totals.all}
+          </div>
           <div className="flex items-center gap-3 mt-1.5">
             <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
               GP <b className="sw-mono" style={{ color: "var(--ink-soft)" }}>{fmtGBP(totals.gp)}</b>
@@ -8099,7 +8201,9 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
         </div>
 
         {[
-          ["Unallocated", totals.unallocated, totals.unallocated ? "var(--amber)" : "var(--ink-faint)", "Not yet handed to anyone"],
+          ["Unallocated", view === "unplaced" ? unplacedByAgent.none : totals.unallocated,
+            (view === "unplaced" ? unplacedByAgent.none : totals.unallocated) ? "var(--amber)" : "var(--ink-faint)",
+            "Not yet handed to anyone"],
           ["Over 90 days", totals.aged, totals.aged ? "var(--red)" : "var(--ink-faint)", "Submitted more than 90 days ago"],
           ["Dirty orders", totals.dirty, totals.dirty ? "var(--red)" : "var(--ink-faint)", "Flagged for review"],
         ].map(([label, value, colour, hint]) => (
@@ -8122,10 +8226,25 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
             <option value="__unallocated">Unallocated only</option>
             {ranking.rows.map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
           </select>
-          <select className="sw-input sw-focus" style={{ width: 170, height: 32, fontSize: 12.5 }} value={stateFilter} onChange={(e) => setStateFilter(e.target.value)}>
-            <option value="All">All statuses</option>
-            {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
+          {view === "unplaced" ? (
+            <>
+              <select className="sw-input sw-focus" style={{ width: 170, height: 32, fontSize: 12.5 }}
+                value={productFilter} onChange={(e) => setProductFilter(e.target.value)}>
+                <option value="All">All products</option>
+                {productOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+              <select className="sw-input sw-focus" style={{ width: 180, height: 32, fontSize: 12.5 }}
+                value={placedFilter} onChange={(e) => setPlacedFilter(e.target.value)}>
+                <option value="All">All placed statuses</option>
+                {placedOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </>
+          ) : (
+            <select className="sw-input sw-focus" style={{ width: 170, height: 32, fontSize: 12.5 }} value={stateFilter} onChange={(e) => setStateFilter(e.target.value)}>
+              <option value="All">All statuses</option>
+              {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          )}
           <div className="relative" style={{ flex: 1, minWidth: 180 }}>
             <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: "var(--ink-faint)" }} />
             <input className="sw-input sw-focus" style={{ paddingLeft: 28, height: 32, fontSize: 12.5 }}
@@ -8146,20 +8265,44 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
               )}
             </div>
 
-            {ranking.unallocated > 0 && (
+            {(view === "unplaced" ? unplacedByAgent.none : ranking.unallocated) > 0 && (
               <button onClick={() => setAgentFilter(agentFilter === "__unallocated" ? "All" : "__unallocated")}
                 className="sw-focus w-full text-left px-2.5 py-2 rounded-lg mb-2"
                 style={{ background: agentFilter === "__unallocated" ? "var(--amber)" : "var(--amber-soft)" }}>
                 <div className="flex items-center justify-between">
                   <span style={{ fontSize: 13, fontWeight: 600, color: agentFilter === "__unallocated" ? "#fff" : "var(--amber)" }}>Unallocated</span>
-                  <span className="sw-mono" style={{ fontSize: 13.5, fontWeight: 700, color: agentFilter === "__unallocated" ? "#fff" : "var(--amber)" }}>{ranking.unallocated}</span>
+                  <span className="sw-mono" style={{ fontSize: 13.5, fontWeight: 700, color: agentFilter === "__unallocated" ? "#fff" : "var(--amber)" }}>
+                    {view === "unplaced" ? unplacedByAgent.none : ranking.unallocated}
+                  </span>
                 </div>
               </button>
             )}
 
-            {ranking.rows.length === 0 ? (
+            {(view === "unplaced" ? unplacedByAgent.rows : ranking.rows).length === 0 ? (
               <div className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>
-                Nobody on {deliveryTeam} yet — set their team on the Admin page.
+                {view === "unplaced"
+                  ? "Nothing unplaced — or the Unplaced Rep sync hasn't run yet."
+                  : `Nobody on ${deliveryTeam} yet — set their team on the Admin page.`}
+              </div>
+            ) : view === "unplaced" ? (
+              <div>
+                {unplacedByAgent.rows.map((r, i) => {
+                  const sel = agentFilter === r.name;
+                  const max = Math.max(1, ...unplacedByAgent.rows.map((x) => x.total));
+                  return (
+                    <button key={r.name} onClick={() => setAgentFilter(sel ? "All" : r.name)}
+                      className="sw-focus w-full text-left px-2.5 py-2"
+                      style={{ background: sel ? "var(--primary-soft)" : "transparent", borderTop: i === 0 ? "none" : "1px solid var(--border)" }}>
+                      <div className="flex items-center gap-2">
+                        <span className="truncate" style={{ fontSize: 13.5, color: sel ? "var(--primary)" : "var(--ink)", fontWeight: sel ? 600 : 500 }}>{r.name}</span>
+                        <span className="sw-mono ml-auto shrink-0" style={{ fontSize: 13.5, fontWeight: 600 }}>{r.total}</span>
+                      </div>
+                      <div className="rounded-full mt-1" style={{ height: 5, background: "var(--surface-alt)" }}>
+                        <div className="rounded-full" style={{ width: `${(r.total / max) * 100}%`, height: "100%", background: "var(--primary)" }} />
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             ) : (
               <div>
@@ -8189,12 +8332,78 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
               </div>
             )}
             <p className="text-xs mt-3" style={{ color: "var(--ink-faint)" }}>
-              Blue is open work, green is complete. Click a name to filter the list.
+              {view === "unplaced"
+                ? "Open orders per admin agent, from the Unplaced Rep sheet. Click a name to filter."
+                : "Blue is open work, green is complete. Click a name to filter the list."}
             </p>
           </div>
         </div>
 
-        {/* The orders */}
+        {/* Unplaced — the NetSuite sheet plus Lilac boxes not yet picked up */}
+        {view === "unplaced" ? (
+        <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <table className="w-full text-sm sw-orders" style={{ tableLayout: "fixed" }}>
+            <colgroup>
+              <col style={{ width: "27%" }} />
+              <col style={{ width: "19%" }} />
+              <col style={{ width: "19%" }} />
+              <col style={{ width: "18%" }} />
+              <col style={{ width: "10%" }} />
+              <col style={{ width: "7%" }} />
+            </colgroup>
+            <thead>
+              <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
+                {[["Company", ""], ["Product", ""], ["Placed status", ""], ["Admin agent", ""], ["Doc no.", "sw-hide-sm"], ["Date", "sw-hide-sm"]].map(([h, hide], i) => (
+                  <th key={i} className={`text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide ${hide}`}
+                    style={{ color: "var(--ink-soft)" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {unplacedFiltered.map((r) => (
+                <tr key={r.id} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td className="px-3 py-2">
+                    <div className="font-medium text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>
+                      {r.kind === "lilac" && (
+                        <span title="Submitted in the app, not yet in NetSuite"
+                          style={{ fontSize: 9.5, fontWeight: 700, color: "var(--primary)", background: "var(--primary-soft)", padding: "1px 4px", borderRadius: 3, marginRight: 4 }}>
+                          LILAC
+                        </span>
+                      )}
+                      {r.company}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 text-xs sw-clamp2" style={{ color: "var(--ink-soft)", lineHeight: 1.3 }}>{r.product}</td>
+                  <td className="px-3 py-2">
+                    <span className="inline-block rounded px-1.5 py-0.5 sw-clamp2"
+                      style={{
+                        fontSize: 10.5, fontWeight: 600, lineHeight: 1.3,
+                        background: r.kind === "lilac" ? "var(--amber-soft)" : "var(--surface-alt)",
+                        color: r.kind === "lilac" ? "var(--amber)" : "var(--ink-soft)",
+                      }}>
+                      {r.placed}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>
+                    {r.agent || <span style={{ color: "var(--ink-faint)" }}>Unallocated</span>}
+                  </td>
+                  <td className="px-2 py-2 sw-mono text-xs sw-hide-sm" style={{ color: "var(--ink-faint)", fontSize: 10.5 }}>{r.doc || "—"}</td>
+                  <td className="px-2 py-2 text-xs sw-hide-sm" style={{ color: "var(--ink-faint)", fontSize: 11, lineHeight: 1.3 }}>
+                    {r.date ? fmtDate(r.date) : "—"}
+                  </td>
+                </tr>
+              ))}
+              {unplacedFiltered.length === 0 && (
+                <tr><td colSpan={6} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                  {unplacedRows.length === 0
+                    ? "Nothing here yet — run the Unplaced Rep sync from the NetSuite workbook."
+                    : "No rows match these filters."}
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        ) : (
         <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <table className="w-full text-sm sw-orders" style={{ tableLayout: "fixed" }}>
             <colgroup>
@@ -8295,13 +8504,14 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
                 );
               })}
               {filtered.length === 0 && (
-                <tr><td colSpan={6} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                <tr><td colSpan={8} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
                   No orders match.
                 </td></tr>
               )}
             </tbody>
           </table>
         </div>
+        )}
       </div>
     </div>
   );
@@ -8900,6 +9110,15 @@ export default function App() {
 
   const deliveryTeam = appSettings.delivery_team || "Tracy Webber";
 
+  // Unplaced / progressing orders from the NetSuite workbook
+  const [unplaced, setUnplaced] = useState([]);
+  const loadUnplaced = useCallback(async () => {
+    const { data } = await supabase.from("unplaced_orders").select("*")
+      .order("order_date", { ascending: false }).limit(5000);
+    setUnplaced(data || []);
+  }, []);
+  useEffect(() => { if (session?.user) loadUnplaced(); }, [session, loadUnplaced]);
+
   // Name aliases — NetSuite spellings mapped back to the staff list
   const loadAliases = useCallback(async () => {
     const { data } = await supabase.from("staff_aliases").select("*").order("alias");
@@ -9436,7 +9655,7 @@ export default function App() {
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuiteResolved} />}
         {tab === "distribution" && <DistributionView orders={orders} netsuite={netsuiteResolved} staff={staff} />}
         {tab === "delivery" && (profile?.role === "office" || profile?.role === "sd" || profile?.role === "sd_2ic") && (
-          <DeliveryView orders={orders} netsuite={netsuiteResolved} staff={staff} profile={profile}
+          <DeliveryView orders={orders} netsuite={netsuiteResolved} staff={staff} profile={profile} unplaced={unplaced}
             deliveryTeam={deliveryTeam} onAllocate={allocateOrder} onSaveOrder={saveOrder} onOpenOrder={setSelected} />
         )}
         {tab === "forecast" && <ForecastView netsuite={netsuiteResolved} profile={profile} staff={staff} />}
