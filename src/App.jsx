@@ -8063,10 +8063,17 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
       .map((u) => ({
         id: `up_${u.id}`,
         kind: "netsuite",
-        company: u.company_name || u.data?.["Customer"] || "—",
+        company: u.company_name || "—",
         product: u.product || "—",
+        item: u.item_name || null,
         placed: u.placed_status || "—",
         agent: u.admin_agent || null,
+        seller: u.agent_name || null,
+        manager: u.manager || null,
+        sov: num(u.contract_value),
+        gp: num(u.gross_amount),
+        aged: /y/i.test(String(u.aged_flag || "")),
+        status: u.order_status || null,
         date: u.order_date,
         doc: u.document_number,
         raw: u,
@@ -8084,9 +8091,18 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         id: `lb_${o.id}`,
         kind: "lilac",
         company: o.company_name || "—",
-        product: o.item_name_grouped || o.product_group_2 || "—",
+        product: o.product_group_2 || o.item_name_grouped || "—",
+        item: o.item_name_grouped || null,
         placed: "Awaiting NetSuite",
         agent: o.allocated_to_name || null,
+        seller: o.closer_name || null,
+        manager: o.closer_team || null,
+        sov: num(o.contract_value),
+        gp: num(o.gp_office != null ? o.gp_office : o.sales_agent_gp),
+        aged: o.submission_date
+          ? Math.floor((Date.now() - new Date(o.submission_date).getTime()) / 86400000) >= 90
+          : false,
+        status: o.order_status || null,
         date: o.submission_date,
         doc: o.document_number,
         order: o,
@@ -8095,6 +8111,9 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
     return [...awaiting, ...rows]
       .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
   }, [unplaced, orders, period, nsByDoc]);
+
+  const unplacedAged = useMemo(() => unplacedRows.filter((r) => r.aged).length, [unplacedRows]);
+  const unplacedValue = useMemo(() => unplacedRows.reduce((s, r) => s + num(r.sov), 0), [unplacedRows]);
 
   const productOptions = useMemo(
     () => Array.from(new Set(unplacedRows.map((r) => r.product).filter((p) => p && p !== "—"))).sort(),
@@ -8195,7 +8214,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
               GP <b className="sw-mono" style={{ color: "var(--ink-soft)" }}>{fmtGBP(totals.gp)}</b>
             </span>
             <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
-              SOV <b className="sw-mono" style={{ color: "var(--ink-soft)" }}>{fmtGBP(totals.sov)}</b>
+              SOV <b className="sw-mono" style={{ color: "var(--ink-soft)" }}>{fmtGBP(view === "unplaced" ? unplacedValue : totals.sov)}</b>
             </span>
           </div>
         </div>
@@ -8204,7 +8223,9 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
           ["Unallocated", view === "unplaced" ? unplacedByAgent.none : totals.unallocated,
             (view === "unplaced" ? unplacedByAgent.none : totals.unallocated) ? "var(--amber)" : "var(--ink-faint)",
             "Not yet handed to anyone"],
-          ["Over 90 days", totals.aged, totals.aged ? "var(--red)" : "var(--ink-faint)", "Submitted more than 90 days ago"],
+          ["Over 90 days", view === "unplaced" ? unplacedAged : totals.aged,
+            (view === "unplaced" ? unplacedAged : totals.aged) ? "var(--red)" : "var(--ink-faint)",
+            "Sitting unplaced for more than 90 days"],
           ["Dirty orders", totals.dirty, totals.dirty ? "var(--red)" : "var(--ink-faint)", "Flagged for review"],
         ].map(([label, value, colour, hint]) => (
           <div key={label} className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }} title={hint}>
@@ -8344,16 +8365,17 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <table className="w-full text-sm sw-orders" style={{ tableLayout: "fixed" }}>
             <colgroup>
-              <col style={{ width: "27%" }} />
-              <col style={{ width: "19%" }} />
-              <col style={{ width: "19%" }} />
-              <col style={{ width: "18%" }} />
+              <col style={{ width: "24%" }} />
+              <col style={{ width: "16%" }} />
+              <col style={{ width: "15%" }} />
+              <col style={{ width: "16%" }} />
+              <col style={{ width: "11%" }} />
               <col style={{ width: "10%" }} />
-              <col style={{ width: "7%" }} />
+              <col style={{ width: "8%" }} />
             </colgroup>
             <thead>
               <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
-                {[["Company", ""], ["Product", ""], ["Placed status", ""], ["Admin agent", ""], ["Doc no.", "sw-hide-sm"], ["Date", "sw-hide-sm"]].map(([h, hide], i) => (
+                {[["Company", ""], ["Product", ""], ["Placed?", ""], ["Admin agent", ""], ["SOV", "sw-hide-xs"], ["Ref", "sw-hide-sm"], ["Date", "sw-hide-sm"]].map(([h, hide], i) => (
                   <th key={i} className={`text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide ${hide}`}
                     style={{ color: "var(--ink-soft)" }}>{h}</th>
                 ))}
@@ -8370,8 +8392,15 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                           LILAC
                         </span>
                       )}
+                      {r.aged && (
+                        <span title="Over 90 days old"
+                          style={{ fontSize: 9.5, fontWeight: 700, color: "var(--red)", background: "var(--red-soft)", padding: "1px 4px", borderRadius: 3, marginRight: 4 }}>
+                          90d+
+                        </span>
+                      )}
                       {r.company}
                     </div>
+                    {r.item && <div style={{ fontSize: 10, color: "var(--ink-faint)" }}>{r.item}</div>}
                   </td>
                   <td className="px-3 py-2 text-xs sw-clamp2" style={{ color: "var(--ink-soft)", lineHeight: 1.3 }}>{r.product}</td>
                   <td className="px-3 py-2">
@@ -8386,7 +8415,9 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                   </td>
                   <td className="px-3 py-2 text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>
                     {r.agent || <span style={{ color: "var(--ink-faint)" }}>Unallocated</span>}
+                    {r.seller && <div style={{ fontSize: 10, color: "var(--ink-faint)" }}>{r.seller}</div>}
                   </td>
+                  <td className="px-2 py-2 sw-mono text-xs sw-hide-xs">{fmtGBP(r.sov)}</td>
                   <td className="px-2 py-2 sw-mono text-xs sw-hide-sm" style={{ color: "var(--ink-faint)", fontSize: 10.5 }}>{r.doc || "—"}</td>
                   <td className="px-2 py-2 text-xs sw-hide-sm" style={{ color: "var(--ink-faint)", fontSize: 11, lineHeight: 1.3 }}>
                     {r.date ? fmtDate(r.date) : "—"}
@@ -8394,7 +8425,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                 </tr>
               ))}
               {unplacedFiltered.length === 0 && (
-                <tr><td colSpan={6} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                <tr><td colSpan={7} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
                   {unplacedRows.length === 0
                     ? "Nothing here yet — run the Unplaced Rep sync from the NetSuite workbook."
                     : "No rows match these filters."}
