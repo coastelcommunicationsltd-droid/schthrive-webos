@@ -1150,7 +1150,7 @@ function ChangePasswordScreen({ forced, onDone, onCancel }) {
 /*  DASHBOARD                                                              */
 /* ---------------------------------------------------------------------- */
 
-function DashboardView({ orders, netsuite, forecasts, staff, payPlans, planTiers, planMetrics, onOpenOrder, flashId, profile, loading, onNewOrder }) {
+function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans, planTiers, planMetrics, onOpenOrder, flashId, profile, loading, onNewOrder }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [agentFilter, setAgentFilter] = useState("All");
@@ -1614,10 +1614,28 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, planTiers
     // leaver's historical figures can never resurface as a named entry.
     const leaverNames = new Set((staff || []).filter((s) => s.active === false).map((s) => s.full_name));
 
+    // Managers and office users don't belong in a ranking of agents —
+    // their figures are the team's, so they'd double up against the people
+    // who actually closed the work.
+    const excludedRoles = new Set();
+    (profiles || []).forEach((p) => {
+      if (p.role === "office" || p.role === "sd" || p.role === "sd_2ic") excludedRoles.add(p.id);
+    });
+    // Teams are named after their manager, so anyone whose name IS a team
+    // name is a manager. This works for every role, whereas the profile
+    // check above only has data when an office user is signed in.
+    const teamNames = new Set((staff || []).map((s) => nameKey(s.team)).filter(Boolean));
+    const isManager = (s) => {
+      if (s.user_id && excludedRoles.has(s.user_id)) return true;
+      if (s.full_name && teamNames.has(nameKey(s.full_name))) return true;
+      return false;
+    };
+
     // Who's in scope: the team being viewed, or the whole office
     const teamScope = isOffice && scope !== "office" ? scope : (is2ic ? profile?.team : null);
     const people = (staff || []).filter((s) => {
       if (s.sells === false || s.active === false) return false;
+      if (isManager(s)) return false;
       if (teamScope) return s.team === teamScope;
       return !!s.team;
     });
@@ -1677,8 +1695,10 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, planTiers
     // Anyone with figures who isn't on the staff list still deserves a row
     // — but never a leaver. Their GP still flows into the team/office
     // totals elsewhere; they just don't get a named row here.
+    const managerNames = new Set((staff || []).filter(isManager).map((s) => nameKey(s.full_name)));
     Object.keys(claimed).forEach((nm) => {
       if (leaverNames.has(nm)) return;
+      if (managerNames.has(nameKey(nm))) return;
       if (!rows.some((r) => r.name === nm)) {
         if (teamScope) return;
         rows.push({
@@ -1691,7 +1711,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, planTiers
     // Everyone shows, including those on nothing — that's the point of a
     // ranking. Zero-GP people sort to the bottom, alphabetically.
     return rows.sort((a, b) => (b.gp - a.gp) || a.name.localeCompare(b.name));
-  }, [staff, payPlans, planTiers, gpCountable, netsuite, statusCfg, isOffice, is2ic, scope, profile, period]);
+  }, [staff, payPlans, planTiers, profiles, gpCountable, netsuite, statusCfg, isOffice, is2ic, scope, profile, period]);
 
   // ---- Pay plan measured against what NetSuite actually statted -------
   // The KPI cards use claimed GP; this asks the harder question — has the
@@ -1943,13 +1963,11 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, planTiers
             targets.people > 0 ? (
               <div className="flex flex-col gap-1.5">
                 {[
-                  // GP uses the agent's own claimed figure — the same
-                  // number shown on the headline card — not a separate
-                  // statted total that can read differently.
-                  ["GP", gpTotal, targets.full.gp, targets.gp],
-                  ["Cloud", planVsStatted.cloud, targets.full.cloud, targets.cloud],
-                  ["Connectivity", planVsStatted.conn, targets.full.conn, targets.conn],
-                  ["Mobile", planVsStatted.mobile, targets.full.mobile, targets.mobile],
+                  // GP only. The SOV lines were measuring team-wide product
+                  // totals against a single agent's target, so they read as
+                  // wildly over or under and drowned out the GP line.
+                  ["GP claimed", gpTotal, targets.full.gp, targets.gp],
+                  ["GP statted", planVsStatted.gp, targets.full.gp, targets.gp],
                 ].map(([label, actual, full, pace]) => {
                   const tone = paceTone(actual, pace);
                   const pct = full > 0 ? Math.round((actual / full) * 100) : 0;
@@ -7961,6 +7979,37 @@ function LandscapesView({ profile, staff }) {
   );
 }
 
+/* Placement states from column P of the Unplaced Rep sheet. Matched on
+   pattern rather than exact text, because the sheet's formulas word these
+   slightly differently over time. Order matters — first match wins. */
+const PLACEMENT_BUCKETS = [
+  { key: "out_for_sig", label: "Out for Sig", test: /out\s*for\s*sig|awaiting\s*sig|signature/i, tone: "var(--blue)" },
+  { key: "placed_tw",   label: "Placed TW",   test: /placed\s*t\.?w|this\s*week/i,               tone: "var(--green)" },
+  { key: "placed_lw",   label: "Placed LW",   test: /placed\s*l\.?w|last\s*week/i,               tone: "var(--gold)" },
+  { key: "unplaced",    label: "Unplaced",    test: /unplaced|not\s*placed|^$/i,                  tone: "var(--amber)" },
+];
+
+function placementOf(status) {
+  const s = String(status || "").trim();
+  const hit = PLACEMENT_BUCKETS.find((b) => b.test.test(s));
+  return hit ? hit.key : "other";
+}
+
+/* Product groups for the delivery drilldown, from column H. */
+const SD_PRODUCTS = [
+  { key: "cloud",      label: "Cloud",      test: /cloud|dv4|digital\s*voice|ip\s*-\s*cv|voice/i },
+  { key: "mobile",     label: "Mobile",     test: /mobile|sim|airtime|handset|ee\b/i },
+  { key: "btnet",      label: "BTNet",      test: /bt\s*net|btnet|leased|ethernet/i },
+  { key: "broadband",  label: "Broadband",  test: /broadband|fttp|fttc|adsl|fibre/i },
+  { key: "security",   label: "Security",   test: /security|badr|ccs|cyber/i },
+];
+
+function sdProductOf(product) {
+  const p = String(product || "");
+  const hit = SD_PRODUCTS.find((x) => x.test.test(p));
+  return hit ? hit.key : "other";
+}
+
 /* ---------------------------------------------------------------------- */
 /*  SALES DELIVERY — allocation and progress on claimed orders             */
 /* ---------------------------------------------------------------------- */
@@ -7971,6 +8020,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   const [view, setView] = useState("unplaced");    // unplaced | claimed
   const [productFilter, setProductFilter] = useState("All");
   const [placedFilter, setPlacedFilter] = useState("All");
+  const [cardView, setCardView] = useState("summary");   // summary | placement
   const [query, setQuery] = useState("");
   const [agentFilter, setAgentFilter] = useState("All");
   const [stateFilter, setStateFilter] = useState("All");
@@ -8113,6 +8163,31 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   }, [unplaced, orders, period, nsByDoc]);
 
   const unplacedAged = useMemo(() => unplacedRows.filter((r) => r.aged).length, [unplacedRows]);
+
+  /* Placement summary, and the same split by product underneath it.
+     Built from the rows currently in scope so the period filter applies. */
+  const placement = useMemo(() => {
+    const cols = [...SD_PRODUCTS.map((p) => p.key), "other"];
+    const blank = () => {
+      const o = { count: 0, sov: 0, byProduct: {} };
+      cols.forEach((c) => { o.byProduct[c] = { count: 0, sov: 0 }; });
+      return o;
+    };
+    const out = {};
+    PLACEMENT_BUCKETS.forEach((b) => { out[b.key] = blank(); });
+    out.other = blank();
+
+    unplacedRows.forEach((r) => {
+      const bucket = out[placementOf(r.placed)] || out.other;
+      const prod = sdProductOf(r.product);
+      const sov = num(r.sov);
+      bucket.count += 1;
+      bucket.sov += sov;
+      bucket.byProduct[prod].count += 1;
+      bucket.byProduct[prod].sov += sov;
+    });
+    return { buckets: out, cols };
+  }, [unplacedRows]);
   const unplacedValue = useMemo(() => unplacedRows.reduce((s, r) => s + num(r.sov), 0), [unplacedRows]);
 
   const productOptions = useMemo(
@@ -8199,7 +8274,110 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         </div>
       </div>
 
-      {/* Headline counts */}
+      {/* Which set of cards is showing */}
+      {view === "unplaced" && (
+        <div className="flex items-center justify-end mb-2">
+          <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 30 }}>
+            {[["summary", "Summary"], ["placement", "Placement"]].map(([k, lbl]) => (
+              <button key={k} onClick={() => setCardView(k)}
+                className="sw-focus px-3 text-xs"
+                style={cardView === k
+                  ? { background: "var(--surface-alt)", color: "var(--ink)", fontWeight: 600, height: "100%" }
+                  : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
+                {lbl}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Placement: where everything has got to, and what it's worth */}
+      {view === "unplaced" && cardView === "placement" ? (
+        <div className="mb-3">
+          <div className="sw-cols-2" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: "0.75rem" }}>
+            {PLACEMENT_BUCKETS.map((b) => {
+              const d = placement.buckets[b.key];
+              const active = placedFilter !== "All" && b.test.test(placedFilter);
+              return (
+                <button key={b.key}
+                  onClick={() => {
+                    // Clicking a card filters the list to that placement state
+                    const match = placedOptions.find((p) => b.test.test(p));
+                    setPlacedFilter(active ? "All" : (match || "All"));
+                  }}
+                  className="sw-focus rounded-xl p-4 text-left"
+                  style={{ background: "var(--surface)", border: `1px solid ${active ? b.tone : "var(--border)"}` }}>
+                  <div className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{b.label}</div>
+                  <div className="sw-display" style={{ fontSize: 27, fontWeight: 600, letterSpacing: "-0.025em", color: b.tone }}>{d.count}</div>
+                  <div className="sw-mono text-xs mt-1" style={{ color: "var(--ink-soft)" }}>{fmtGBP(d.sov)}</div>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* The same split, per product */}
+          <div className="rounded-xl overflow-hidden mt-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div style={{ overflowX: "auto" }}>
+              <table className="w-full" style={{ borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
+                    <th className="text-left px-3 py-2 text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)", minWidth: 120 }}>Product</th>
+                    {PLACEMENT_BUCKETS.map((b) => (
+                      <th key={b.key} className="text-center px-3 py-2 text-xs font-semibold uppercase whitespace-nowrap" style={{ color: "var(--ink-soft)" }}>{b.label}</th>
+                    ))}
+                    <th className="text-center px-3 py-2 text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)", background: "var(--primary-soft)" }}>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...SD_PRODUCTS, { key: "other", label: "Other" }].map((p) => {
+                    const rowTotal = PLACEMENT_BUCKETS.reduce((acc, b) => {
+                      const c = placement.buckets[b.key].byProduct[p.key];
+                      return { count: acc.count + c.count, sov: acc.sov + c.sov };
+                    }, { count: 0, sov: 0 });
+                    if (rowTotal.count === 0) return null;
+                    return (
+                      <tr key={p.key} style={{ borderTop: "1px solid var(--border)" }}>
+                        <td className="px-3 py-2 text-xs font-semibold">{p.label}</td>
+                        {PLACEMENT_BUCKETS.map((b) => {
+                          const c = placement.buckets[b.key].byProduct[p.key];
+                          return (
+                            <td key={b.key} className="px-3 py-2 text-center">
+                              <div className="sw-mono" style={{ fontSize: 13, fontWeight: 600, color: c.count ? "var(--ink)" : "var(--ink-faint)" }}>{c.count || "—"}</div>
+                              {c.sov > 0 && <div className="sw-mono" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>{fmtGBP(c.sov)}</div>}
+                            </td>
+                          );
+                        })}
+                        <td className="px-3 py-2 text-center" style={{ background: "var(--primary-soft)" }}>
+                          <div className="sw-mono" style={{ fontSize: 13, fontWeight: 700 }}>{rowTotal.count}</div>
+                          <div className="sw-mono" style={{ fontSize: 10.5, color: "var(--ink-soft)" }}>{fmtGBP(rowTotal.sov)}</div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  <tr style={{ borderTop: "2px solid var(--border)", background: "var(--surface-alt)" }}>
+                    <td className="px-3 py-2 text-xs font-bold">All products</td>
+                    {PLACEMENT_BUCKETS.map((b) => (
+                      <td key={b.key} className="px-3 py-2 text-center">
+                        <div className="sw-mono" style={{ fontSize: 13, fontWeight: 700 }}>{placement.buckets[b.key].count}</div>
+                        <div className="sw-mono" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>{fmtGBP(placement.buckets[b.key].sov)}</div>
+                      </td>
+                    ))}
+                    <td className="px-3 py-2 text-center" style={{ background: "var(--primary-soft)" }}>
+                      <div className="sw-mono" style={{ fontSize: 13, fontWeight: 700 }}>{unplacedRows.length}</div>
+                      <div className="sw-mono" style={{ fontSize: 10.5, color: "var(--ink-soft)" }}>{fmtGBP(unplacedValue)}</div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p className="text-xs px-3 py-2" style={{ color: "var(--ink-faint)", borderTop: "1px solid var(--border)" }}>
+              Click a card above to filter the list to that state. Rows with nothing in them are hidden.
+            </p>
+          </div>
+        </div>
+      ) : (
+
+      /* Headline counts */
       <div className="sw-cols-2 mb-3" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: "0.75rem" }}>
         {/* Orders in period carries the money underneath it */}
         <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
@@ -8235,6 +8413,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
           </div>
         ))}
       </div>
+      )}
 
       {/* Filters */}
       <div className="rounded-xl mb-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
@@ -8365,17 +8544,18 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <table className="w-full text-sm sw-orders" style={{ tableLayout: "fixed" }}>
             <colgroup>
-              <col style={{ width: "24%" }} />
-              <col style={{ width: "16%" }} />
-              <col style={{ width: "15%" }} />
-              <col style={{ width: "16%" }} />
-              <col style={{ width: "11%" }} />
+              <col style={{ width: "21%" }} />
+              <col style={{ width: "13%" }} />
+              <col style={{ width: "14%" }} />
+              <col style={{ width: "12%" }} />
+              <col style={{ width: "14%" }} />
               <col style={{ width: "10%" }} />
-              <col style={{ width: "8%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: "7%" }} />
             </colgroup>
             <thead>
               <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
-                {[["Company", ""], ["Product", ""], ["Placed?", ""], ["Admin agent", ""], ["SOV", "sw-hide-xs"], ["Ref", "sw-hide-sm"], ["Date", "sw-hide-sm"]].map(([h, hide], i) => (
+                {[["Company", ""], ["Product", ""], ["Order status", ""], ["Placed?", ""], ["Admin agent", ""], ["SOV", "sw-hide-xs"], ["NetSuite ref", "sw-hide-sm"], ["Date", "sw-hide-sm"]].map(([h, hide], i) => (
                   <th key={i} className={`text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide ${hide}`}
                     style={{ color: "var(--ink-soft)" }}>{h}</th>
                 ))}
@@ -8403,15 +8583,32 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                     {r.item && <div style={{ fontSize: 10, color: "var(--ink-faint)" }}>{r.item}</div>}
                   </td>
                   <td className="px-3 py-2 text-xs sw-clamp2" style={{ color: "var(--ink-soft)", lineHeight: 1.3 }}>{r.product}</td>
-                  <td className="px-3 py-2">
-                    <span className="inline-block rounded px-1.5 py-0.5 sw-clamp2"
-                      style={{
-                        fontSize: 10.5, fontWeight: 600, lineHeight: 1.3,
-                        background: r.kind === "lilac" ? "var(--amber-soft)" : "var(--surface-alt)",
-                        color: r.kind === "lilac" ? "var(--amber)" : "var(--ink-soft)",
-                      }}>
-                      {r.placed}
-                    </span>
+                  <td className="px-2 py-2">
+                    {(() => {
+                      const tone = TONE_MAP[(statusCfg[r.status] || {}).tone] || TONE_MAP.neutral;
+                      return (
+                        <span className="inline-block rounded px-1.5 py-0.5 sw-clamp2"
+                          style={{ fontSize: 10.5, fontWeight: 600, lineHeight: 1.3, color: tone.fg, background: tone.bg }}
+                          title={r.status || ""}>
+                          {r.status || "—"}
+                        </span>
+                      );
+                    })()}
+                  </td>
+                  <td className="px-2 py-2">
+                    {(() => {
+                      const b = PLACEMENT_BUCKETS.find((x) => x.test.test(String(r.placed || "")));
+                      const tone = r.kind === "lilac"
+                        ? { fg: "var(--amber)", bg: "var(--amber-soft)" }
+                        : b ? { fg: b.tone, bg: "var(--surface-alt)" }
+                            : { fg: "var(--ink-soft)", bg: "var(--surface-alt)" };
+                      return (
+                        <span className="inline-block rounded px-1.5 py-0.5 sw-clamp2"
+                          style={{ fontSize: 10.5, fontWeight: 600, lineHeight: 1.3, color: tone.fg, background: tone.bg }}>
+                          {r.placed}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="px-3 py-2 text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>
                     {r.agent || <span style={{ color: "var(--ink-faint)" }}>Unallocated</span>}
@@ -8425,7 +8622,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                 </tr>
               ))}
               {unplacedFiltered.length === 0 && (
-                <tr><td colSpan={7} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                <tr><td colSpan={8} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
                   {unplacedRows.length === 0
                     ? "Nothing here yet — run the Unplaced Rep sync from the NetSuite workbook."
                     : "No rows match these filters."}
@@ -9045,6 +9242,15 @@ export default function App() {
   const [planError, setPlanError] = useState("");
   const [forecasts, setForecasts] = useState([]);
   const [aliases, setAliases] = useState([]);
+  // Several datasets are only needed on one tab. Loading them all at sign-in
+  // made first paint noticeably slower, so they're fetched the first time
+  // their tab is opened and cached from then on.
+  const loadedOnce = useRef({});
+  const loadWhenNeeded = useCallback((key, needed, fn) => {
+    if (!needed || loadedOnce.current[key]) return;
+    loadedOnce.current[key] = true;
+    fn();
+  }, []);
   const [appSettings, setAppSettings] = useState({});
   const [coachScenarios, setCoachScenarios] = useState([]);
   const [coachSettings, setCoachSettings] = useState({ rubric: "", what_good_looks_like: "" });
@@ -9148,7 +9354,9 @@ export default function App() {
       .order("order_date", { ascending: false }).limit(5000);
     setUnplaced(data || []);
   }, []);
-  useEffect(() => { if (session?.user) loadUnplaced(); }, [session, loadUnplaced]);
+  useEffect(() => {
+    loadWhenNeeded("unplaced", session?.user && tab === "delivery", loadUnplaced);
+  }, [session, tab, loadUnplaced, loadWhenNeeded]);
 
   // Name aliases — NetSuite spellings mapped back to the staff list
   const loadAliases = useCallback(async () => {
@@ -9196,7 +9404,9 @@ export default function App() {
     const { data } = await supabase.from("coach_stages").select("*").order("sort_order");
     setCoachStages(data || []);
   }, []);
-  useEffect(() => { if (session?.user) loadCoachStages(); }, [session, loadCoachStages]);
+  useEffect(() => {
+    loadWhenNeeded("coachStages", session?.user && (tab === "coach" || tab === "statuses"), loadCoachStages);
+  }, [session, tab, loadCoachStages, loadWhenNeeded]);
 
   const saveCoachStage = useCallback(async (id, patch) => {
     const { error } = await supabase.from("coach_stages").update(patch).eq("id", id);
@@ -9231,7 +9441,9 @@ export default function App() {
     setCoachScenarios(sc || []);
     if (st) setCoachSettings(st);
   }, []);
-  useEffect(() => { if (session?.user) loadCoachCfg(); }, [session, loadCoachCfg]);
+  useEffect(() => {
+    loadWhenNeeded("coachCfg", session?.user && (tab === "coach" || tab === "statuses"), loadCoachCfg);
+  }, [session, tab, loadCoachCfg, loadWhenNeeded]);
 
   const saveCoachScenario = useCallback(async (id, patch) => {
     const { error } = await supabase.from("coach_scenarios").update(patch).eq("id", id);
@@ -9266,21 +9478,26 @@ export default function App() {
   }, [loadCoachCfg]);
 
   // Pay plans — monthly targets the KPI cards are measured against
+  // Plans themselves drive the KPI targets, so they load with everything
+  // else. Tiers, KPIs and assignment history are only read on the settings
+  // and admin pages, so they wait until one of those is opened.
   const loadPayPlans = useCallback(async () => {
-    const [plans, tiers, metrics, history] = await Promise.all([
-      supabase.from("pay_plans").select("*").order("name"),
+    const { data } = await supabase.from("pay_plans").select("*").order("name");
+    setPayPlans(data || []);
+  }, []);
+
+  const loadPlanDetail = useCallback(async () => {
+    const [tiers, metrics, history] = await Promise.all([
       supabase.from("pay_plan_tiers").select("*").order("sort_order"),
       supabase.from("pay_plan_metrics").select("*").order("sort_order"),
       supabase.from("staff_pay_plans").select("*").order("effective_from", { ascending: false }),
     ]);
-    setPayPlans(plans.data || []);
     setPlanTiers(tiers.data || []);
     setPlanMetrics(metrics.data || []);
     setPlanHistory(history.data || []);
-    // If the tier tables aren't there, say so once rather than silently
-    // rendering an empty tier list that looks like a broken button.
-    if (tiers.error) setPlanTablesMissing(true);
-    else setPlanTablesMissing(false);
+    // Say so once rather than silently rendering an empty tier list that
+    // looks like a broken button.
+    setPlanTablesMissing(!!tiers.error);
   }, []);
 
   // --- Tier / metric / assignment editing -----------------------------
@@ -9302,8 +9519,8 @@ export default function App() {
   const savePlanTier = useCallback(async (id, patch) => {
     const { error } = await supabase.from("pay_plan_tiers").update(patch).eq("id", id);
     if (error) { setToast(explainDbError(error, "Saving the tier")); setTimeout(() => setToast(""), 12000); return; }
-    loadPayPlans();
-  }, [loadPayPlans, explainDbError]);
+    loadPlanDetail();
+  }, [loadPlanDetail, explainDbError]);
 
   const addPlanTier = useCallback(async (planId) => {
     setPlanError("");
@@ -9315,24 +9532,24 @@ export default function App() {
       setPlanError(explainDbError(error, "Adding a tier"));
       return;
     }
-    loadPayPlans();
-  }, [loadPayPlans, explainDbError]);
+    loadPlanDetail();
+  }, [loadPlanDetail, explainDbError]);
 
   const deletePlanTier = useCallback(async (id) => {
     await supabase.from("pay_plan_tiers").delete().eq("id", id);
-    loadPayPlans();
-  }, [loadPayPlans]);
+    loadPlanDetail();
+  }, [loadPlanDetail]);
 
   const addPlanMetric = useCallback(async (planId, key, label, unit) => {
     const { error } = await supabase.from("pay_plan_metrics").insert({ plan_id: planId, key, label, unit, sort_order: 100 });
     if (error) { setToast(explainDbError(error, "Adding a KPI")); setTimeout(() => setToast(""), 12000); return; }
-    loadPayPlans();
-  }, [loadPayPlans, explainDbError]);
+    loadPlanDetail();
+  }, [loadPlanDetail, explainDbError]);
 
   const deletePlanMetric = useCallback(async (id) => {
     await supabase.from("pay_plan_metrics").delete().eq("id", id);
-    loadPayPlans();
-  }, [loadPayPlans]);
+    loadPlanDetail();
+  }, [loadPlanDetail]);
 
   const assignPlan = useCallback(async (staffId, planId, from) => {
     // Close off whatever they were on, then open the new one
@@ -9343,14 +9560,17 @@ export default function App() {
       .insert({ staff_id: staffId, pay_plan_id: planId || null, effective_from: from });
     if (error) { setToast(`Couldn't assign: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
     await supabase.from("staff").update({ pay_plan_id: planId || null }).eq("id", staffId);
-    loadPayPlans(); loadStaff();
-  }, [loadPayPlans, loadStaff]);
+    loadPlanDetail(); loadStaff();
+  }, [loadPlanDetail, loadStaff]);
 
   const deleteAssignment = useCallback(async (id) => {
     await supabase.from("staff_pay_plans").delete().eq("id", id);
-    loadPayPlans();
-  }, [loadPayPlans]);
+    loadPlanDetail();
+  }, [loadPlanDetail]);
   useEffect(() => { if (session?.user) loadPayPlans(); }, [session, loadPayPlans]);
+  useEffect(() => {
+    loadWhenNeeded("planDetail", session?.user && (tab === "statuses" || tab === "admin" || tab === "payplans"), loadPlanDetail);
+  }, [session, tab, loadPlanDetail, loadWhenNeeded]);
 
   const savePayPlan = useCallback(async (id, patch) => {
     const { error } = await supabase.from("pay_plans").update(patch).eq("id", id);
@@ -9457,24 +9677,43 @@ export default function App() {
     setLoading(false);
   }, [isTVRoute]);
 
+  // A sheet sync writes hundreds of rows in quick succession, and reloading
+  // on each one was re-paging the whole table over and over. Coalesce a
+  // burst into a single refresh.
+  const reloadTimers = useRef({});
+  const debouncedReload = useCallback((key, fn, wait = 1200) => {
+    clearTimeout(reloadTimers.current[key]);
+    reloadTimers.current[key] = setTimeout(fn, wait);
+  }, []);
+
   useEffect(() => {
     if (!session?.user) return;
     loadOrders();
     const channel = supabase.channel("schthrive-live")
       .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, (payload) => {
-        loadOrders();
+        debouncedReload("orders", loadOrders);
         if (payload.new?.id) {
           setFlashId(payload.new.id);
           setTimeout(() => setFlashId((f) => (f === payload.new.id ? null : f)), 1600);
         }
       })
-      .on("postgres_changes", { event: "*", schema: "public", table: "netsuite_orders" }, () => loadNetsuite())
-      .on("postgres_changes", { event: "*", schema: "public", table: "forecasts" }, () => loadForecasts())
+      .on("postgres_changes", { event: "*", schema: "public", table: "netsuite_orders" }, () => debouncedReload("netsuite", loadNetsuite))
+      .on("postgres_changes", { event: "*", schema: "public", table: "forecasts" }, () => debouncedReload("forecasts", loadForecasts))
       .subscribe();
     // Safety-net refresh every 60s (keeps the wall-mounted TV honest).
-    const poll = setInterval(() => { loadOrders(); loadNetsuite(); loadForecasts(); }, 60000);
-    return () => { supabase.removeChannel(channel); clearInterval(poll); };
-  }, [session, loadOrders, loadNetsuite, loadForecasts]);
+    // Realtime does the work; this is a safety net for a dropped socket.
+    // Skipped while the tab is hidden — there's nobody watching, and a wall
+    // display left open shouldn't poll all night for no reason.
+    const poll = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      loadOrders(); loadNetsuite(); loadForecasts();
+    }, 120000);
+    return () => {
+      supabase.removeChannel(channel);
+      clearInterval(poll);
+      Object.values(reloadTimers.current).forEach(clearTimeout);
+    };
+  }, [session, loadOrders, loadNetsuite, loadForecasts, debouncedReload]);
 
   const handleNewOrder = useCallback(async (partial) => {
     setSubmitting(true);
@@ -9680,7 +9919,7 @@ export default function App() {
             </div>
           </div>
         )}
-        {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuiteResolved} forecasts={forecasts} staff={staff} payPlans={payPlans} planTiers={planTiers} planMetrics={planMetrics} onNewOrder={() => setTab("new")} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
+        {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuiteResolved} forecasts={forecasts} staff={staff} profiles={allProfiles} payPlans={payPlans} planTiers={planTiers} planMetrics={planMetrics} onNewOrder={() => setTab("new")} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
         {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} />}
         {tab === "daybyday" && <DayByDayView orders={orders} staff={staff} />}
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuiteResolved} />}
