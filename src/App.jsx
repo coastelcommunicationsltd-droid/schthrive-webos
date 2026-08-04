@@ -2083,9 +2083,9 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
             {/* Exceptions — one consistent segmented group */}
           <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 32 }}>
             {[
-              ["hide", "Hide NGP", null, "NGP orders don't count toward GP"],
-              ["show", "Show NGP", null, "Include NGP orders in the list"],
-              ["only", "Only NGP", ngpCount, "Just the NGP orders"],
+              ["hide", "Hide Non GP", null, "Non-GP orders don't count toward GP"],
+              ["show", "Show Non GP", null, "Include Non-GP orders in the list"],
+              ["only", "Only Non GP", ngpCount, "Just the Non-GP orders"],
             ].map(([k, lbl, n, hint]) => (
               <button key={k} onClick={() => { setNgpMode(k); setFocusFilter("All"); }} title={hint}
                 className="sw-focus px-2 text-xs whitespace-nowrap"
@@ -2104,7 +2104,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
               style={nsovMode === "only" && focusFilter === "All"
                 ? { background: "var(--amber-soft)", color: "var(--amber)", fontWeight: 600, height: "100%" }
                 : { background: "transparent", color: nsovCount ? "var(--ink-soft)" : "var(--ink-faint)", height: "100%" }}>
-              NSOV{nsovCount ? ` ${nsovCount}` : ""}
+              Non SOV{nsovCount ? ` ${nsovCount}` : ""}
             </button>
             <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
             <button onClick={() => setFocusFilter(focusFilter === "attention" ? "All" : "attention")}
@@ -2113,7 +2113,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
               style={focusFilter === "attention"
                 ? { background: "var(--amber-soft)", color: "var(--amber)", fontWeight: 600, height: "100%" }
                 : { background: "transparent", color: attentionCount ? "var(--ink-soft)" : "var(--ink-faint)", height: "100%" }}>
-              Action{attentionCount ? ` ${attentionCount}` : ""}
+              Need Actions{attentionCount ? ` ${attentionCount}` : ""}
             </button>
             <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
             <button onClick={() => setFocusFilter(focusFilter === "aged" ? "All" : "aged")}
@@ -3895,6 +3895,7 @@ function DayByDayView({ orders }) {
 
   const data = useMemo(() => {
     const teams = {};
+    const dcBucket = blank();
     const ensure = (t) => {
       if (!teams[t]) {
         teams[t] = { team: t, gp: blank(), totalSov: blank(), groups: {}, subs: {} };
@@ -3906,7 +3907,19 @@ function DayByDayView({ orders }) {
     filtered.forEach((o) => {
       const t = ensure(o.closer_team || "Unassigned");
       const d = o.submission_date;
-      addTo(t.gp, d, num(o.gp_office != null ? o.gp_office : o.sales_agent_gp));
+
+      // Each side claims their own share; anything claimed above the deal's
+      // real GP is the overlap and comes off as DC.
+      const dealGp = num(o.gp_office != null ? o.gp_office : o.sales_agent_gp);
+      const closerGp = num(o.closer_share) || dealGp;
+      const leadGenGp = num(o.lead_gen_share);
+      addTo(t.gp, d, closerGp);
+      if (o.lead_gen_name && leadGenGp) {
+        const lt = ensure(o.lead_gen_team || "Unassigned");
+        addTo(lt.gp, d, leadGenGp);
+      }
+      const overlap = (closerGp + leadGenGp) - dealGp;
+      if (overlap > 0) addTo(dcBucket, d, -overlap);
 
       const sov = num(o.contract_value);
       addTo(t.totalSov, d, sov);
@@ -3924,11 +3937,13 @@ function DayByDayView({ orders }) {
       });
     });
 
-    return Object.keys(teams).map((k) => teams[k]).sort((a, b) => b.gp.month - a.gp.month);
+    const list = Object.keys(teams).map((k) => teams[k]).sort((a, b) => b.gp.month - a.gp.month);
+    list.dc = dcBucket;
+    return list;
   }, [filtered, addTo, product]);
 
   const totals = useMemo(() => {
-    const out = { gp: blank(), totalSov: blank(), groups: {}, subs: {} };
+    const out = { gp: blank(), totalSov: blank(), groups: {}, subs: {}, claimed: blank() };
     DBD_GROUPS.forEach((g) => { out.groups[g.key] = blank(); out.subs[g.key] = {}; });
     const merge = (dst, src) => {
       dst.month += src.month;
@@ -3936,6 +3951,7 @@ function DayByDayView({ orders }) {
     };
     data.forEach((t) => {
       merge(out.gp, t.gp);
+      merge(out.claimed, t.gp);
       merge(out.totalSov, t.totalSov);
       DBD_GROUPS.forEach((g) => {
         merge(out.groups[g.key], t.groups[g.key]);
@@ -3945,6 +3961,11 @@ function DayByDayView({ orders }) {
         });
       });
     });
+    // Take the overlap back off so the office GP is the real figure
+    const dcB = data.dc || blank();
+    out.gp.month += dcB.month;
+    dcB.week.forEach((v, i) => { out.gp.week[i] += v; });
+    out.dc = dcB;
     return out;
   }, [data]);
 
@@ -4065,6 +4086,11 @@ function DayByDayView({ orders }) {
                     </React.Fragment>
                   );
                 })}
+
+                {/* Reconciles the team rows above to the office GP at the top */}
+                {totals.dc && totals.dc.month !== 0 && (
+                  <Row label="DC (lead-gen overlap)" bucket={totals.dc} tone="var(--red)" />
+                )}
 
                 {data.length === 0 && (
                   <tr><td colSpan={8} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
@@ -6266,7 +6292,9 @@ function ForecastView({ netsuite, profile, staff }) {
                   <tr style={{ background: "var(--ink)" }}>
                     <td colSpan={5} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "#fff" }}>All teams</td>
                   </tr>
-                  <FcRow label="GP" v={breakdown.all.gp} sov={null} bold tone="var(--green)" />
+                  {/* Net of the lead-gen overlap — this is what lands. The
+                      team rows below add up to more; the DC line reconciles. */}
+                  <FcRow label="GP" v={summary.grand} sov={null} bold tone="var(--green)" />
                   <FcRow label="Total SOV" v={null} sov={breakdown.all.sov} units={breakdown.all.units} lines={breakdown.all.lines} bold tone="var(--primary)"
                     isOpen={!!fcOpen.all_sov} onToggle={() => setFcOpen((o) => ({ ...o, all_sov: !o.all_sov }))} />
                   {fcOpen.all_sov && PILLAR_GROUPS.map((g) => {
@@ -6321,7 +6349,7 @@ function ForecastView({ netsuite, profile, staff }) {
                   {/* Double count and the figure that actually lands */}
                   <tr style={{ borderTop: "2px solid var(--border)", background: "var(--red-soft)" }}>
                     <td className="px-3 py-1.5 text-xs font-semibold" style={{ color: "var(--red)" }}>
-                      DC <span style={{ fontWeight: 400 }}>(lead-gen overlap)</span>
+                      DC <span style={{ fontWeight: 400 }}>(teams claim {fmtGBP(summary.gpSum)})</span>
                     </td>
                     <ForecastCell value={summary.dc} bold tone="var(--red)" highlight />
                     <ForecastCell value={0} />
@@ -6329,7 +6357,7 @@ function ForecastView({ netsuite, profile, staff }) {
                     <ForecastCell value={0} money={false} />
                   </tr>
                   <tr style={{ background: "var(--ink)" }}>
-                    <td className="px-3 py-2 text-sm font-bold" style={{ color: "#fff" }}>Grand Total</td>
+                    <td className="px-3 py-2 text-sm font-bold" style={{ color: "#fff" }}>Net GP after DC</td>
                     <td className="px-2 py-2 sw-mono font-bold text-center" style={{ fontSize: 13, color: "#fff", background: "#3B1370" }}>{fmtGBP(summary.grand)}</td>
                     <td className="px-2 py-2 sw-mono font-bold text-center" style={{ fontSize: 12, color: "#fff" }}>{fmtGBP(breakdown.all.sov)}</td>
                     <td className="px-2 py-2 sw-mono text-center" style={{ fontSize: 12, color: "rgba(255,255,255,0.75)" }}>{breakdown.all.units.toLocaleString("en-GB")}</td>
@@ -7000,7 +7028,29 @@ function LandscapesView({ profile, staff }) {
 /*  SALES DISTRIBUTION — who generates for whom                            */
 /* ---------------------------------------------------------------------- */
 
-function DistributionView({ orders, netsuite }) {
+function DistributionView({ orders, netsuite, staff }) {
+  const aliases = useAliases();
+
+  // Resolve an agent's team from the staff record rather than trusting the
+  // team stored on the order — that's what was leaving people "Unassigned"
+  // when their NetSuite spelling differed from the staff list.
+  const teamByName = useMemo(() => {
+    const m = {};
+    (staff || []).forEach((s) => {
+      if (!s.full_name) return;
+      if (s.team) m[s.full_name.toLowerCase()] = s.team;
+      if (s.alt_name && s.team) m[String(s.alt_name).trim().toLowerCase()] = s.team;
+    });
+    return m;
+  }, [staff]);
+
+  const canonName = useCallback((n) => resolveName(n, aliases), [aliases]);
+  const teamOf = useCallback((name, fallback) => {
+    if (!name) return fallback || "Unassigned";
+    const canon = canonName(name);
+    return teamByName[String(canon).toLowerCase()] || fallback || "Unassigned";
+  }, [teamByName, canonName]);
+
   const [period, setPeriod] = useState("mtd");
   const [productFilter, setProductFilter] = useState("All");
   const [metric, setMetric] = useState("gp");     // gp | count
@@ -7038,7 +7088,7 @@ function DistributionView({ orders, netsuite }) {
     let grand = 0;
 
     pairs.forEach((o) => {
-      const c = o.closer_name, l = o.lead_gen_name;
+      const c = canonName(o.closer_name), l = canonName(o.lead_gen_name);
       const v = metric === "gp"
         ? num(o.gp_office != null ? o.gp_office : o.sales_agent_gp)
         : 1;
@@ -7048,8 +7098,8 @@ function DistributionView({ orders, netsuite }) {
       leadGenTotal[l] = (leadGenTotal[l] || 0) + v;
       grand += v;
 
-      const ct = o.closer_team || "Unassigned";
-      const lt = o.lead_gen_team || "Unassigned";
+      const ct = teamOf(o.closer_name, o.closer_team);
+      const lt = teamOf(o.lead_gen_name, o.lead_gen_team);
       teamSet.add(ct); teamSet.add(lt);
       const tk = `${ct}||${lt}`;
       teamMatrix[tk] = (teamMatrix[tk] || 0) + v;
@@ -7061,7 +7111,7 @@ function DistributionView({ orders, netsuite }) {
       leadGens: Object.keys(leadGenTotal).sort((a, b) => leadGenTotal[b] - leadGenTotal[a]),
       teams: Array.from(teamSet).sort(),
     };
-  }, [pairs, metric]);
+  }, [pairs, metric, canonName, teamOf]);
 
   const maxCell = useMemo(() => Math.max(1, ...Object.keys(cell).map((k) => cell[k])), [cell]);
   const fmt = (v) => (metric === "gp" ? fmtGBP(v) : (v || 0).toLocaleString("en-GB"));
@@ -7900,7 +7950,7 @@ export default function App() {
         {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} />}
         {tab === "daybyday" && <DayByDayView orders={orders} />}
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuiteResolved} />}
-        {tab === "distribution" && <DistributionView orders={orders} netsuite={netsuiteResolved} />}
+        {tab === "distribution" && <DistributionView orders={orders} netsuite={netsuiteResolved} staff={staff} />}
         {tab === "forecast" && <ForecastView netsuite={netsuiteResolved} profile={profile} staff={staff} />}
         {tab === "landscapes" && <LandscapesView profile={profile} staff={staff} />}
         {tab === "quote" && <QuoteBuilderView profile={profile} staff={staff} />}
