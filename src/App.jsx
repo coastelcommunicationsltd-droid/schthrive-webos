@@ -1189,6 +1189,18 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
   const flagsFor = useCallback((o) => {
     const n = nsFor(o);
     if (!n) return { ngp: false, nsov: false, ns: null };
+
+    // The Suffex column is the authority — it's what the report itself
+    // marks. A row can carry NGP, NSOV or both; NGP contains "GP" as a
+    // substring so the two are matched explicitly rather than by include().
+    const suffex = String(n.status_flags || "").toUpperCase();
+    const suffexNgp = /\bNGP\b/.test(suffex);
+    const suffexNsov = /\bNSOV\b/.test(suffex);
+
+    if (suffex) return { ns: n, ngp: suffexNgp, nsov: suffexNsov };
+
+    // No Suffex on this row, so fall back to the status config and the
+    // flags the sheet sync worked out.
     const cfg = n.order_status ? statusCfg[n.order_status] : null;
     return {
       ns: n,
@@ -1694,12 +1706,15 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
       const monthly = hasPlan ? num(plan.target_gp) : 0;
       const tiers = hasPlan ? tiersFor(plan.id) : [];
       const gpStatted = statted[s.full_name] || 0;
-      // The best tier their GP has actually reached
-      const reached = [...tiers].reverse().find((t) => gpStatted >= t.gp) || null;
+      const gpClaimed = claimed[s.full_name] || 0;
+      // The best tier reached, on the same figure the bar draws — otherwise
+      // the percentage and the bar can disagree with each other.
+      const earned = Math.max(gpClaimed, gpStatted);
+      const reached = [...tiers].reverse().find((t) => earned >= t.gp) || null;
       return {
         name: s.full_name,
         team: s.team,
-        gp: claimed[s.full_name] || 0,
+        gp: gpClaimed,
         statted: gpStatted,
         mix: mix[s.full_name] || {},
         target: fullPeriodTarget(monthly, period),
@@ -2170,19 +2185,23 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
                           nothing to measure against, so a flat red line
                           rather than a bar implying a target that isn't set. */}
                       {a.hasPlan ? (() => {
+                        // Use whichever is higher of claimed and statted, so the
+                        // bar always matches the figure shown beside the name —
+                        // an empty bar next to £8,859 reads as broken.
+                        const earned = Math.max(num(a.gp), num(a.statted));
                         const top = a.tiers.length ? a.tiers[a.tiers.length - 1].gp : a.target;
-                        const scaleMax = Math.max(top * 1.15, a.statted * 1.05, 1);
-                        const pct = Math.min(100, (a.statted / scaleMax) * 100);
-                        const tone = paceTone(a.statted, a.pace);
-                        const fill = a.reached ? "var(--green)" : (tone ? tone.fg : "var(--ink-faint)");
+                        const exceeded = top > 0 && earned >= top;
+                        // Once past the top tier the bar is simply full
+                        const scaleMax = exceeded ? earned : Math.max(top, earned, 1);
+                        const pct = Math.min(100, (earned / scaleMax) * 100);
                         return (
                           <div className="flex items-center gap-2 mt-1.5">
                             <div style={{ flex: 1, height: 7, background: "var(--surface-alt)", borderRadius: 4, position: "relative" }}
-                              title={`${fmtGBP(a.statted)} statted · target ${fmtGBP(a.target)}`}>
-                              <div style={{ width: `${pct}%`, height: "100%", background: fill, borderRadius: 4, transition: "width .3s" }} />
-                              {a.tiers.map((t, ti) => {
+                              title={`${fmtGBP(earned)} of ${fmtGBP(top || a.target)}${a.statted !== a.gp ? ` · ${fmtGBP(a.gp)} claimed, ${fmtGBP(a.statted)} statted` : ""}`}>
+                              <div style={{ width: `${pct}%`, height: "100%", background: "var(--primary)", borderRadius: 4, transition: "width .3s" }} />
+                              {!exceeded && a.tiers.map((t, ti) => {
                                 const left = Math.min(100, (t.gp / scaleMax) * 100);
-                                const hit = a.statted >= t.gp;
+                                const hit = earned >= t.gp;
                                 return (
                                   <div key={ti}
                                     title={`${t.label || "Tier"} — ${fmtGBP(t.gp)} pays ${t.pct}%`}
@@ -2298,12 +2317,12 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
             {nsovCount > 0 && (
               <>
                 <button onClick={() => { setNsovMode(nsovMode === "only" ? "show" : "only"); setFocusFilter("All"); }}
-                  title="Orders flagged NSOV — excluded from SOV, still counts toward GP"
+                  title="Show only orders whose Suffex says NSOV without NGP — excluded from SOV but still counting toward GP. They appear in the list normally otherwise."
                   className="sw-focus px-2 text-xs whitespace-nowrap"
                   style={nsovMode === "only" && focusFilter === "All"
                     ? { background: "var(--amber-soft)", color: "var(--amber)", fontWeight: 600, height: "100%" }
                     : { background: "transparent", color: "var(--ink-soft)", height: "100%" }}>
-                  Non SOV<b style={{ fontWeight: 700 }}> ({nsovCount})</b>
+                  Only Non SOV<b style={{ fontWeight: 700 }}> ({nsovCount})</b>
                 </button>
                 <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
               </>
