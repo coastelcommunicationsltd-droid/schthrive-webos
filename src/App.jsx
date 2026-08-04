@@ -5807,6 +5807,48 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
   );
 }
 
+/* Browser speech recognition has no domain vocabulary, so BT product names
+   come back mangled and the coach then responds to nonsense. These fix the
+   mishearings that actually occur; order matters, longest first. */
+const SPEECH_FIXES = [
+  [/\bb\.?\s?t\.?\s?net\b/gi, "BT Net"],
+  [/\bbeat[ie]e?\s?net\b/gi, "BT Net"],
+  [/\bbtnet\b/gi, "BT Net"],
+  [/\bd\.?\s?v\.?\s?(four|4)\s?b?\b/gi, "DV4"],
+  [/\bdee\s?vee\s?(four|4)\b/gi, "DV4"],
+  [/\bdigital\s?voice\b/gi, "Digital Voice"],
+  [/\bcloud\s?voice\b/gi, "Cloud Voice"],
+  [/\bopen\s?reach\b/gi, "Openreach"],
+  [/\bf\.?\s?t\.?\s?t\.?\s?p\b/gi, "FTTP"],
+  [/\bfibre\s?to\s?the\s?premises\b/gi, "FTTP"],
+  [/\be\.?\s?e\.?\b/g, "EE"],
+  [/\bs\.?\s?i\.?\s?m\b/gi, "SIM"],
+  [/\bbroad\s?band\b/gi, "broadband"],
+  [/\bp\.?\s?s\.?\s?t\.?\s?n\b/gi, "PSTN"],
+  [/\bbad\s?r\b/gi, "BADR"],
+  [/\bb\.?\s?l\.?\s?b\.?\b/gi, "BT Local Business"],
+];
+
+function tidyTranscript(text) {
+  let out = String(text || "");
+  for (const [re, to] of SPEECH_FIXES) out = out.replace(re, to);
+  return out.replace(/\s+/g, " ").trim();
+}
+
+/* Pick the alternative that mentions the most known terms — the top result
+   isn't always the one that got the product names right. */
+function bestAlternative(result) {
+  const known = /(BT Net|DV4|Digital Voice|Cloud Voice|Openreach|FTTP|EE|SIM|broadband|PSTN|BADR|mobile|contract)/gi;
+  let best = result[0]?.transcript || "";
+  let bestScore = (tidyTranscript(best).match(known) || []).length;
+  for (let i = 1; i < result.length; i++) {
+    const t = result[i]?.transcript || "";
+    const score = (tidyTranscript(t).match(known) || []).length;
+    if (score > bestScore) { best = t; bestScore = score; }
+  }
+  return best;
+}
+
 /* ---------------------------------------------------------------------- */
 /*  VOICE SELECTION                                                        */
 /* ---------------------------------------------------------------------- */
@@ -6055,11 +6097,11 @@ function SalesCoachView() {
   }, []);
 
   // ---- submit one agent turn ----------------------------------------
-  const submitTurn = useCallback(async (text) => {
+  const submitTurn = useCallback(async (text, rawHeard) => {
     const clean = (text || "").trim();
     if (!clean) return;
     setError("");
-    const withAgent = [...turnsRef.current, { role: "agent", text: clean }];
+    const withAgent = [...turnsRef.current, { role: "agent", text: clean, heard: rawHeard || null }];
     setTurns(withAgent);
     setInterim("");
     setStatus("thinking");
@@ -6102,6 +6144,7 @@ function SalesCoachView() {
     r.lang = "en-GB";
     r.continuous = true;
     r.interimResults = true;
+    r.maxAlternatives = 4;   // the top guess often mangles product names
 
     let buffer = "";
     let silence = null;
@@ -6110,16 +6153,17 @@ function SalesCoachView() {
       let interimText = "";
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
         const res = ev.results[i];
-        if (res.isFinal) buffer += res[0].transcript + " ";
+        if (res.isFinal) buffer += bestAlternative(res) + " ";
         else interimText += res[0].transcript;
       }
       setInterim(buffer + interimText);
       // Send the turn after a pause, the way a real conversation hands over
       clearTimeout(silence);
       silence = setTimeout(() => {
-        const toSend = buffer.trim();
+        const raw = buffer.trim();
+        const toSend = tidyTranscript(buffer);
         buffer = "";
-        if (toSend) submitTurn(toSend);
+        if (toSend) submitTurn(toSend, raw !== toSend ? raw : null);
       }, 1400);
     };
     r.onerror = (ev) => {
@@ -6400,6 +6444,12 @@ function SalesCoachView() {
                   </span>
                   <div className="flex-1">
                     <div className="text-sm">{t.text}</div>
+                    {t.heard && (
+                      <div className="text-xs mt-0.5" style={{ color: "var(--ink-faint)" }}
+                        title="What the microphone heard before product names were corrected">
+                        heard: “{t.heard}”
+                      </div>
+                    )}
                     {t.score && (
                       <div className="flex items-center gap-2 mt-1 flex-wrap">
                         <ScoreBadge score={t.score} />
