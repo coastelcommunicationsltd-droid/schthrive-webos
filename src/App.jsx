@@ -8048,13 +8048,18 @@ function placementOf(status) {
   return hit ? hit.key : "other";
 }
 
-/* Product groups for the delivery drilldown, from column H. */
+/* Product groups for delivery, matched against "Item: Product Group 2"
+   (column H). Order matters — the first match wins, so the more specific
+   patterns sit above the general ones. */
 const SD_PRODUCTS = [
-  { key: "cloud",      label: "Cloud",      test: /cloud|dv4|digital\s*voice|ip\s*-\s*cv|voice/i },
-  { key: "mobile",     label: "Mobile",     test: /mobile|sim|airtime|handset|ee\b/i },
-  { key: "btnet",      label: "BTNet",      test: /bt\s*net|btnet|leased|ethernet/i },
-  { key: "broadband",  label: "Broadband",  test: /broadband|fttp|fttc|adsl|fibre/i },
-  { key: "security",   label: "Security",   test: /security|badr|ccs|cyber/i },
+  { key: "cloud",     label: "Cloud",      test: /cloud|dv4|digital\s*voice|ip\s*-\s*cv|\bvoice\b/i },
+  { key: "mobile",    label: "Mobile",     test: /mobile|\bsim\b|airtime|handset|\bee\b/i },
+  { key: "btnet",     label: "BTNet",      test: /bt\s*net|btnet|leased\s*line|ethernet/i },
+  { key: "broadband", label: "Broadband",  test: /broadband|fttp|fttc|adsl|fibre|\bbb\b/i },
+  { key: "security",  label: "Security",   test: /security|badr|ccs|cyber|firewall/i },
+  { key: "dns",       label: "Data Networks & Services",
+    test: /data\s*network|networks?\s*(and|&)\s*services|\bdns\b|wan|lan|wi-?fi|switch|router/i },
+  { key: "vas",       label: "VAS",        test: /\bvas\b|value\s*add|maintenance|support|licen[cs]e/i },
 ];
 
 function sdProductOf(product) {
@@ -8074,6 +8079,11 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   const [productFilter, setProductFilter] = useState("All");
   const [placedFilter, setPlacedFilter] = useState("All");
   const [cardView, setCardView] = useState("summary");   // summary | placement
+  // The workload list is about work still to do, so placed orders are out
+  // of it by default.
+  const [workScope, setWorkScope] = useState("open");    // open | placed_tw | placed_lw | all
+  const [dirtyOnly, setDirtyOnly] = useState(false);
+  const [agedOnly, setAgedOnly] = useState(false);
   const [query, setQuery] = useState("");
   const [agentFilter, setAgentFilter] = useState("All");
   const [stateFilter, setStateFilter] = useState("All");
@@ -8157,9 +8167,21 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
      what NetSuite still has open. Lilac submissions that haven't reached
      NetSuite yet sit alongside as unallocated — once NetSuite picks them
      up they drop out, because the sheet then covers them. */
+  // Orders flagged dirty, by NetSuite ref, so a sheet row can inherit it
+  const dirtyDocs = useMemo(() => {
+    const s = new Set();
+    (orders || []).forEach((o) => {
+      if (o.dirty_order === "Yes" && o.document_number) s.add(String(o.document_number));
+    });
+    return s;
+  }, [orders]);
+
   const unplacedRows = useMemo(() => {
     const from = periodStart(period);
     const inRange = (d) => !from || (d && new Date(d) >= from);
+    // 90+ is worked out from the NetSuite date rather than trusting the
+    // sheet's own flag, which is a formula that can lag.
+    const daysOld = (d) => (d ? Math.floor((Date.now() - new Date(d).getTime()) / 86400000) : null);
 
     const rows = (unplaced || [])
       .filter((u) => !u.order_date || inRange(u.order_date))
@@ -8175,7 +8197,9 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         manager: u.manager || null,
         sov: num(u.contract_value),
         gp: num(u.gross_amount),
-        aged: /y/i.test(String(u.aged_flag || "")),
+        aged: (daysOld(u.order_date) ?? 0) > 89,
+        ageDays: daysOld(u.order_date),
+        dirty: u.document_number ? dirtyDocs.has(String(u.document_number)) : false,
         status: u.order_status || null,
         date: u.order_date,
         doc: u.document_number,
@@ -8202,9 +8226,9 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         manager: o.closer_team || null,
         sov: num(o.contract_value),
         gp: num(o.gp_office != null ? o.gp_office : o.sales_agent_gp),
-        aged: o.submission_date
-          ? Math.floor((Date.now() - new Date(o.submission_date).getTime()) / 86400000) >= 90
-          : false,
+        aged: (daysOld(o.submission_date) ?? 0) > 89,
+        ageDays: daysOld(o.submission_date),
+        dirty: o.dirty_order === "Yes",
         status: o.order_status || null,
         date: o.submission_date,
         doc: o.document_number,
@@ -8213,7 +8237,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
 
     return [...awaiting, ...rows]
       .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
-  }, [unplaced, orders, period, nsByDoc]);
+  }, [unplaced, orders, period, nsByDoc, dirtyDocs]);
 
   const unplacedAged = useMemo(() => unplacedRows.filter((r) => r.aged).length, [unplacedRows]);
 
@@ -8243,10 +8267,12 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   }, [unplacedRows]);
   const unplacedValue = useMemo(() => unplacedRows.reduce((s, r) => s + num(r.sov), 0), [unplacedRows]);
 
-  const productOptions = useMemo(
-    () => Array.from(new Set(unplacedRows.map((r) => r.product).filter((p) => p && p !== "—"))).sort(),
-    [unplacedRows]
-  );
+  const productOptions = useMemo(() => {
+    const present = new Set(unplacedRows.map((r) => sdProductOf(r.product)));
+    return [...SD_PRODUCTS, { key: "other", label: "Other" }].filter((p) => present.has(p.key));
+  }, [unplacedRows]);
+
+  const dirtyCountUnplaced = useMemo(() => unplacedRows.filter((r) => r.dirty).length, [unplacedRows]);
   const placedOptions = useMemo(
     () => Array.from(new Set(unplacedRows.map((r) => r.placed).filter((p) => p && p !== "—"))).sort(),
     [unplacedRows]
@@ -8257,19 +8283,35 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
     return unplacedRows.filter((r) => {
       if (q && !String(r.company).toLowerCase().includes(q)
             && !String(r.doc || "").toLowerCase().includes(q)) return false;
-      if (productFilter !== "All" && r.product !== productFilter) return false;
+      if (productFilter !== "All" && sdProductOf(r.product) !== productFilter) return false;
       if (placedFilter !== "All" && r.placed !== placedFilter) return false;
+      if (dirtyOnly && !r.dirty) return false;
+      if (agedOnly && !r.aged) return false;
       if (agentFilter === "__unallocated") { if (r.agent) return false; }
       else if (agentFilter !== "All" && r.agent !== agentFilter) return false;
       return true;
     });
-  }, [unplacedRows, query, productFilter, placedFilter, agentFilter]);
+  }, [unplacedRows, query, productFilter, placedFilter, agentFilter, dirtyOnly, agedOnly]);
+
+  // Which placement states the workload list is counting
+  const WORK_SCOPES = [
+    { key: "open",      label: "To do",      keys: ["unplaced", "out_for_sig"] },
+    { key: "placed_tw", label: "Placed TW",  keys: ["placed_tw"] },
+    { key: "placed_lw", label: "Placed LW",  keys: ["placed_lw"] },
+    { key: "all",       label: "All",        keys: null },
+  ];
+
+  const scopedForWork = useMemo(() => {
+    const def = WORK_SCOPES.find((w) => w.key === workScope) || WORK_SCOPES[0];
+    if (!def.keys) return unplacedRows;
+    return unplacedRows.filter((r) => def.keys.includes(placementOf(r.placed)));
+  }, [unplacedRows, workScope]);
 
   // Workload by admin agent, from column K
   const unplacedByAgent = useMemo(() => {
     const m = {};
     let none = 0;
-    unplacedRows.forEach((r) => {
+    scopedForWork.forEach((r) => {
       if (!r.agent) { none += 1; return; }
       m[r.agent] = (m[r.agent] || 0) + 1;
     });
@@ -8368,65 +8410,64 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
             })}
           </div>
 
-          {/* The same split, per product */}
-          <div className="rounded-xl overflow-hidden mt-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-            <div style={{ overflowX: "auto" }}>
-              <table className="w-full" style={{ borderCollapse: "collapse" }}>
-                <thead>
-                  <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
-                    <th className="text-left px-3 py-2 text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)", minWidth: 120 }}>Product</th>
-                    {PLACEMENT_BUCKETS.map((b) => (
-                      <th key={b.key} className="text-center px-3 py-2 text-xs font-semibold uppercase whitespace-nowrap" style={{ color: "var(--ink-soft)" }}>{b.label}</th>
-                    ))}
-                    <th className="text-center px-3 py-2 text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)", background: "var(--primary-soft)" }}>Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {[...SD_PRODUCTS, { key: "other", label: "Other" }].map((p) => {
-                    const rowTotal = PLACEMENT_BUCKETS.reduce((acc, b) => {
+          {/* One card per product rather than a matrix — easier to scan and
+              each one is clickable to filter the list. */}
+          <div className="sw-cols-2 mt-3" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "0.75rem" }}>
+            {[...SD_PRODUCTS, { key: "other", label: "Other" }].map((p) => {
+              const totalsForProduct = PLACEMENT_BUCKETS.reduce((acc, b) => {
+                const c = placement.buckets[b.key].byProduct[p.key];
+                return { count: acc.count + c.count, sov: acc.sov + c.sov };
+              }, { count: 0, sov: 0 });
+              if (totalsForProduct.count === 0) return null;
+              const sel = productFilter === p.key;
+              return (
+                <button key={p.key} onClick={() => setProductFilter(sel ? "All" : p.key)}
+                  className="sw-focus rounded-xl p-3.5 text-left"
+                  style={{ background: "var(--surface)", border: `1px solid ${sel ? "var(--primary)" : "var(--border)"}` }}>
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-xs font-medium uppercase truncate" style={{ color: sel ? "var(--primary)" : "var(--ink-faint)", letterSpacing: "0.04em" }}>
+                      {p.label}
+                    </span>
+                    <span className="sw-display shrink-0" style={{ fontSize: 20, fontWeight: 600, letterSpacing: "-0.02em" }}>
+                      {totalsForProduct.count}
+                    </span>
+                  </div>
+                  <div className="sw-mono text-xs" style={{ color: "var(--ink-soft)" }}>{fmtGBP(totalsForProduct.sov)}</div>
+
+                  {/* The placement split for this product */}
+                  <div className="flex mt-2 rounded-full overflow-hidden" style={{ height: 5, background: "var(--surface-alt)" }}>
+                    {PLACEMENT_BUCKETS.map((b) => {
                       const c = placement.buckets[b.key].byProduct[p.key];
-                      return { count: acc.count + c.count, sov: acc.sov + c.sov };
-                    }, { count: 0, sov: 0 });
-                    if (rowTotal.count === 0) return null;
-                    return (
-                      <tr key={p.key} style={{ borderTop: "1px solid var(--border)" }}>
-                        <td className="px-3 py-2 text-xs font-semibold">{p.label}</td>
-                        {PLACEMENT_BUCKETS.map((b) => {
-                          const c = placement.buckets[b.key].byProduct[p.key];
-                          return (
-                            <td key={b.key} className="px-3 py-2 text-center">
-                              <div className="sw-mono" style={{ fontSize: 13, fontWeight: 600, color: c.count ? "var(--ink)" : "var(--ink-faint)" }}>{c.count || "—"}</div>
-                              {c.sov > 0 && <div className="sw-mono" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>{fmtGBP(c.sov)}</div>}
-                            </td>
-                          );
-                        })}
-                        <td className="px-3 py-2 text-center" style={{ background: "var(--primary-soft)" }}>
-                          <div className="sw-mono" style={{ fontSize: 13, fontWeight: 700 }}>{rowTotal.count}</div>
-                          <div className="sw-mono" style={{ fontSize: 10.5, color: "var(--ink-soft)" }}>{fmtGBP(rowTotal.sov)}</div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  <tr style={{ borderTop: "2px solid var(--border)", background: "var(--surface-alt)" }}>
-                    <td className="px-3 py-2 text-xs font-bold">All products</td>
-                    {PLACEMENT_BUCKETS.map((b) => (
-                      <td key={b.key} className="px-3 py-2 text-center">
-                        <div className="sw-mono" style={{ fontSize: 13, fontWeight: 700 }}>{placement.buckets[b.key].count}</div>
-                        <div className="sw-mono" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>{fmtGBP(placement.buckets[b.key].sov)}</div>
-                      </td>
-                    ))}
-                    <td className="px-3 py-2 text-center" style={{ background: "var(--primary-soft)" }}>
-                      <div className="sw-mono" style={{ fontSize: 13, fontWeight: 700 }}>{unplacedRows.length}</div>
-                      <div className="sw-mono" style={{ fontSize: 10.5, color: "var(--ink-soft)" }}>{fmtGBP(unplacedValue)}</div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <p className="text-xs px-3 py-2" style={{ color: "var(--ink-faint)", borderTop: "1px solid var(--border)" }}>
-              Click a card above to filter the list to that state. Rows with nothing in them are hidden.
-            </p>
+                      if (!c.count) return null;
+                      return (
+                        <div key={b.key} title={`${b.label}: ${c.count} · ${fmtGBP(c.sov)}`}
+                          style={{ width: `${(c.count / totalsForProduct.count) * 100}%`, background: b.tone }} />
+                      );
+                    })}
+                  </div>
+                  <div className="flex flex-col gap-0.5 mt-1.5">
+                    {PLACEMENT_BUCKETS.map((b) => {
+                      const c = placement.buckets[b.key].byProduct[p.key];
+                      if (!c.count) return null;
+                      return (
+                        <div key={b.key} className="flex items-center gap-1.5">
+                          <span style={{ width: 6, height: 6, borderRadius: 99, background: b.tone, flexShrink: 0 }} />
+                          <span className="text-xs truncate" style={{ color: "var(--ink-faint)" }}>{b.label}</span>
+                          <span className="sw-mono ml-auto text-xs shrink-0" style={{ color: "var(--ink-soft)", fontWeight: 600 }}>{c.count}</span>
+                          <span className="sw-mono text-xs shrink-0" style={{ color: "var(--ink-faint)", width: 62, textAlign: "right" }}>{fmtGBP(c.sov)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </button>
+              );
+            })}
           </div>
+
+          <p className="text-xs mt-2 px-1" style={{ color: "var(--ink-faint)" }}>
+            Click a placement card to filter by state, or a product card to filter by product. Products with
+            nothing outstanding are hidden.
+          </p>
         </div>
       ) : (
 
@@ -8481,10 +8522,10 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
           </select>
           {view === "unplaced" ? (
             <>
-              <select className="sw-input sw-focus" style={{ width: 170, height: 32, fontSize: 12.5 }}
+              <select className="sw-input sw-focus" style={{ width: 190, height: 32, fontSize: 12.5 }}
                 value={productFilter} onChange={(e) => setProductFilter(e.target.value)}>
                 <option value="All">All products</option>
-                {productOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+                {productOptions.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
               </select>
               <select className="sw-input sw-focus" style={{ width: 180, height: 32, fontSize: 12.5 }}
                 value={placedFilter} onChange={(e) => setPlacedFilter(e.target.value)}>
@@ -8498,10 +8539,32 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
               {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           )}
+          {view === "unplaced" && (
+            <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 32 }}>
+              <button onClick={() => setAgedOnly((v) => !v)}
+                title="Orders where the NetSuite date is more than 89 days ago"
+                className="sw-focus px-2 text-xs whitespace-nowrap"
+                style={agedOnly
+                  ? { background: "var(--red)", color: "#fff", fontWeight: 600, height: "100%" }
+                  : { background: "transparent", color: unplacedAged ? "var(--red)" : "var(--ink-faint)", height: "100%" }}>
+                90+ days{unplacedAged ? <b style={{ fontWeight: 700 }}> ({unplacedAged})</b> : ""}
+              </button>
+              <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
+              <button onClick={() => setDirtyOnly((v) => !v)}
+                title="Orders flagged as dirty on the Lilac Box"
+                className="sw-focus px-2 text-xs whitespace-nowrap"
+                style={dirtyOnly
+                  ? { background: "var(--amber)", color: "#fff", fontWeight: 600, height: "100%" }
+                  : { background: "transparent", color: dirtyCountUnplaced ? "var(--amber)" : "var(--ink-faint)", height: "100%" }}>
+                Dirty{dirtyCountUnplaced ? <b style={{ fontWeight: 700 }}> ({dirtyCountUnplaced})</b> : ""}
+              </button>
+            </div>
+          )}
+
           <div className="relative" style={{ flex: 1, minWidth: 180 }}>
             <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: "var(--ink-faint)" }} />
             <input className="sw-input sw-focus" style={{ paddingLeft: 28, height: 32, fontSize: 12.5 }}
-              placeholder="Search company or LBCR..." value={query} onChange={(e) => setQuery(e.target.value)} />
+              placeholder="Search company or ref..." value={query} onChange={(e) => setQuery(e.target.value)} />
           </div>
         </div>
       </div>
@@ -8517,6 +8580,20 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                 <button onClick={() => setAgentFilter("All")} className="sw-focus text-xs" style={{ color: "var(--primary)" }}>Clear</button>
               )}
             </div>
+
+            {view === "unplaced" && (
+              <div className="flex items-center rounded-lg overflow-hidden mb-2" style={{ border: "1px solid var(--border)", height: 28 }}>
+                {WORK_SCOPES.map((w) => (
+                  <button key={w.key} onClick={() => setWorkScope(w.key)}
+                    className="sw-focus flex-1 text-xs whitespace-nowrap"
+                    style={workScope === w.key
+                      ? { background: "var(--primary)", color: "#fff", fontWeight: 600, height: "100%" }
+                      : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
+                    {w.label}
+                  </button>
+                ))}
+              </div>
+            )}
 
             {(view === "unplaced" ? unplacedByAgent.none : ranking.unallocated) > 0 && (
               <button onClick={() => setAgentFilter(agentFilter === "__unallocated" ? "All" : "__unallocated")}
