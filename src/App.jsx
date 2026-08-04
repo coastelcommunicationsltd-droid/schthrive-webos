@@ -2201,6 +2201,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, planTiers
           </select>
 
             {/* Exceptions — one consistent segmented group */}
+          {ngpCount > 0 && (
           <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 32 }}>
             {[
               ["hide", "Hide Non GP", null, "Non-GP orders don't count toward GP"],
@@ -2216,17 +2217,23 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, planTiers
               </button>
             ))}
           </div>
+          )}
 
           <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 32 }}>
-            <button onClick={() => { setNsovMode(nsovMode === "only" ? "show" : "only"); setFocusFilter("All"); }}
-              title="Orders flagged NSOV — excluded from SOV, still counts toward GP"
-              className="sw-focus px-2 text-xs whitespace-nowrap"
-              style={nsovMode === "only" && focusFilter === "All"
-                ? { background: "var(--amber-soft)", color: "var(--amber)", fontWeight: 600, height: "100%" }
-                : { background: "transparent", color: nsovCount ? "var(--ink-soft)" : "var(--ink-faint)", height: "100%" }}>
-              Non SOV{nsovCount ? <b style={{ fontWeight: 700 }}> ({nsovCount})</b> : ""}
-            </button>
-            <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
+            {/* Only worth showing when there's actually something flagged */}
+            {nsovCount > 0 && (
+              <>
+                <button onClick={() => { setNsovMode(nsovMode === "only" ? "show" : "only"); setFocusFilter("All"); }}
+                  title="Orders flagged NSOV — excluded from SOV, still counts toward GP"
+                  className="sw-focus px-2 text-xs whitespace-nowrap"
+                  style={nsovMode === "only" && focusFilter === "All"
+                    ? { background: "var(--amber-soft)", color: "var(--amber)", fontWeight: 600, height: "100%" }
+                    : { background: "transparent", color: "var(--ink-soft)", height: "100%" }}>
+                  Non SOV<b style={{ fontWeight: 700 }}> ({nsovCount})</b>
+                </button>
+                <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
+              </>
+            )}
             <button onClick={() => setFocusFilter(focusFilter === "attention" ? "All" : "attention")}
               title="Orders at a status that needs the agent to act"
               className="sw-focus px-2 text-xs whitespace-nowrap"
@@ -7714,10 +7721,10 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
         <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <table className="w-full text-sm sw-orders" style={{ tableLayout: "fixed" }}>
             <colgroup>
-              <col style={{ width: "20%" }} />
-              <col style={{ width: "12%" }} />
-              <col style={{ width: "16%" }} />
-              <col style={{ width: "14%" }} />
+              <col style={{ width: "19%" }} />
+              <col style={{ width: "11%" }} />
+              <col style={{ width: "19%" }} />
+              <col style={{ width: "13%" }} />
               <col style={{ width: "9%" }} />
               <col style={{ width: "9%" }} />
               <col style={{ width: "13%" }} />
