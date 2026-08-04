@@ -5869,6 +5869,10 @@ function SalesCoachView() {
   const [stageIndex, setStageIndex] = useState(0);
   const [stageList, setStageList] = useState([]);
   const [stageNote, setStageNote] = useState("");
+  const [coachingNote, setCoachingNote] = useState("");
+  const [callRole, setCallRole] = useState("closer");     // lead_gen | closer
+  const [difficulty, setDifficulty] = useState("normal"); // easy | normal | hard
+  const [bonusesHit, setBonusesHit] = useState([]);
   const [typed, setTyped] = useState("");
   const [history, setHistory] = useState([]);
   const [openSession, setOpenSession] = useState(null);
@@ -5936,6 +5940,7 @@ function SalesCoachView() {
         rubric: coachCfg.rubric || null,
         method: coachCfg.what_good_looks_like || null,
         stageIndex: stageIdxRef.current,
+        callRole, difficulty,
       }),
     });
     if (!res.ok) {
@@ -5943,7 +5948,7 @@ function SalesCoachView() {
       throw new Error(`Coach unavailable (${res.status}). ${t.slice(0, 160)}`);
     }
     return res.json();
-  }, [scenario, activeScenario, coachCfg]);
+  }, [scenario, activeScenario, coachCfg, callRole, difficulty]);
 
   // Speech synthesis has two traps: getVoices() is populated asynchronously
   // in Chrome, so the first call can find nothing and silently do nothing;
@@ -6032,12 +6037,19 @@ function SalesCoachView() {
       if (Array.isArray(r.stages) && r.stages.length) setStageList(r.stages);
       if (typeof r.stageIndex === "number") setStageIndex(r.stageIndex);
       setStageNote(r.stageNote || "");
+      setCoachingNote(r.coachingNote || "");
+      if (Array.isArray(r.bonuses) && r.bonuses.length) {
+        setBonusesHit((prev) => {
+          const seen = new Set(prev.map((b) => b.key));
+          return [...prev, ...r.bonuses.filter((b) => !seen.has(b.key))];
+        });
+      }
       setTurns((prev) => {
         const copy = [...prev];
         // attach the score to the agent turn we just sent
         for (let i = copy.length - 1; i >= 0; i--) {
           if (copy[i].role === "agent" && !copy[i].score) {
-            copy[i] = { ...copy[i], score: r.score || "good", note: r.note || "" };
+            copy[i] = { ...copy[i], score: r.score || "good", note: r.note || "", bonuses: r.bonuses || [] };
             break;
           }
         }
@@ -6103,7 +6115,7 @@ function SalesCoachView() {
     unlockSpeech();   // must happen inside the click for audio to be allowed
     rollVoice();      // a different customer each time
     setTurns([]); setSummary(null); setError(""); setInterim("");
-    setStageIndex(0); stageIdxRef.current = 0; setStageNote("");
+    setStageIndex(0); stageIdxRef.current = 0; setStageNote(""); setCoachingNote(""); setBonusesHit([]);
     setStatus("thinking");
     try {
       const r = await callCoach("turn", []);
@@ -6149,6 +6161,8 @@ function SalesCoachView() {
           // How far through the call they actually got
           stages_reached: stageList.slice(0, stageIndex + 1).map((s) => s.label),
           final_stage: stageList[stageIndex]?.label || null,
+          call_role: callRole,
+          bonuses: bonusesHit.map((b) => b.label),
           completed: stageList.length > 0 && stageIndex >= stageList.length - 1,
           transcript: finalTurns,
         });
@@ -6201,6 +6215,49 @@ function SalesCoachView() {
               </button>
             ))}
           </div>
+          {/* Who you're being, and how hard the customer is */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }} className="mb-4">
+            <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="text-xs font-medium uppercase mb-2" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>I'm calling as</div>
+              <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+                {[["lead_gen", "Lead Gen"], ["closer", "Closer"]].map(([k, lbl]) => (
+                  <button key={k} onClick={() => setCallRole(k)}
+                    className="sw-focus flex-1 px-3 py-2 text-xs"
+                    style={callRole === k
+                      ? { background: "var(--primary)", color: "#fff", fontWeight: 600 }
+                      : { background: "transparent", color: "var(--ink-faint)" }}>
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+              <div className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
+                {callRole === "lead_gen"
+                  ? "Cold call: qualify the need and set up a conversation with a closer."
+                  : "The lead gen has already spoken to them. Confirm, price, negotiate, close."}
+              </div>
+            </div>
+
+            <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="text-xs font-medium uppercase mb-2" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Customer</div>
+              <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+                {[["easy", "Receptive"], ["normal", "Normal"], ["hard", "Tough"]].map(([k, lbl]) => (
+                  <button key={k} onClick={() => setDifficulty(k)}
+                    className="sw-focus flex-1 px-3 py-2 text-xs"
+                    style={difficulty === k
+                      ? { background: "var(--primary)", color: "#fff", fontWeight: 600 }
+                      : { background: "transparent", color: "var(--ink-faint)" }}>
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+              <div className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
+                {difficulty === "easy" ? "Open to the conversation and happy to answer."
+                  : difficulty === "hard" ? "Sceptical and short at first — you'll have to earn it."
+                  : "A normal busy business owner. Guarded, but civil and reasonable."}
+              </div>
+            </div>
+          </div>
+
           <button onClick={startCall} className="sw-focus px-5 py-3 rounded-full font-semibold text-sm flex items-center gap-2"
             style={{ background: "var(--primary)", color: "#fff" }}>
             <Phone size={15} /> Start practice call
@@ -6234,8 +6291,19 @@ function SalesCoachView() {
                   );
                 })}
               </div>
+              {coachingNote && (
+                <div className="text-xs mb-1" style={{ color: "var(--primary)" }}>{coachingNote}</div>
+              )}
               {stageNote && (
                 <div className="text-xs" style={{ color: "var(--ink-soft)" }}>{stageNote}</div>
+              )}
+              {bonusesHit.length > 0 && (
+                <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                  {bonusesHit.map((b) => (
+                    <span key={b.key} className="text-xs font-semibold px-1.5 py-0.5 rounded"
+                      style={{ background: "var(--green-soft)", color: "var(--green)" }}>★ {b.label}</span>
+                  ))}
+                </div>
               )}
             </div>
           )}
@@ -6305,6 +6373,13 @@ function SalesCoachView() {
                       <div className="flex items-center gap-2 mt-1 flex-wrap">
                         <ScoreBadge score={t.score} />
                         {t.note && <span className="text-xs" style={{ color: "var(--ink-soft)" }}>{t.note}</span>}
+                        {(t.bonuses || []).map((b) => (
+                          <span key={b.key} className="text-xs font-semibold px-1.5 py-0.5 rounded whitespace-nowrap"
+                            style={{ background: "var(--green-soft)", color: "var(--green)" }}
+                            title={`+${b.points} — a move we want to see`}>
+                            ★ {b.label} +{b.points}
+                          </span>
+                        ))}
                       </div>
                     )}
                   </div>
