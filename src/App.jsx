@@ -4331,7 +4331,7 @@ function DayByDayView({ orders, staff }) {
 /* Pay plan editor. The plan's own targets sit in the left column exactly
    as before; commission tiers are added as extra columns beside them, each
    with its own thresholds and a commission rate applied to statted GP. */
-function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
+function PayPlanForm({ plan, agentCount, tiers, metrics, error, onSave, onDelete,
                       onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric }) {
   const [f, setF] = useState({
     name: plan.name || "", plan_kind: plan.plan_kind || "closer",
@@ -4536,6 +4536,13 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
             )}
           </div>
 
+          {error && (
+            <div className="rounded-lg p-2.5 mt-3 flex items-start gap-2" style={{ background: "var(--red-soft)", border: "1px solid var(--red)" }}>
+              <AlertTriangle size={14} style={{ color: "var(--red)", flexShrink: 0, marginTop: 1 }} />
+              <span className="text-xs" style={{ color: "var(--ink)" }}>{error}</span>
+            </div>
+          )}
+
           <div className="flex items-center gap-3 mt-3">
             <button onClick={() => setAddingMetric((v) => !v)} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>
               {addingMetric ? "Cancel" : "+ Add KPI row"}
@@ -4606,7 +4613,7 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
   );
 }
 
-function PayPlansView({ plans, staff, tiers, metrics, tablesMissing, onSave, onAdd, onDelete,
+function PayPlansView({ plans, staff, tiers, metrics, tablesMissing, error, onSave, onAdd, onDelete,
                        onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric }) {
   const [selectedId, setSelectedId] = useState(null);
   const [newName, setNewName] = useState("");
@@ -4703,7 +4710,7 @@ function PayPlansView({ plans, staff, tiers, metrics, tablesMissing, onSave, onA
         <div>
           {selected ? (
             <PayPlanForm key={selected.id} plan={selected} agentCount={countByPlan[selected.id] || 0}
-              tiers={tiers || []} metrics={metrics || []}
+              tiers={tiers || []} metrics={metrics || []} error={error}
               onSave={onSave} onDelete={onDelete}
               onSaveTier={onSaveTier} onAddTier={onAddTier} onDeleteTier={onDeleteTier}
               onAddMetric={onAddMetric} onDeleteMetric={onDeleteMetric} />
@@ -5035,14 +5042,18 @@ function CoachSettingsView({ scenarios, settings, stages, onSaveScenario, onAddS
         fairly be. Changes apply to the next practice call; nothing needs redeploying.
       </p>
 
+      {/* Stages, method and scenarios side by side — they're edited
+          together and each is narrow enough to work in a column. */}
+      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr)", gap: "1rem", alignItems: "start" }}>
+
       {/* Call stages */}
-      <div className="rounded-2xl p-4 mb-4" style={{ background: "var(--surface-alt)", border: "1px solid var(--border)" }}>
+      <div className="rounded-2xl p-4" style={{ background: "var(--surface-alt)", border: "1px solid var(--border)" }}>
         <StagesEditor stages={stages} scenarios={scenarios}
           onSave={onSaveStage} onAdd={onAddStage} onDelete={onDeleteStage} />
       </div>
 
       {/* What good looks like */}
-      <div className="rounded-2xl p-4 mb-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+      <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="flex items-center justify-between mb-2">
           <div className="sw-display text-sm" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>WHAT GOOD LOOKS LIKE</div>
           <div className="flex items-center gap-2">
@@ -5059,15 +5070,15 @@ function CoachSettingsView({ scenarios, settings, stages, onSaveScenario, onAddS
           Your discovery framework, objection handling, tone, closing. This is judged against on every turn
           and in the end-of-call review.
         </p>
-        <textarea className="sw-input sw-focus" rows={12} value={method} onChange={(e) => setMethod(e.target.value)}
-          style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12 }} />
+        <textarea className="sw-input sw-focus" rows={14} value={method} onChange={(e) => setMethod(e.target.value)}
+          style={{ fontSize: 12, lineHeight: 1.5 }} />
 
         <div className="sw-display font-bold text-sm mt-4 mb-2" style={{ color: "var(--ink-soft)" }}>SCORING SCALE</div>
         <p className="text-xs mb-2" style={{ color: "var(--ink-faint)" }}>
           Keep the six keywords — the app colours the badges from them — but change what earns each one.
         </p>
-        <textarea className="sw-input sw-focus" rows={9} value={rubric} onChange={(e) => setRubric(e.target.value)}
-          style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12 }} />
+        <textarea className="sw-input sw-focus" rows={10} value={rubric} onChange={(e) => setRubric(e.target.value)}
+          style={{ fontSize: 12, lineHeight: 1.5 }} />
       </div>
 
       {/* Scenarios */}
@@ -5089,6 +5100,7 @@ function CoachSettingsView({ scenarios, settings, stages, onSaveScenario, onAddS
             <Plus size={12} /> Add scenario
           </button>
         </div>
+      </div>
       </div>
     </div>
   );
@@ -5249,7 +5261,7 @@ function OtherVisualsView({ orders, netsuite, forecasts, staff }) {
 /* ---------------------------------------------------------------------- */
 
 function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSavePlan, onAddPlan, onDeletePlan,
-                       planTiers, planMetrics, planTablesMissing, onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric,
+                       planTiers, planMetrics, planTablesMissing, planError, onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric,
                        coachScenarios, coachSettings, onSaveCoachScenario, onAddCoachScenario, onDeleteCoachScenario, onSaveCoachSettings,
                        coachStages, onSaveStage, onAddStage, onDeleteStage,
                        orders, netsuite, forecasts }) {
@@ -5273,8 +5285,27 @@ function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSave
           </button>
         ))}
       </div>
-      {section === "statuses" && <StatusSettingsView rows={statusRows} onSave={onSaveStatus} newCount={newCount} />}
-      {section === "payplans" && <PayPlansView plans={plans} staff={staff} onSave={onSavePlan} onAdd={onAddPlan} onDelete={onDeletePlan} />}
+      {/* Statuses and pay plans side by side — both are reference data a
+          manager tends to set up in one sitting. */}
+      {section === "statuses" && (
+        <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: "1rem", alignItems: "start" }}>
+          <StatusSettingsView rows={statusRows} onSave={onSaveStatus} newCount={newCount} />
+          <PayPlansView plans={plans} staff={staff}
+            tiers={planTiers} metrics={planMetrics}
+            tablesMissing={planTablesMissing} error={planError}
+            onSave={onSavePlan} onAdd={onAddPlan} onDelete={onDeletePlan}
+            onSaveTier={onSaveTier} onAddTier={onAddTier} onDeleteTier={onDeleteTier}
+            onAddMetric={onAddMetric} onDeleteMetric={onDeleteMetric} />
+        </div>
+      )}
+      {section === "payplans" && (
+        <PayPlansView plans={plans} staff={staff}
+          tiers={planTiers} metrics={planMetrics}
+          tablesMissing={planTablesMissing} error={planError}
+          onSave={onSavePlan} onAdd={onAddPlan} onDelete={onDeletePlan}
+          onSaveTier={onSaveTier} onAddTier={onAddTier} onDeleteTier={onDeleteTier}
+          onAddMetric={onAddMetric} onDeleteMetric={onDeleteMetric} />
+      )}
       {section === "visuals" && (
         <OtherVisualsView orders={orders} netsuite={netsuite} forecasts={forecasts} staff={staff} />
       )}
@@ -8720,6 +8751,7 @@ export default function App() {
   const [planMetrics, setPlanMetrics] = useState([]);
   const [planHistory, setPlanHistory] = useState([]);
   const [planTablesMissing, setPlanTablesMissing] = useState(false);
+  const [planError, setPlanError] = useState("");
   const [forecasts, setForecasts] = useState([]);
   const [aliases, setAliases] = useState([]);
   const [appSettings, setAppSettings] = useState({});
@@ -8960,7 +8992,9 @@ export default function App() {
       return `${what} needs the pay plan tables. Run add_pay_plan_tiers.sql in the Supabase SQL editor, then reload.`;
     }
     if (/row-level security|permission denied|violates row-level/i.test(msg)) {
-      return `${what} was blocked by permissions — you need the office role for this.`;
+      return `${what} was blocked by the database's security rules. This usually means the
+        migration created the tables but not their access policies — run add_coach_v2.sql
+        and add_pay_plan_tiers_v2.sql again with the app closed in other tabs.`;
     }
     return `${what} failed: ${msg}`;
   }, []);
@@ -8972,12 +9006,13 @@ export default function App() {
   }, [loadPayPlans, explainDbError]);
 
   const addPlanTier = useCallback(async (planId) => {
-    if (!planId) { setToast("Select a plan first."); setTimeout(() => setToast(""), 4000); return; }
+    setPlanError("");
+    if (!planId) { setPlanError("Select a plan on the left first."); return; }
     const { error } = await supabase.from("pay_plan_tiers")
       .insert({ plan_id: planId, label: "New tier", gp_min: 0, payment_pct: 0, sort_order: 999 });
     if (error) {
-      setToast(explainDbError(error, "Adding a tier"));
-      setTimeout(() => setToast(""), 12000);   // long enough to actually read
+      // Shown inline next to the button, not as a toast that vanishes
+      setPlanError(explainDbError(error, "Adding a tier"));
       return;
     }
     loadPayPlans();
@@ -9362,7 +9397,7 @@ export default function App() {
           netsuite={netsuiteResolved} aliases={aliases} onAddAlias={addAlias} onDeleteAlias={deleteAlias}
           planHistory={planHistory} onAssignPlan={assignPlan} onDeleteAssignment={deleteAssignment} />}
         {tab === "statuses" && profile?.role === "office" && <SettingsView statusRows={statusRows} onSaveStatus={saveStatusCfg} newCount={newStatusCount} plans={payPlans} staff={staff} onSavePlan={savePayPlan} onAddPlan={addPayPlan} onDeletePlan={deletePayPlan}
-          planTiers={planTiers} planMetrics={planMetrics} planTablesMissing={planTablesMissing}
+          planTiers={planTiers} planMetrics={planMetrics} planTablesMissing={planTablesMissing} planError={planError}
           onSaveTier={savePlanTier} onAddTier={addPlanTier} onDeleteTier={deletePlanTier}
           onAddMetric={addPlanMetric} onDeleteMetric={deletePlanMetric}
           coachScenarios={coachScenarios} coachSettings={coachSettings}
