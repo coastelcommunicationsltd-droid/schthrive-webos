@@ -4900,7 +4900,114 @@ function CoachScenarioRow({ s, onSave, onDelete }) {
   );
 }
 
-function CoachSettingsView({ scenarios, settings, onSaveScenario, onAddScenario, onDeleteScenario, onSaveSettings }) {
+/* One call stage. Managers edit these, so what the coach expects at each
+   point is visible and changeable rather than buried in a prompt. */
+function StageRow({ s, onSave, onDelete }) {
+  const [f, setF] = useState({
+    label: s.label || "", goal: s.goal || "", advance_when: s.advance_when || "",
+    objections: s.objections || "", fail_when: s.fail_when || "",
+    max_turns: s.max_turns ?? 6, active: s.active !== false,
+  });
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const dirty = Object.keys(f).some((k) => String(f[k]) !== String(s[k] ?? (k === "active" ? true : k === "max_turns" ? 6 : "")));
+
+  const Field = ({ label, k, rows = 2, hint }) => (
+    <div className="mb-2">
+      <label className="sw-label">{label}</label>
+      <textarea className="sw-input sw-focus" rows={rows} value={f[k]}
+        onChange={(e) => setF((p) => ({ ...p, [k]: e.target.value }))} />
+      {hint && <div className="text-xs mt-0.5" style={{ color: "var(--ink-faint)" }}>{hint}</div>}
+    </div>
+  );
+
+  return (
+    <div className="rounded-xl mb-2" style={{ background: "var(--surface)", border: "1px solid var(--border)", opacity: f.active ? 1 : 0.6 }}>
+      <div className="flex items-center gap-2 px-3 py-2">
+        <button onClick={() => setOpen((v) => !v)} className="sw-focus flex items-center gap-2 flex-1 text-left">
+          <ChevronDown size={13} style={{ color: "var(--ink-faint)", transform: open ? "rotate(0)" : "rotate(-90deg)", transition: "transform .15s" }} />
+          <input className="sw-input sw-focus" style={{ maxWidth: 220, height: 30, fontSize: 13, fontWeight: 600 }}
+            value={f.label} onClick={(e) => e.stopPropagation()}
+            onChange={(e) => setF((p) => ({ ...p, label: e.target.value }))} />
+        </button>
+        <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--ink-soft)" }} title="Include this stage in calls">
+          <input type="checkbox" checked={f.active} onChange={(e) => setF((p) => ({ ...p, active: e.target.checked }))} /> On
+        </label>
+        <button disabled={!dirty || saving}
+          onClick={async () => {
+            setSaving(true);
+            await onSave(s.id, { ...f, max_turns: parseInt(f.max_turns, 10) || 6 });
+            setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 1500);
+          }}
+          className="sw-focus text-xs font-semibold px-2.5 py-1.5 rounded-lg"
+          style={{ background: dirty ? "var(--primary)" : "var(--surface-alt)", color: dirty ? "#fff" : "var(--ink-faint)" }}>
+          {saving ? "..." : saved ? "✓" : "Save"}
+        </button>
+        <button onClick={() => onDelete(s.id, f.label)} className="sw-focus text-xs px-1.5" style={{ color: "var(--red)" }} title="Delete stage">✕</button>
+      </div>
+
+      {open && (
+        <div className="px-3 pb-3" style={{ borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+          <Field label="What the agent should achieve here" k="goal" />
+          <Field label="Move on when" k="advance_when" hint="The customer only advances the call when this is genuinely met." />
+          <Field label="Objections available at this stage" k="objections" hint="The customer picks from these when they'd come up naturally." />
+          <Field label="This is going badly if" k="fail_when" />
+          <div style={{ maxWidth: 180 }}>
+            <label className="sw-label">Soft turn limit</label>
+            <input className="sw-input sw-focus" value={f.max_turns}
+              onChange={(e) => setF((p) => ({ ...p, max_turns: e.target.value }))} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StagesEditor({ stages, scenarios, onSave, onAdd, onDelete }) {
+  const [scope, setScope] = useState("");   // "" = all scenarios
+  const forScope = useMemo(
+    () => (stages || []).filter((s) => (scope ? s.scenario_key === scope : !s.scenario_key))
+      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)),
+    [stages, scope]
+  );
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Call stages for</span>
+        <select className="sw-input sw-focus" style={{ width: 220, height: 32, fontSize: 12.5 }} value={scope} onChange={(e) => setScope(e.target.value)}>
+          <option value="">All scenarios (default)</option>
+          {(scenarios || []).map((s) => <option key={s.key} value={s.key}>{s.label} only</option>)}
+        </select>
+        <button onClick={() => onAdd(scope || null, forScope.length)}
+          className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg ml-auto"
+          style={{ background: "var(--primary)", color: "#fff" }}>
+          + Add stage
+        </button>
+      </div>
+
+      <p className="text-sm mb-3 p-3 rounded-xl" style={{ background: "var(--primary-soft)", color: "var(--ink-soft)" }}>
+        Stages give a call its spine. The customer still speaks naturally, but won't let the agent move on until
+        the stage goal is genuinely met — so practice is consistent and you can see how far people get.
+        A scenario with no stages of its own uses the default set.
+      </p>
+
+      {forScope.length === 0 ? (
+        <div className="rounded-xl p-8 text-center text-sm" style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-faint)" }}>
+          {scope
+            ? "No stages specific to this scenario — it uses the default set. Add one to override."
+            : "No stages yet. Run add_coach_stages.sql to load the starter set, or add them here."}
+        </div>
+      ) : (
+        forScope.map((s) => <StageRow key={s.id} s={s} onSave={onSave} onDelete={onDelete} />)
+      )}
+    </div>
+  );
+}
+
+function CoachSettingsView({ scenarios, settings, stages, onSaveScenario, onAddScenario, onDeleteScenario, onSaveSettings,
+                            onSaveStage, onAddStage, onDeleteStage }) {
   const [rubric, setRubric] = useState(settings.rubric || "");
   const [method, setMethod] = useState(settings.what_good_looks_like || "");
   const [savingCfg, setSavingCfg] = useState(false);
@@ -4927,6 +5034,12 @@ function CoachSettingsView({ scenarios, settings, onSaveScenario, onAddScenario,
         you describe what good looks like here, the more useful the feedback — and the harsher it can
         fairly be. Changes apply to the next practice call; nothing needs redeploying.
       </p>
+
+      {/* Call stages */}
+      <div className="rounded-2xl p-4 mb-4" style={{ background: "var(--surface-alt)", border: "1px solid var(--border)" }}>
+        <StagesEditor stages={stages} scenarios={scenarios}
+          onSave={onSaveStage} onAdd={onAddStage} onDelete={onDeleteStage} />
+      </div>
 
       {/* What good looks like */}
       <div className="rounded-2xl p-4 mb-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
@@ -5138,6 +5251,7 @@ function OtherVisualsView({ orders, netsuite, forecasts, staff }) {
 function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSavePlan, onAddPlan, onDeletePlan,
                        planTiers, planMetrics, planTablesMissing, onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric,
                        coachScenarios, coachSettings, onSaveCoachScenario, onAddCoachScenario, onDeleteCoachScenario, onSaveCoachSettings,
+                       coachStages, onSaveStage, onAddStage, onDeleteStage,
                        orders, netsuite, forecasts }) {
   const [section, setSection] = useState("statuses");
   return (
@@ -5165,7 +5279,8 @@ function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSave
         <OtherVisualsView orders={orders} netsuite={netsuite} forecasts={forecasts} staff={staff} />
       )}
       {section === "coach" && (
-        <CoachSettingsView scenarios={coachScenarios} settings={coachSettings}
+        <CoachSettingsView scenarios={coachScenarios} settings={coachSettings} stages={coachStages}
+          onSaveStage={onSaveStage} onAddStage={onAddStage} onDeleteStage={onDeleteStage}
           onSaveScenario={onSaveCoachScenario} onAddScenario={onAddCoachScenario}
           onDeleteScenario={onDeleteCoachScenario} onSaveSettings={onSaveCoachSettings} />
       )}
@@ -5749,6 +5864,11 @@ function SalesCoachView() {
   const [summary, setSummary] = useState(null);
   const [error, setError] = useState("");
   const [speakBack, setSpeakBack] = useState(true);
+  // Where the call has got to. The Edge Function decides when to advance;
+  // this just follows it so the agent can see progress.
+  const [stageIndex, setStageIndex] = useState(0);
+  const [stageList, setStageList] = useState([]);
+  const [stageNote, setStageNote] = useState("");
   const [typed, setTyped] = useState("");
   const [history, setHistory] = useState([]);
   const [openSession, setOpenSession] = useState(null);
@@ -5789,6 +5909,8 @@ function SalesCoachView() {
   const scrollRef = useRef(null);
   const turnsRef = useRef([]);
   useEffect(() => { turnsRef.current = turns; }, [turns]);
+  const stageIdxRef = useRef(0);
+  useEffect(() => { stageIdxRef.current = stageIndex; }, [stageIndex]);
 
   const supported = typeof window !== "undefined" &&
     (window.SpeechRecognition || window.webkitSpeechRecognition);
@@ -5813,6 +5935,7 @@ function SalesCoachView() {
         persona: activeScenario?.persona || null,
         rubric: coachCfg.rubric || null,
         method: coachCfg.what_good_looks_like || null,
+        stageIndex: stageIdxRef.current,
       }),
     });
     if (!res.ok) {
@@ -5906,6 +6029,9 @@ function SalesCoachView() {
     setStatus("thinking");
     try {
       const r = await callCoach("turn", withAgent.map(({ role, text }) => ({ role, text })));
+      if (Array.isArray(r.stages) && r.stages.length) setStageList(r.stages);
+      if (typeof r.stageIndex === "number") setStageIndex(r.stageIndex);
+      setStageNote(r.stageNote || "");
       setTurns((prev) => {
         const copy = [...prev];
         // attach the score to the agent turn we just sent
@@ -5977,9 +6103,11 @@ function SalesCoachView() {
     unlockSpeech();   // must happen inside the click for audio to be allowed
     rollVoice();      // a different customer each time
     setTurns([]); setSummary(null); setError(""); setInterim("");
+    setStageIndex(0); stageIdxRef.current = 0; setStageNote("");
     setStatus("thinking");
     try {
       const r = await callCoach("turn", []);
+      if (Array.isArray(r.stages) && r.stages.length) setStageList(r.stages);
       setTurns([{ role: "customer", text: r.customer || "Hello?" }]);
       say(r.customer);
       setStatus("live");
@@ -6018,6 +6146,10 @@ function SalesCoachView() {
           points: pts,
           turn_count: agentTurns.length,
           tally,
+          // How far through the call they actually got
+          stages_reached: stageList.slice(0, stageIndex + 1).map((s) => s.label),
+          final_stage: stageList[stageIndex]?.label || null,
+          completed: stageList.length > 0 && stageIndex >= stageList.length - 1,
           transcript: finalTurns,
         });
         loadHistory();
@@ -6079,6 +6211,35 @@ function SalesCoachView() {
       {/* Live call */}
       {(status === "live" || status === "thinking" || status === "ended") && (
         <>
+          {/* Where the call has got to. The customer decides when you've
+              earned the next stage, so this is progress, not a menu. */}
+          {stageList.length > 0 && (
+            <div className="rounded-xl p-3 mb-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+                {stageList.map((s, i) => {
+                  const done = i < stageIndex;
+                  const now = i === stageIndex;
+                  return (
+                    <React.Fragment key={s.key || i}>
+                      {i > 0 && <div style={{ flex: 1, height: 2, minWidth: 10, background: done || now ? "var(--primary)" : "var(--border)" }} />}
+                      <span className="text-xs px-2 py-1 rounded-full whitespace-nowrap"
+                        style={now
+                          ? { background: "var(--primary)", color: "#fff", fontWeight: 600 }
+                          : done
+                            ? { background: "var(--green-soft)", color: "var(--green)", fontWeight: 500 }
+                            : { background: "var(--surface-alt)", color: "var(--ink-faint)" }}>
+                        {done ? "✓ " : ""}{s.label}
+                      </span>
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+              {stageNote && (
+                <div className="text-xs" style={{ color: "var(--ink-soft)" }}>{stageNote}</div>
+              )}
+            </div>
+          )}
+
           <div className="flex items-center gap-2 mb-3 flex-wrap">
             <span className="text-xs font-semibold px-2.5 py-1 rounded-full"
               style={{ background: "var(--primary-soft)", color: "var(--primary)" }}>
@@ -6253,6 +6414,11 @@ function SalesCoachView() {
                         {scen?.label || h.scenario} · {fmtDate(h.created_at)} · {h.turn_count} turns
                         {h.user_name ? ` · ${h.user_name}` : ""}
                       </div>
+                      {h.final_stage && (
+                        <div className="text-xs mt-0.5" style={{ color: h.completed ? "var(--green)" : "var(--amber)" }}>
+                          {h.completed ? "Reached the close" : `Got as far as: ${h.final_stage}`}
+                        </div>
+                      )}
                     </div>
                     <span className="sw-mono text-xs font-bold shrink-0 px-2 py-1 rounded-full"
                       style={{ background: (h.points ?? 0) >= 0 ? "var(--green-soft)" : "var(--red-soft)", color: (h.points ?? 0) >= 0 ? "var(--green)" : "var(--red)" }}>
@@ -8617,6 +8783,38 @@ export default function App() {
     loadAliases();
   }, [loadAliases]);
 
+  // Call stages for the coach
+  const [coachStages, setCoachStages] = useState([]);
+  const loadCoachStages = useCallback(async () => {
+    const { data } = await supabase.from("coach_stages").select("*").order("sort_order");
+    setCoachStages(data || []);
+  }, []);
+  useEffect(() => { if (session?.user) loadCoachStages(); }, [session, loadCoachStages]);
+
+  const saveCoachStage = useCallback(async (id, patch) => {
+    const { error } = await supabase.from("coach_stages").update(patch).eq("id", id);
+    if (error) { setToast(`Couldn't save stage: ${error.message}`); setTimeout(() => setToast(""), 8000); return; }
+    loadCoachStages();
+  }, [loadCoachStages]);
+
+  const addCoachStage = useCallback(async (scenarioKey, count) => {
+    const { error } = await supabase.from("coach_stages").insert({
+      scenario_key: scenarioKey,
+      key: `stage_${Date.now().toString(36)}`,
+      label: "New stage",
+      max_turns: 6,
+      sort_order: (count + 1) * 10,
+    });
+    if (error) { setToast(`Couldn't add stage: ${error.message}`); setTimeout(() => setToast(""), 8000); return; }
+    loadCoachStages();
+  }, [loadCoachStages]);
+
+  const deleteCoachStage = useCallback(async (id, label) => {
+    if (!window.confirm(`Delete the "${label}" stage?`)) return;
+    await supabase.from("coach_stages").delete().eq("id", id);
+    loadCoachStages();
+  }, [loadCoachStages]);
+
   // Sales Coach scenarios and grading, editable in Settings
   const loadCoachCfg = useCallback(async () => {
     const [{ data: sc }, { data: st }] = await Promise.all([
@@ -9095,6 +9293,7 @@ export default function App() {
           coachScenarios={coachScenarios} coachSettings={coachSettings}
           onSaveCoachScenario={saveCoachScenario} onAddCoachScenario={addCoachScenario}
           onDeleteCoachScenario={deleteCoachScenario} onSaveCoachSettings={saveCoachSettings}
+          coachStages={coachStages} onSaveStage={saveCoachStage} onAddStage={addCoachStage} onDeleteStage={deleteCoachStage}
           orders={orders} netsuite={netsuiteResolved} forecasts={forecasts} />}
       </main>
 
