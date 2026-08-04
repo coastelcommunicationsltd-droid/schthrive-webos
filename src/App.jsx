@@ -157,11 +157,36 @@ const STYLE = `
 .sw-lift:hover{transform:translateY(-1px);box-shadow:0 3px 10px rgba(33,30,50,.07);}
 .sw-lift:active{transform:translateY(0);}
 .sw-anim-rows tbody tr{animation:sw-rise .18s ease-out both;}
+.sw-anim-rows tbody tr:nth-child(2){animation-delay:30ms;}
+.sw-anim-rows tbody tr:nth-child(3){animation-delay:60ms;}
+.sw-anim-rows tbody tr:nth-child(4){animation-delay:90ms;}
+.sw-anim-rows tbody tr:nth-child(5){animation-delay:120ms;}
+.sw-anim-rows tbody tr:nth-child(6){animation-delay:150ms;}
+.sw-anim-rows tbody tr:nth-child(7){animation-delay:180ms;}
+.sw-anim-rows tbody tr:nth-child(8){animation-delay:210ms;}
+.sw-anim-rows tbody tr:nth-child(9){animation-delay:240ms;}
+.sw-anim-rows tbody tr:nth-child(10){animation-delay:270ms;}
+.sw-anim-rows tbody tr:nth-child(11){animation-delay:300ms;}
+.sw-anim-rows tbody tr:nth-child(12){animation-delay:330ms;}
 .sw-bar-anim{transition:width .25s ease;}
+/* Headline cards rise in with a short cascade when the view mounts */
+.sw-stagger > *{animation:sw-rise .25s ease-out both;}
+.sw-stagger > *:nth-child(2){animation-delay:40ms;}
+.sw-stagger > *:nth-child(3){animation-delay:80ms;}
+.sw-stagger > *:nth-child(4){animation-delay:120ms;}
+/* A select that's mid-save breathes instead of just going dead */
+@keyframes sw-saving-pulse{0%,100%{opacity:.55;}50%{opacity:.85;}}
+.sw-saving{animation:sw-saving-pulse .9s ease-in-out infinite;}
+/* Hover wash — inline row tints (lilac) win over this, by design */
+.sw-hover-rows tbody tr{transition:background .15s ease;}
+.sw-hover-rows tbody tr:hover{background:var(--surface-alt);}
 @media (prefers-reduced-motion: reduce){
   .sw-lift,.sw-lift:hover{transition:none;transform:none;box-shadow:none;}
   .sw-anim-rows tbody tr{animation:none;}
   .sw-bar-anim{transition:none;}
+  .sw-stagger > *{animation:none;}
+  .sw-saving{animation:none;opacity:.6;}
+  .sw-hover-rows tbody tr{transition:none;}
 }
 
 /* ---- Mobile ----------------------------------------------------------
@@ -8246,6 +8271,37 @@ function sdProductOf(product) {
 /*  SALES DELIVERY — allocation and progress on claimed orders             */
 /* ---------------------------------------------------------------------- */
 
+/* Counts up to its value on mount and eases between values when they
+   change. 380ms, cubic ease-out, and rendered with tabular figures by
+   the surrounding sw-display so the card never shifts width mid-count.
+   People who prefer reduced motion get the final number straight away. */
+function CountUp({ value, duration = 380 }) {
+  const [shown, setShown] = useState(0);
+  const from = useRef(0);
+  useEffect(() => {
+    const target = Math.round(num(value));
+    if (typeof window !== "undefined" && window.matchMedia
+        && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      from.current = target;
+      setShown(target);
+      return;
+    }
+    let raf;
+    const base = from.current;
+    const start = performance.now();
+    const tick = (t) => {
+      const p = Math.min(1, (t - start) / duration);
+      const eased = 1 - Math.pow(1 - p, 3);
+      setShown(Math.round(base + (target - base) * eased));
+      if (p < 1) raf = requestAnimationFrame(tick);
+      else from.current = target;
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [value, duration]);
+  return <>{shown}</>;
+}
+
 function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced = [], onAllocate, onSaveOrder, onOpenOrder }) {
   const statusCfg = useStatusCfg();
   const [period, setPeriod] = useState("ytd");     // delivery works across the year
@@ -8455,8 +8511,6 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
       return { count: s.count + x.count, sov: s.sov + x.sov };
     }, acc), { count: 0, sov: 0 });
   }, [placement]);
-
-  const unplacedValue = useMemo(() => unplacedRows.reduce((s, r) => s + num(r.sov), 0), [unplacedRows]);
 
   const productOptions = useMemo(() => {
     const present = new Set(unplacedRows.map((r) => sdProductOf(r.product)));
@@ -8695,38 +8749,42 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         </div>
       ) : (
 
-      /* Headline counts */
-      <div className="sw-cols-2 mb-3" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: "0.75rem" }}>
+      /* Headline counts — this branch only renders on the Claimed view,
+         so the old view === "unplaced" ternaries in here were dead code
+         and have gone. Cards cascade in and the counts ease up. */
+      <div className="sw-cols-2 sw-stagger mb-3" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: "0.75rem" }}>
         {/* Orders in period carries the money underneath it */}
         <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <div className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>
-            {view === "unplaced" ? "Unplaced orders" : "Orders in period"}
+            Orders in period
           </div>
           <div className="sw-display" style={{ fontSize: 27, fontWeight: 600, letterSpacing: "-0.025em" }}>
-            {view === "unplaced" ? unplacedRows.length : totals.all}
+            <CountUp value={totals.all} />
           </div>
           <div className="flex items-center gap-3 mt-1.5">
             <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
               GP <b className="sw-mono" style={{ color: "var(--ink-soft)" }}>{fmtGBP(totals.gp)}</b>
             </span>
             <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
-              SOV <b className="sw-mono" style={{ color: "var(--ink-soft)" }}>{fmtGBP(view === "unplaced" ? unplacedValue : totals.sov)}</b>
+              SOV <b className="sw-mono" style={{ color: "var(--ink-soft)" }}>{fmtGBP(totals.sov)}</b>
             </span>
           </div>
         </div>
 
         {[
-          ["Unallocated", view === "unplaced" ? unplacedByAgent.none : totals.unallocated,
-            (view === "unplaced" ? unplacedByAgent.none : totals.unallocated) ? "var(--amber)" : "var(--ink-faint)",
+          ["Unallocated", totals.unallocated,
+            totals.unallocated ? "var(--amber)" : "var(--ink-faint)",
             "Not yet handed to anyone"],
-          ["Over 90 days", view === "unplaced" ? unplacedAged : totals.aged,
-            (view === "unplaced" ? unplacedAged : totals.aged) ? "var(--red)" : "var(--ink-faint)",
+          ["Over 90 days", totals.aged,
+            totals.aged ? "var(--red)" : "var(--ink-faint)",
             "Sitting unplaced for more than 90 days"],
           ["Dirty orders", totals.dirty, totals.dirty ? "var(--red)" : "var(--ink-faint)", "Flagged for review"],
         ].map(([label, value, colour, hint]) => (
           <div key={label} className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }} title={hint}>
             <div className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{label}</div>
-            <div className="sw-display" style={{ fontSize: 27, fontWeight: 600, letterSpacing: "-0.025em", color: colour }}>{value}</div>
+            <div className="sw-display" style={{ fontSize: 27, fontWeight: 600, letterSpacing: "-0.025em", color: colour }}>
+              <CountUp value={value} />
+            </div>
             <div className="text-xs mt-1.5" style={{ color: "var(--ink-faint)" }}>{hint}</div>
           </div>
         ))}
@@ -8964,7 +9022,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                   <td className="px-2 py-2 text-xs" style={{ lineHeight: 1.3 }}>
                     {r.kind === "lilac" && canAllocate ? (
                       /* Not in NetSuite yet, so allocation happens here */
-                      <select className="sw-input sw-focus" style={{ height: 30, fontSize: 11.5 }}
+                      <select className={`sw-input sw-focus${busyId === r.order.id ? " sw-saving" : ""}`} style={{ height: 30, fontSize: 11.5 }}
                         value={r.agent || ""}
                         disabled={busyId === r.order.id}
                         onChange={async (e) => {
@@ -9014,7 +9072,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         </div>
         ) : (
         <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <table className="w-full text-sm sw-orders sw-anim-rows" style={{ tableLayout: "fixed" }}>
+          <table className="w-full text-sm sw-orders sw-anim-rows sw-hover-rows" style={{ tableLayout: "fixed" }}>
             <colgroup>
               <col style={{ width: "19%" }} />
               <col style={{ width: "11%" }} />
@@ -9052,7 +9110,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
 
                   <td className="px-2 py-2">
                     {canAllocate && !alloc.fromNetsuite ? (
-                      <select className="sw-input sw-focus" style={{ height: 32, fontSize: 12 }}
+                      <select className={`sw-input sw-focus${busyId === o.id ? " sw-saving" : ""}`} style={{ height: 32, fontSize: 12 }}
                         value={alloc.name || ""}
                         disabled={busyId === o.id}
                         onChange={async (e) => {
@@ -9093,7 +9151,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                       const tone = TONE_MAP[(statusCfg[st] || {}).tone] || TONE_MAP.neutral;
                       return (
                         <span className="inline-block rounded px-1.5 py-0.5 sw-clamp2"
-                          style={{ color: tone.fg, background: tone.bg, fontSize: 10.5, fontWeight: 600, lineHeight: 1.3 }}
+                          style={{ color: tone.fg, background: tone.bg, fontSize: 10.5, fontWeight: 600, lineHeight: 1.3, transition: "background .2s ease, color .2s ease" }}
                           title={st}>
                           {st || "—"}
                         </span>
