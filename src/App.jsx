@@ -1663,11 +1663,22 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
       if (/broadband|bt ?net|btnet|security|badr|fttp|fttc|ethernet|pstn|line|wi-?fi/.test(s)) return "Connectivity";
       return "Other";
     };
+    // Every staff spelling — full name and alt name — maps to the canonical
+    // name, so GP written under either lands on the same person.
+    const canonBy = {};
+    (staff || []).forEach((s) => {
+      if (!s.full_name) return;
+      canonBy[nameKey(s.full_name)] = s.full_name;
+      if (s.alt_name) canonBy[nameKey(s.alt_name)] = s.full_name;
+    });
+    const canon = (nm) => canonBy[nameKey(nm)] || nm;
+
     const add = (nm, v, b) => {
       if (!nm || !v) return;
-      claimed[nm] = (claimed[nm] || 0) + v;
-      if (!mix[nm]) mix[nm] = {};
-      mix[nm][b] = (mix[nm][b] || 0) + v;
+      const k = canon(nm);
+      claimed[k] = (claimed[k] || 0) + v;
+      if (!mix[k]) mix[k] = {};
+      mix[k][b] = (mix[k][b] || 0) + v;
     };
     gpCountable.forEach((o) => {
       const b = bucketOf(o);
@@ -1684,8 +1695,14 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
       const cfg = n.order_status ? statusCfg[n.order_status] : null;
       const countsGp = cfg ? cfg.count_gp !== false : n.count_gp !== false;
       if (!countsGp) return;
-      if (n.closer_name) statted[n.closer_name] = (statted[n.closer_name] || 0) + num(n.closer_gp);
-      if (n.referrer_name) statted[n.referrer_name] = (statted[n.referrer_name] || 0) + num(n.referrer_gp);
+      if (n.closer_name) {
+        const k = canon(n.closer_name);
+        statted[k] = (statted[k] || 0) + num(n.closer_gp);
+      }
+      if (n.referrer_name) {
+        const k = canon(n.referrer_name);
+        statted[k] = (statted[k] || 0) + num(n.referrer_gp);
+      }
     });
 
     // Commission tiers for the bar: each threshold marked along it, and
@@ -8048,9 +8065,19 @@ function placementOf(status) {
   return hit ? hit.key : "other";
 }
 
+// Out for Sig and Unplaced are both "still to place" — the board is about
+// that work, so they're treated as one thing.
+const TO_BE_PLACED = ["unplaced", "out_for_sig"];
+const isToBePlaced = (status) => TO_BE_PLACED.includes(placementOf(status));
+
 /* Product groups for delivery, matched against "Item: Product Group 2"
    (column H). Order matters — the first match wins, so the more specific
    patterns sit above the general ones. */
+// Broadband, Data Networks and VAS all roll up into Connectivity, which
+// is what delivery actually reports on. The three stay visible as smaller
+// cards beneath it.
+const SD_CONNECTIVITY = ["broadband", "dns", "vas"];
+
 const SD_PRODUCTS = [
   { key: "cloud",     label: "Cloud",      test: /cloud|dv4|digital\s*voice|ip\s*-\s*cv|\bvoice\b/i },
   { key: "mobile",    label: "Mobile",     test: /mobile|\bsim\b|airtime|handset|\bee\b/i },
@@ -8077,11 +8104,9 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   const [period, setPeriod] = useState("ytd");     // delivery works across the year
   const [view, setView] = useState("unplaced");    // unplaced | claimed
   const [productFilter, setProductFilter] = useState("All");
-  const [placedFilter, setPlacedFilter] = useState("All");
   const [cardView, setCardView] = useState("summary");   // summary | placement
-  // The workload list is about work still to do, so placed orders are out
-  // of it by default.
-  const [workScope, setWorkScope] = useState("open");    // open | placed_tw | placed_lw | all
+  // The board is about work still to place, so that's where it opens.
+  const [placementView, setPlacementView] = useState("to_be_placed");
   const [dirtyOnly, setDirtyOnly] = useState(false);
   const [agedOnly, setAgedOnly] = useState(false);
   const [query, setQuery] = useState("");
@@ -8273,39 +8298,35 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   }, [unplacedRows]);
 
   const dirtyCountUnplaced = useMemo(() => unplacedRows.filter((r) => r.dirty).length, [unplacedRows]);
-  const placedOptions = useMemo(
-    () => Array.from(new Set(unplacedRows.map((r) => r.placed).filter((p) => p && p !== "—"))).sort(),
-    [unplacedRows]
-  );
-
   const unplacedFiltered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return unplacedRows.filter((r) => {
       if (q && !String(r.company).toLowerCase().includes(q)
             && !String(r.doc || "").toLowerCase().includes(q)) return false;
-      if (productFilter !== "All" && sdProductOf(r.product) !== productFilter) return false;
-      if (placedFilter !== "All" && r.placed !== placedFilter) return false;
+      if (placementView === "to_be_placed" && !isToBePlaced(r.placed)) return false;
+      if (placementView !== "all" && placementView !== "to_be_placed"
+          && placementOf(r.placed) !== placementView) return false;
+      if (productFilter !== "All") {
+        const pk = sdProductOf(r.product);
+        // Connectivity is a roll-up, so it matches any of its parts
+        const ok = productFilter === "connectivity" ? SD_CONNECTIVITY.includes(pk) : pk === productFilter;
+        if (!ok) return false;
+      }
       if (dirtyOnly && !r.dirty) return false;
       if (agedOnly && !r.aged) return false;
       if (agentFilter === "__unallocated") { if (r.agent) return false; }
       else if (agentFilter !== "All" && r.agent !== agentFilter) return false;
       return true;
     });
-  }, [unplacedRows, query, productFilter, placedFilter, agentFilter, dirtyOnly, agedOnly]);
+  }, [unplacedRows, query, productFilter, placementView, agentFilter, dirtyOnly, agedOnly]);
 
-  // Which placement states the workload list is counting
-  const WORK_SCOPES = [
-    { key: "open",      label: "To do",      keys: ["unplaced", "out_for_sig"] },
-    { key: "placed_tw", label: "Placed TW",  keys: ["placed_tw"] },
-    { key: "placed_lw", label: "Placed LW",  keys: ["placed_lw"] },
-    { key: "all",       label: "All",        keys: null },
-  ];
-
+  // Everything below follows the placement filter, so the workload counts
+  // and the table always describe the same set of orders.
   const scopedForWork = useMemo(() => {
-    const def = WORK_SCOPES.find((w) => w.key === workScope) || WORK_SCOPES[0];
-    if (!def.keys) return unplacedRows;
-    return unplacedRows.filter((r) => def.keys.includes(placementOf(r.placed)));
-  }, [unplacedRows, workScope]);
+    if (placementView === "all") return unplacedRows;
+    if (placementView === "to_be_placed") return unplacedRows.filter((r) => isToBePlaced(r.placed));
+    return unplacedRows.filter((r) => placementOf(r.placed) === placementView);
+  }, [unplacedRows, placementView]);
 
   // Workload by admin agent, from column K
   const unplacedByAgent = useMemo(() => {
@@ -8392,14 +8413,10 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
           <div className="sw-cols-2" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: "0.75rem" }}>
             {PLACEMENT_BUCKETS.map((b) => {
               const d = placement.buckets[b.key];
-              const active = placedFilter !== "All" && b.test.test(placedFilter);
+              const active = placementView === b.key;
               return (
                 <button key={b.key}
-                  onClick={() => {
-                    // Clicking a card filters the list to that placement state
-                    const match = placedOptions.find((p) => b.test.test(p));
-                    setPlacedFilter(active ? "All" : (match || "All"));
-                  }}
+                  onClick={() => setPlacementView(active ? "to_be_placed" : b.key)}
                   className="sw-focus rounded-xl p-4 text-left"
                   style={{ background: "var(--surface)", border: `1px solid ${active ? b.tone : "var(--border)"}` }}>
                   <div className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{b.label}</div>
@@ -8412,10 +8429,23 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
 
           {/* One card per product rather than a matrix — easier to scan and
               each one is clickable to filter the list. */}
+          {/* Full-size cards: the headline products, plus Connectivity as a
+              roll-up sitting where it reads naturally after Mobile. */}
           <div className="sw-cols-2 mt-3" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "0.75rem" }}>
-            {[...SD_PRODUCTS, { key: "other", label: "Other" }].map((p) => {
+            {[
+              { key: "cloud",        label: "Cloud" },
+              { key: "mobile",       label: "Mobile" },
+              { key: "connectivity", label: "Connectivity", rollup: SD_CONNECTIVITY },
+              { key: "btnet",        label: "BTNet" },
+              { key: "security",     label: "Security" },
+              { key: "other",        label: "Other" },
+            ].map((p) => {
+              const keys = p.rollup || [p.key];
               const totalsForProduct = PLACEMENT_BUCKETS.reduce((acc, b) => {
-                const c = placement.buckets[b.key].byProduct[p.key];
+                const c = keys.reduce((s, k) => {
+                  const x = placement.buckets[b.key].byProduct[k];
+                  return { count: s.count + x.count, sov: s.sov + x.sov };
+                }, { count: 0, sov: 0 });
                 return { count: acc.count + c.count, sov: acc.sov + c.sov };
               }, { count: 0, sov: 0 });
               if (totalsForProduct.count === 0) return null;
@@ -8437,7 +8467,10 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                   {/* The placement split for this product */}
                   <div className="flex mt-2 rounded-full overflow-hidden" style={{ height: 5, background: "var(--surface-alt)" }}>
                     {PLACEMENT_BUCKETS.map((b) => {
-                      const c = placement.buckets[b.key].byProduct[p.key];
+                      const c = keys.reduce((s, k) => {
+                        const x = placement.buckets[b.key].byProduct[k];
+                        return { count: s.count + x.count, sov: s.sov + x.sov };
+                      }, { count: 0, sov: 0 });
                       if (!c.count) return null;
                       return (
                         <div key={b.key} title={`${b.label}: ${c.count} · ${fmtGBP(c.sov)}`}
@@ -8447,7 +8480,10 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                   </div>
                   <div className="flex flex-col gap-0.5 mt-1.5">
                     {PLACEMENT_BUCKETS.map((b) => {
-                      const c = placement.buckets[b.key].byProduct[p.key];
+                      const c = keys.reduce((s, k) => {
+                        const x = placement.buckets[b.key].byProduct[k];
+                        return { count: s.count + x.count, sov: s.sov + x.sov };
+                      }, { count: 0, sov: 0 });
                       if (!c.count) return null;
                       return (
                         <div key={b.key} className="flex items-center gap-1.5">
@@ -8464,9 +8500,34 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
             })}
           </div>
 
+          {/* What makes up Connectivity — smaller, since they're detail */}
+          <div className="sw-cols-2 mt-2" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "0.5rem" }}>
+            {SD_CONNECTIVITY.map((k) => {
+              const def = SD_PRODUCTS.find((p) => p.key === k);
+              if (!def) return null;
+              const t = PLACEMENT_BUCKETS.reduce((acc, b) => {
+                const c = placement.buckets[b.key].byProduct[k];
+                return { count: acc.count + c.count, sov: acc.sov + c.sov };
+              }, { count: 0, sov: 0 });
+              if (t.count === 0) return null;
+              const sel = productFilter === k;
+              return (
+                <button key={k} onClick={() => setProductFilter(sel ? "All" : k)}
+                  className="sw-focus rounded-lg px-3 py-2 text-left"
+                  style={{ background: "var(--surface)", border: `1px solid ${sel ? "var(--primary)" : "var(--border)"}` }}>
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-xs truncate" style={{ color: sel ? "var(--primary)" : "var(--ink-faint)" }}>{def.label}</span>
+                    <span className="sw-display shrink-0" style={{ fontSize: 15, fontWeight: 600 }}>{t.count}</span>
+                  </div>
+                  <div className="sw-mono" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>{fmtGBP(t.sov)}</div>
+                </button>
+              );
+            })}
+          </div>
+
           <p className="text-xs mt-2 px-1" style={{ color: "var(--ink-faint)" }}>
-            Click a placement card to filter by state, or a product card to filter by product. Products with
-            nothing outstanding are hidden.
+            Connectivity is Broadband, Data Networks &amp; Services and VAS combined — the three smaller cards
+            below it. Click any card to filter; anything with nothing outstanding is hidden.
           </p>
         </div>
       ) : (
@@ -8525,12 +8586,14 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
               <select className="sw-input sw-focus" style={{ width: 190, height: 32, fontSize: 12.5 }}
                 value={productFilter} onChange={(e) => setProductFilter(e.target.value)}>
                 <option value="All">All products</option>
+                <option value="connectivity">Connectivity (all)</option>
                 {productOptions.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
               </select>
               <select className="sw-input sw-focus" style={{ width: 180, height: 32, fontSize: 12.5 }}
-                value={placedFilter} onChange={(e) => setPlacedFilter(e.target.value)}>
-                <option value="All">All placed statuses</option>
-                {placedOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+                value={placementView} onChange={(e) => setPlacementView(e.target.value)}>
+                <option value="to_be_placed">To be placed</option>
+                {PLACEMENT_BUCKETS.map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
+                <option value="all">All statuses</option>
               </select>
             </>
           ) : (
@@ -8582,16 +8645,11 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
             </div>
 
             {view === "unplaced" && (
-              <div className="flex items-center rounded-lg overflow-hidden mb-2" style={{ border: "1px solid var(--border)", height: 28 }}>
-                {WORK_SCOPES.map((w) => (
-                  <button key={w.key} onClick={() => setWorkScope(w.key)}
-                    className="sw-focus flex-1 text-xs whitespace-nowrap"
-                    style={workScope === w.key
-                      ? { background: "var(--primary)", color: "#fff", fontWeight: 600, height: "100%" }
-                      : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
-                    {w.label}
-                  </button>
-                ))}
+              <div className="text-xs mb-2" style={{ color: "var(--ink-faint)" }}>
+                {placementView === "to_be_placed" ? "Orders to be placed"
+                  : placementView === "all" ? "All orders"
+                  : PLACEMENT_BUCKETS.find((b) => b.key === placementView)?.label || ""}
+                {" · "}{scopedForWork.length}
               </div>
             )}
 
