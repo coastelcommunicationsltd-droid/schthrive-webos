@@ -8104,7 +8104,6 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   const [period, setPeriod] = useState("ytd");     // delivery works across the year
   const [view, setView] = useState("unplaced");    // unplaced | claimed
   const [productFilter, setProductFilter] = useState("All");
-  const [cardView, setCardView] = useState("summary");   // summary | placement
   // The board is about work still to place, so that's where it opens.
   const [placementView, setPlacementView] = useState("to_be_placed");
   const [dirtyOnly, setDirtyOnly] = useState(false);
@@ -8260,8 +8259,11 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         order: o,
       }));
 
-    return [...awaiting, ...rows]
-      .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+    // Unallocated work sits at the top — it's the thing that needs a decision
+    return [...awaiting, ...rows].sort((a, b) => {
+      if (!a.agent !== !b.agent) return a.agent ? 1 : -1;
+      return String(b.date || "").localeCompare(String(a.date || ""));
+    });
   }, [unplaced, orders, period, nsByDoc, dirtyDocs]);
 
   const unplacedAged = useMemo(() => unplacedRows.filter((r) => r.aged).length, [unplacedRows]);
@@ -8378,7 +8380,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
           {deliveryTeam} · allocation and progress
         </span>
         <div className="ml-auto flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 32 }}>
-          {[["unplaced", `Unplaced (${unplacedRows.length})`], ["claimed", "Claimed orders"]].map(([k, lbl]) => (
+          {[["unplaced", `To be placed (${scopedForWork.length})`], ["claimed", "Claimed orders"]].map(([k, lbl]) => (
             <button key={k} onClick={() => setView(k)}
               className="sw-focus px-3 text-xs whitespace-nowrap"
               style={view === k
@@ -8390,25 +8392,8 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         </div>
       </div>
 
-      {/* Which set of cards is showing */}
-      {view === "unplaced" && (
-        <div className="flex items-center justify-end mb-2">
-          <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 30 }}>
-            {[["summary", "Summary"], ["placement", "Placement"]].map(([k, lbl]) => (
-              <button key={k} onClick={() => setCardView(k)}
-                className="sw-focus px-3 text-xs"
-                style={cardView === k
-                  ? { background: "var(--surface-alt)", color: "var(--ink)", fontWeight: 600, height: "100%" }
-                  : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
-                {lbl}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* Placement: where everything has got to, and what it's worth */}
-      {view === "unplaced" && cardView === "placement" ? (
+      {view === "unplaced" ? (
         <div className="mb-3">
           <div className="sw-cols-2" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: "0.75rem" }}>
             {PLACEMENT_BUCKETS.map((b) => {
@@ -8429,17 +8414,54 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
 
           {/* One card per product rather than a matrix — easier to scan and
               each one is clickable to filter the list. */}
-          {/* Full-size cards: the headline products, plus Connectivity as a
-              roll-up sitting where it reads naturally after Mobile. */}
-          <div className="sw-cols-2 mt-3" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "0.75rem" }}>
+          {/* Product cards. The three that make up Connectivity sit stacked
+              to its left, so the relationship is visible without a matrix. */}
+          <div className="sw-cols-2 mt-3" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "0.75rem", alignItems: "stretch" }}>
             {[
-              { key: "cloud",        label: "Cloud" },
-              { key: "mobile",       label: "Mobile" },
+              { key: "cloud",  label: "Cloud" },
+              { key: "mobile", label: "Mobile" },
+              { key: "__connectivity_parts", label: "" },
               { key: "connectivity", label: "Connectivity", rollup: SD_CONNECTIVITY },
-              { key: "btnet",        label: "BTNet" },
-              { key: "security",     label: "Security" },
-              { key: "other",        label: "Other" },
+              { key: "btnet",    label: "BTNet" },
+              { key: "security", label: "Security" },
+              { key: "other",    label: "Other" },
             ].map((p) => {
+              // The stacked column of Connectivity's parts
+              if (p.key === "__connectivity_parts") {
+                const anyPart = SD_CONNECTIVITY.some((k) =>
+                  PLACEMENT_BUCKETS.some((b) => placement.buckets[b.key].byProduct[k].count > 0));
+                if (!anyPart) return null;
+                return (
+                  <div key={p.key} className="flex flex-col gap-2" style={{ justifyContent: "stretch" }}>
+                    {SD_CONNECTIVITY.map((k) => {
+                      const def = SD_PRODUCTS.find((x) => x.key === k);
+                      if (!def) return null;
+                      const t = PLACEMENT_BUCKETS.reduce((acc, b) => {
+                        const c = placement.buckets[b.key].byProduct[k];
+                        return { count: acc.count + c.count, sov: acc.sov + c.sov };
+                      }, { count: 0, sov: 0 });
+                      const sel = productFilter === k;
+                      return (
+                        <button key={k} onClick={() => setProductFilter(sel ? "All" : k)}
+                          className="sw-focus rounded-xl px-3 py-2 text-left"
+                          style={{
+                            flex: 1, minHeight: 0,
+                            background: "var(--surface)",
+                            border: `1px solid ${sel ? "var(--primary)" : "var(--border)"}`,
+                            opacity: t.count ? 1 : 0.5,
+                          }}>
+                          <div className="flex items-baseline justify-between gap-2">
+                            <span className="text-xs truncate" style={{ color: sel ? "var(--primary)" : "var(--ink-faint)" }}>{def.label}</span>
+                            <span className="sw-display shrink-0" style={{ fontSize: 16, fontWeight: 600 }}>{t.count || 0}</span>
+                          </div>
+                          <div className="sw-mono" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>{fmtGBP(t.sov)}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              }
+
               const keys = p.rollup || [p.key];
               const totalsForProduct = PLACEMENT_BUCKETS.reduce((acc, b) => {
                 const c = keys.reduce((s, k) => {
@@ -8464,7 +8486,6 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                   </div>
                   <div className="sw-mono text-xs" style={{ color: "var(--ink-soft)" }}>{fmtGBP(totalsForProduct.sov)}</div>
 
-                  {/* The placement split for this product */}
                   <div className="flex mt-2 rounded-full overflow-hidden" style={{ height: 5, background: "var(--surface-alt)" }}>
                     {PLACEMENT_BUCKETS.map((b) => {
                       const c = keys.reduce((s, k) => {
@@ -8500,34 +8521,9 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
             })}
           </div>
 
-          {/* What makes up Connectivity — smaller, since they're detail */}
-          <div className="sw-cols-2 mt-2" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "0.5rem" }}>
-            {SD_CONNECTIVITY.map((k) => {
-              const def = SD_PRODUCTS.find((p) => p.key === k);
-              if (!def) return null;
-              const t = PLACEMENT_BUCKETS.reduce((acc, b) => {
-                const c = placement.buckets[b.key].byProduct[k];
-                return { count: acc.count + c.count, sov: acc.sov + c.sov };
-              }, { count: 0, sov: 0 });
-              if (t.count === 0) return null;
-              const sel = productFilter === k;
-              return (
-                <button key={k} onClick={() => setProductFilter(sel ? "All" : k)}
-                  className="sw-focus rounded-lg px-3 py-2 text-left"
-                  style={{ background: "var(--surface)", border: `1px solid ${sel ? "var(--primary)" : "var(--border)"}` }}>
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="text-xs truncate" style={{ color: sel ? "var(--primary)" : "var(--ink-faint)" }}>{def.label}</span>
-                    <span className="sw-display shrink-0" style={{ fontSize: 15, fontWeight: 600 }}>{t.count}</span>
-                  </div>
-                  <div className="sw-mono" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>{fmtGBP(t.sov)}</div>
-                </button>
-              );
-            })}
-          </div>
-
           <p className="text-xs mt-2 px-1" style={{ color: "var(--ink-faint)" }}>
-            Connectivity is Broadband, Data Networks &amp; Services and VAS combined — the three smaller cards
-            below it. Click any card to filter; anything with nothing outstanding is hidden.
+            Connectivity is Broadband, Data Networks &amp; Services and VAS combined — the three cards to its
+            left. Click any card to filter; anything with nothing outstanding is hidden.
           </p>
         </div>
       ) : (
@@ -8799,7 +8795,12 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                     })()}
                   </td>
                   <td className="px-3 py-2 text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>
-                    {r.agent || <span style={{ color: "var(--ink-faint)" }}>Unallocated</span>}
+                    {r.agent ? r.agent : (
+                      <span className="inline-block rounded px-1.5 py-0.5"
+                        style={{ fontSize: 10, fontWeight: 700, color: "var(--amber)", background: "var(--amber-soft)" }}>
+                        UNALLOCATED
+                      </span>
+                    )}
                     {r.seller && <div style={{ fontSize: 10, color: "var(--ink-faint)" }}>{r.seller}</div>}
                   </td>
                   <td className="px-2 py-2 sw-mono text-xs sw-hide-xs">{fmtGBP(r.sov)}</td>
