@@ -6,7 +6,7 @@ import {
   Loader2, Users, Eye, EyeOff, ArrowLeft, LogIn, KeyRound, Palette, MapPin,
   BarChart3, CalendarDays, Target, Headphones, Phone,
   ChevronDown, ClipboardList, LayoutDashboard, Settings as SettingsIcon,
-  History, FileText, Inbox, Menu, Lock,
+  History, FileText, Inbox, Menu, Lock, Trophy,
 } from "lucide-react";
 
 /* ====================================================================== */
@@ -405,9 +405,112 @@ const PERIODS = [
   { key: "all", label: "All" },
 ];
 
+/* Financial years available to pick. FY 24-25 is the earliest because that
+   is where the NetSuite history starts; the list runs forward to whatever
+   FY we are currently in. A "financial year 2024" means Apr 2024 -> Mar 2025. */
+const FY_FIRST_YEAR = 2024;
+/* FY_MONTHS ("Apr"..."Mar") is declared once with the report helpers below
+   and reused here — only referenced at render time, so the ordering is fine. */
+function fyYearOf(d = new Date()) {
+  return d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1;
+}
+function fyLabel(y) {
+  return `FY ${String(y).slice(2)}-${String(y + 1).slice(2)}`;
+}
+function fyList() {
+  const last = fyYearOf();
+  const out = [];
+  for (let y = last; y >= FY_FIRST_YEAR; y--) out.push(y);
+  return out;
+}
+/* Calendar month/year for the Nth month of a financial year (0 = April). */
+function fyMonthDate(y, mi) {
+  const cal = (3 + mi) % 12;
+  return new Date(mi <= 8 ? y : y + 1, cal, 1, 0, 0, 0, 0);
+}
+
+/* A period key is one of the shorthand keys above, or:
+     fy:2024        whole financial year 2024-25
+     fy:2024:m:3    July 2024 (month index 3 within that FY)
+   parsePeriod turns any of them into { from, to } — `to` is exclusive and
+   null means "up to now / no upper bound". */
+function parsePeriod(key) {
+  const s = String(key || "all");
+  const m = /^fy:(\d{4})(?::m:(\d{1,2}))?$/.exec(s);
+  if (m) {
+    const y = parseInt(m[1], 10);
+    if (m[2] != null) {
+      const mi = Math.max(0, Math.min(11, parseInt(m[2], 10)));
+      const from = fyMonthDate(y, mi);
+      const to = new Date(from.getFullYear(), from.getMonth() + 1, 1, 0, 0, 0, 0);
+      return { from, to };
+    }
+    return { from: new Date(y, 3, 1, 0, 0, 0, 0), to: new Date(y + 1, 3, 1, 0, 0, 0, 0) };
+  }
+  return { from: periodStart(s), to: null };
+}
 function periodLabelFor(key) {
-  const p = PERIODS.find((x) => x.key === key);
+  const s = String(key || "all");
+  const m = /^fy:(\d{4})(?::m:(\d{1,2}))?$/.exec(s);
+  if (m) {
+    const y = parseInt(m[1], 10);
+    if (m[2] != null) return `${FY_MONTHS[parseInt(m[2], 10)] || ""} ${fyLabel(y)}`;
+    return fyLabel(y);
+  }
+  const p = PERIODS.find((x) => x.key === s);
   return p ? p.label : "";
+}
+/* One predicate that every view uses, so a date is tested the same way
+   everywhere. Handles the closed-ended FY and FY-month ranges as well as
+   the open-ended MTD/YTD style keys. */
+function periodTest(key) {
+  const { from, to } = parsePeriod(key);
+  if (!from && !to) return () => true;
+  const f = from ? from.getTime() : null;
+  const t = to ? to.getTime() : null;
+  return (d) => {
+    if (!d) return false;
+    const v = new Date(d).getTime();
+    if (Number.isNaN(v)) return false;
+    if (f != null && v < f) return false;
+    if (t != null && v >= t) return false;
+    return true;
+  };
+}
+
+/* Period picker used across the app: the shorthand keys, then every
+   financial year, then — once an FY is chosen — every month within it.
+   The month select only appears for an FY, so the control stays small on
+   the views that only ever want MTD/YTD. */
+function PeriodSelect({ value, onChange, width = 112, monthWidth = 104, style = {} }) {
+  const m = /^fy:(\d{4})(?::m:(\d{1,2}))?$/.exec(String(value || ""));
+  const fy = m ? m[1] : null;
+  const mi = m && m[2] != null ? m[2] : "";
+  const base = { height: 32, fontSize: 12.5, ...style };
+  return (
+    <>
+      <select className="sw-input sw-focus" style={{ width, ...base }}
+        value={fy ? `fy:${fy}` : String(value || "all")}
+        onChange={(e) => onChange(e.target.value)}
+        title={periodLabelFor(value)}>
+        {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+        <optgroup label="Financial year">
+          {fyList().map((y) => <option key={y} value={`fy:${y}`}>{fyLabel(y)}</option>)}
+        </optgroup>
+      </select>
+      {fy && (
+        <select className="sw-input sw-focus" style={{ width: monthWidth, ...base }}
+          value={mi === "" ? "" : String(mi)}
+          onChange={(e) => onChange(e.target.value === "" ? `fy:${fy}` : `fy:${fy}:m:${e.target.value}`)}
+          title="Month within the financial year">
+          <option value="">Whole year</option>
+          {FY_MONTHS.map((lbl, i) => (
+            <option key={i} value={i}>{lbl} {String(i <= 8 ? fy : Number(fy) + 1).slice(2)}</option>
+          ))}
+        </select>
+      )}
+    </>
+  );
 }
 
 /* ---- Targets & pacing -------------------------------------------------
@@ -516,10 +619,10 @@ function periodStart(period, now = new Date()) {
   }
 }
 function filterByPeriod(orders, period) {
-  const start = periodStart(period);
-  if (!start) return orders;
-  const t = start.getTime();
-  return orders.filter((o) => o.submission_date && new Date(o.submission_date).getTime() >= t);
+  const { from, to } = parsePeriod(period);
+  if (!from && !to) return orders;
+  const test = periodTest(period);
+  return orders.filter((o) => test(o.submission_date));
 }
 
 // Recompute every derived GP figure from a GP value + the two split %s +
@@ -1349,12 +1452,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
   // Forecast = what they said would land. Normalised to one row shape so
   // the same table, filters and sorting work across all three.
   const viewRows = useMemo(() => {
-    const from = periodStart(period);
-    const inPeriodDate = (d) => {
-      if (!from) return true;
-      if (!d) return false;
-      return new Date(d).getTime() >= from.getTime();
-    };
+    const inPeriodDate = periodTest(period);
     const teamScope = isOffice && scope !== "office" ? scope : (is2ic ? profile?.team : null);
 
     if (dataView === "statted") {
@@ -1635,7 +1733,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
   // Excludes anything flagged NSOV. Connectivity groups Broadband, BT Net
   // and Security together, which is how the office thinks about it.
   const nsSovCards = useMemo(() => {
-    const from = periodStart(period);
+    const inP = periodTest(period);
     // Scale with whatever is selected: period, team scope and agent.
     const teamScope = isOffice && scope !== "office" ? scope : (is2ic ? profile?.team : null);
     const rows = (netsuite || []).filter((r) => {
@@ -1648,8 +1746,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
         const hay = [r.prod_for_gs, r.product_group_2, r.item_name_grouped].join(" ").toLowerCase();
         if (!hay.includes(productFilter.toLowerCase())) return false;
       }
-      if (!from) return true;
-      return r.order_date && new Date(r.order_date + "T00:00:00").getTime() >= from.getTime();
+      return inP(r.order_date ? r.order_date + "T00:00:00" : null);
     });
     const bucket = (r) => {
       const s = [r.prod_for_gs, r.product_group_2, r.item_name_grouped].join(" ").toLowerCase();
@@ -1801,10 +1898,10 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
 
     // Statted GP per person — the figure the bar is actually measured
     // against, since that's what the pay plan judges.
-    const from = periodStart(period);
+    const inP = periodTest(period);
     const statted = {};
     (netsuite || []).forEach((n) => {
-      if (from && (!n.order_date || new Date(n.order_date + "T00:00:00") < from)) return;
+      if (!inP(n.order_date ? n.order_date + "T00:00:00" : null)) return;
       const cfg = n.order_status ? statusCfg[n.order_status] : null;
       const countsGp = cfg ? cfg.count_gp !== false : n.count_gp !== false;
       if (!countsGp) return;
@@ -1881,12 +1978,12 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
   // The KPI cards use claimed GP; this asks the harder question — has the
   // work landed against what the plan expects by now?
   const planVsStatted = useMemo(() => {
-    const from = periodStart(period);
+    const inP = periodTest(period);
     const teamScope = isOffice && scope !== "office" ? scope : (is2ic ? profile?.team : null);
     let gp = 0, cloud = 0, conn = 0, mobile = 0;
 
     (netsuite || []).forEach((n) => {
-      if (from && (!n.order_date || new Date(n.order_date + "T00:00:00") < from)) return;
+      if (!inP(n.order_date ? n.order_date + "T00:00:00" : null)) return;
       if (teamScope && n.closer_team !== teamScope && n.referrer_team !== teamScope) return;
       if (agentFilter !== "All" && n.closer_name !== agentFilter && n.referrer_name !== agentFilter) return;
 
@@ -2004,9 +2101,11 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
     : is2ic && profile?.team ? `GP · ${profile.team}`
     : "GP · Office";
   const periodLabel = useMemo(() => {
-    const s = periodStart(period);
-    if (!s) return "all time";
-    return `since ${s.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: period === "ytd" ? "numeric" : undefined })}`;
+    const { from, to } = parsePeriod(period);
+    if (!from) return "all time";
+    const d = (x) => x.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+    if (to) return `${d(from)} to ${d(new Date(to.getTime() - 86400000))}`;
+    return `since ${from.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: period === "ytd" ? "numeric" : undefined })}`;
   }, [period]);
 
   const SIDE_CARDS = [
@@ -2405,9 +2504,14 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
             ))}
           </div>
 
-          <select className="sw-input sw-focus" style={{ width: 112, height: 32, fontSize: 12.5 }} value={period} onChange={(e) => setPeriod(e.target.value)} title={periodLabel}>
-            {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
-          </select>
+          <PeriodSelect value={period} onChange={setPeriod} width={112} />
+          {/* Spells out the resolved range — matters once a specific FY or
+              FY month is picked, where "MTD" style wording says nothing. */}
+          {String(period).startsWith("fy:") && (
+            <span className="text-xs sw-hide-sm whitespace-nowrap" style={{ color: "var(--ink-faint)" }} title={periodLabel}>
+              {periodLabel}
+            </span>
+          )}
 
           {isOffice && (
             <select className="sw-input sw-focus" style={{ width: 178, height: 32, fontSize: 12.5 }} value={scope} onChange={(e) => setScope(e.target.value)}>
@@ -3391,12 +3495,12 @@ function TVBoard({ orders, netsuite }) {
   // not raw Lilac submissions. Column Y on the NetSuite sheet decides
   // what counts: NGP removes a deal from GP, NSOV removes it from SOV.
   const allNs = netsuite || [];
-  const periodFrom = periodStart(period);
+  const periodFrom = parsePeriod(period).from;
   const inPeriod = useMemo(() => {
-    if (!periodFrom) return allNs;
-    const t = periodFrom.getTime();
-    return allNs.filter((r) => r.order_date && new Date(r.order_date + "T00:00:00").getTime() >= t);
-  }, [allNs, periodFrom]);
+    const inP = periodTest(period);
+    if (period === "all") return allNs;
+    return allNs.filter((r) => inP(r.order_date ? r.order_date + "T00:00:00" : null));
+  }, [allNs, period]);
 
   const ns = inPeriod;
   const gpRows = ns.filter((r) => r.count_gp !== false);
@@ -5490,10 +5594,10 @@ function OtherVisualsView({ orders, netsuite, forecasts, staff }) {
     });
 
     // Top deals in the chosen period
-    const from = periodStart(period);
+    const inP = periodTest(period);
     const top = (orders || [])
       .filter((o) => !o.removed_at && inTeam(o.closer_team, o.lead_gen_team))
-      .filter((o) => !from || (o.submission_date && new Date(o.submission_date) >= from))
+      .filter((o) => inP(o.submission_date))
       .map((o) => ({
         company: o.company_name,
         agent: o.closer_name,
@@ -5524,9 +5628,7 @@ function OtherVisualsView({ orders, netsuite, forecasts, staff }) {
             <option value="All">All teams</option>
             {teamOptions.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
-          <select className="sw-input sw-focus" style={{ width: 110 }} value={period} onChange={(e) => setPeriod(e.target.value)}>
-            {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
-          </select>
+          <PeriodSelect value={period} onChange={setPeriod} width={110} />
         </div>
       </div>
 
@@ -8417,10 +8519,10 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   );
 
   const inPeriod = useMemo(() => {
-    const from = periodStart(period);
+    const inP = periodTest(period);
     return (orders || []).filter((o) => {
       if (o.removed_at) return false;
-      if (from && (!o.submission_date || new Date(o.submission_date) < from)) return false;
+      if (!inP(o.submission_date)) return false;
       return true;
     });
   }, [orders, period]);
@@ -8470,8 +8572,8 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   }, [orders]);
 
   const unplacedRows = useMemo(() => {
-    const from = periodStart(period);
-    const inRange = (d) => !from || (d && new Date(d) >= from);
+    const inP = periodTest(period);
+    const inRange = (d) => inP(d);
     // 90+ is worked out from the NetSuite date rather than trusting the
     // sheet's own flag, which is a formula that can lag.
     const daysOld = (d) => (d ? Math.floor((Date.now() - new Date(d).getTime()) / 86400000) : null);
@@ -8608,6 +8710,14 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
       return true;
     });
   }, [unplacedRows, query, productFilter, placementView, agentFilter, dirtyOnly, agedOnly]);
+  // Totals for the strip above the unplaced list — the rows actually
+  // showing, so the product, placement, agent and dirty/aged filters all
+  // count towards it.
+  const unplacedTotals = useMemo(() => ({
+    gp: unplacedFiltered.reduce((s, r) => s + num(r.gp), 0),
+    sov: unplacedFiltered.reduce((s, r) => s + num(r.sov), 0),
+  }), [unplacedFiltered]);
+
 
   // Everything below follows the placement filter, so the workload counts
   // and the table always describe the same set of orders.
@@ -8710,8 +8820,8 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
             {[
               { key: "cloud",  label: "Cloud" },
               { key: "mobile", label: "Mobile" },
-              { key: "__connectivity_parts", label: "" },
               { key: "connectivity", label: "Connectivity", rollup: SD_CONNECTIVITY },
+              { key: "__connectivity_parts", label: "" },
               { key: "btnet",    label: "BTNet" },
               { key: "security", label: "Security" },
               { key: "other",    label: "Other" },
@@ -8817,7 +8927,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
 
           <p className="text-xs mt-2 px-1" style={{ color: "var(--ink-faint)" }}>
             Connectivity is Broadband, Data Networks &amp; Services and VAS combined — the three cards to its
-            left. Click any card to filter; anything with nothing outstanding is hidden.
+            right. Click any card to filter; anything with nothing outstanding is hidden.
           </p>
         </div>
       ) : (
@@ -8867,9 +8977,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
       {/* Filters */}
       <div className="rounded-xl mb-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="sw-filter-row flex items-center gap-2 px-3 py-2.5 flex-wrap">
-          <select className="sw-input sw-focus" style={{ width: 112, height: 32, fontSize: 12.5 }} value={period} onChange={(e) => setPeriod(e.target.value)}>
-            {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
-          </select>
+          <PeriodSelect value={period} onChange={setPeriod} width={112} />
           <select className="sw-input sw-focus" style={{ width: 178, height: 32, fontSize: 12.5 }} value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)}>
             <option value="All">Everyone</option>
             <option value="__unallocated">Unallocated only</option>
@@ -8926,7 +9034,9 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         </div>
       </div>
 
-      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(300px, 1fr) minmax(0, 2fr)", gap: "0.75rem", alignItems: "start" }}>
+      {/* Ranked column is a quarter of the page; the orders list takes the
+          rest. Inline grid on purpose — critical layout, no Tailwind JIT. */}
+      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(190px, 1fr) minmax(0, 3fr)", gap: "0.75rem", alignItems: "start" }}>
 
         {/* Team workload — doubles as the agent picker */}
         <div className="sw-sticky-col flex flex-col gap-3 pr-0.5" style={{ position: "sticky", top: 66, maxHeight: "calc(100vh - 78px)", overflowY: "auto" }}>
@@ -9023,21 +9133,26 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
 
         {/* Unplaced — the NetSuite sheet plus Lilac boxes not yet picked up */}
         {view === "unplaced" ? (
+        <div>
+        {/* Totals for the list below — follows every filter above it */}
+        <ListTotalsStrip gp={unplacedTotals.gp} sov={unplacedTotals.sov} count={unplacedFiltered.length} />
+
         <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <table className="w-full text-sm sw-orders sw-anim-rows" style={{ tableLayout: "fixed" }}>
             <colgroup>
-              <col style={{ width: "21%" }} />
-              <col style={{ width: "13%" }} />
-              <col style={{ width: "14%" }} />
+              <col style={{ width: "20%" }} />
               <col style={{ width: "12%" }} />
-              <col style={{ width: "14%" }} />
-              <col style={{ width: "10%" }} />
+              <col style={{ width: "13%" }} />
+              <col style={{ width: "11%" }} />
+              <col style={{ width: "13%" }} />
               <col style={{ width: "9%" }} />
-              <col style={{ width: "7%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: "8%" }} />
+              <col style={{ width: "5%" }} />
             </colgroup>
             <thead>
               <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
-                {[["Company", ""], ["Product", ""], ["Order status", ""], ["Placed?", ""], ["Admin agent", ""], ["SOV", "sw-hide-xs"], ["NetSuite ref", "sw-hide-sm"], ["Date", "sw-hide-sm"]].map(([h, hide], i) => (
+                {[["Company", ""], ["Product", ""], ["Order status", ""], ["Placed?", ""], ["Admin agent", ""], ["SOV", "sw-hide-xs"], ["GP", ""], ["NetSuite ref", "sw-hide-sm"], ["Date", "sw-hide-sm"]].map(([h, hide], i) => (
                   <th key={i} className={`text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide ${hide}`}
                     style={{ color: "var(--ink-soft)" }}>{h}</th>
                 ))}
@@ -9127,6 +9242,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                     {r.seller && <div style={{ fontSize: 10, color: "var(--ink-faint)" }}>{r.seller}</div>}
                   </td>
                   <td className="px-2 py-2 sw-mono text-xs sw-hide-xs">{fmtGBP(r.sov)}</td>
+                  <td className="px-2 py-2 sw-mono text-xs" style={{ color: "var(--green)", fontWeight: 600 }}>{fmtGBP(r.gp)}</td>
                   <td className="px-2 py-2 sw-mono text-xs sw-hide-sm" style={{ color: "var(--ink-faint)", fontSize: 10.5 }}>{r.doc || "—"}</td>
                   <td className="px-2 py-2 text-xs sw-hide-sm" style={{ color: "var(--ink-faint)", fontSize: 11, lineHeight: 1.3 }}>
                     {r.date ? fmtDate(r.date) : "—"}
@@ -9134,7 +9250,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                 </tr>
               ))}
               {unplacedFiltered.length === 0 && (
-                <tr><td colSpan={8} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                <tr><td colSpan={9} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
                   {unplacedRows.length === 0
                     ? "Nothing here yet — run the Unplaced Rep sync from the NetSuite workbook."
                     : "No rows match these filters."}
@@ -9142,6 +9258,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
               )}
             </tbody>
           </table>
+        </div>
         </div>
         ) : (
         <div>
@@ -9270,6 +9387,213 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
 /*  SALES DISTRIBUTION — who generates for whom                            */
 /* ---------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------- */
+/*  TOPS — top 3 agents, WTD / MTD / YTD                                    */
+/* ---------------------------------------------------------------------- */
+
+/* ---- The "New Net 24-25" list ----------------------------------------
+   The Tops board is scored off the NetSuite New Net list, never off Lilac
+   claims — so it always agrees with what the business has actually booked.
+   Two things define that list:
+     1. FY 24-25 onwards (NEW_NET_FIRST_FY), which is where the export starts.
+     2. Net-new revenue only: anything the report treats as a resign or a
+        renewal is out, as is anything flagged NGP.
+   >>> If the report's own definition differs, change ONLY this block. <<< */
+const NEW_NET_FIRST_FY = 2024;
+const NEW_NET_EXCLUDED = /resign|renew/i;
+function isNewNet(n, statusCfg) {
+  if (!n || !n.order_date) return false;
+  // FY floor
+  const d = new Date(n.order_date + "T00:00:00");
+  if (Number.isNaN(d.getTime()) || fyYearOf(d) < NEW_NET_FIRST_FY) return false;
+  // NGP never scores — the status config wins over the sheet's own flag
+  const cfg = statusCfg && n.order_status ? statusCfg[n.order_status] : null;
+  const countsGp = cfg ? cfg.count_gp !== false : n.count_gp !== false;
+  if (!countsGp) return false;
+  if (/\bNGP\b/.test(String(n.status_flags || "").toUpperCase())) return false;
+  // Resigns and renewals aren't new net
+  if (NEW_NET_EXCLUDED.test(String(n.class_name || ""))) return false;
+  return true;
+}
+
+function TopsView({ netsuite, staff }) {
+  const aliases = useAliases();
+  const statusCfg = useStatusCfg();
+  const [fy, setFy] = useState(() => String(fyYearOf()));
+  // Any week can be looked at, so WTD is driven by a date rather than "now"
+  const [weekOf, setWeekOf] = useState(() => {
+    const d = weekStart();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  });
+  const [monthIdx, setMonthIdx] = useState(() => {
+    const now = new Date();
+    return String((now.getMonth() - 3 + 12) % 12);
+  });
+
+  const teamByName = useMemo(() => {
+    const m = {};
+    (staff || []).forEach((s) => {
+      if (!s.full_name || !s.team) return;
+      m[nameKey(s.full_name)] = s.team;
+      if (s.alt_name) m[nameKey(s.alt_name)] = s.team;
+    });
+    return m;
+  }, [staff]);
+  const canon = useCallback((n) => resolveName(n, aliases), [aliases]);
+  const teamOf = useCallback((n, fb) => {
+    if (!n) return fb || "—";
+    return teamByName[nameKey(canon(n))] || teamByName[nameKey(n)] || fb || "—";
+  }, [teamByName, canon]);
+
+  // Every row that qualifies for the board, once — the three panels then
+  // just slice it by date.
+  const pool = useMemo(
+    () => (netsuite || []).filter((n) => isNewNet(n, statusCfg)),
+    [netsuite, statusCfg]
+  );
+
+  // The three windows. Each is a plain [from, to) pair so a week in the
+  // past behaves the same as the live month.
+  const windows = useMemo(() => {
+    const y = parseInt(fy, 10);
+    const mi = parseInt(monthIdx, 10);
+    const wFrom = weekStart(new Date(weekOf + "T12:00:00"));
+    const wTo = new Date(wFrom.getFullYear(), wFrom.getMonth(), wFrom.getDate() + 7);
+    const mFrom = fyMonthDate(y, mi);
+    const mTo = new Date(mFrom.getFullYear(), mFrom.getMonth() + 1, 1);
+    return [
+      { key: "wtd", label: "Week", sub: `w/c ${fmtDate(wFrom)}`, from: wFrom, to: wTo },
+      { key: "mtd", label: "Month", sub: `${FY_MONTHS[mi]} ${fyLabel(y)}`, from: mFrom, to: mTo },
+      { key: "ytd", label: "Year", sub: fyLabel(y), from: new Date(y, 3, 1), to: new Date(y + 1, 3, 1) },
+    ];
+  }, [fy, monthIdx, weekOf]);
+
+  // Each person gets their OWN share of a deal — closer GP to the closer,
+  // referrer GP to the lead gen — which is the same rule the pay plans and
+  // the Claimed ranked list use. Crediting whole-deal GP to both would
+  // double-count the office.
+  const boards = useMemo(() => windows.map((w) => {
+    const f = w.from.getTime(), t = w.to.getTime();
+    const by = {};
+    const add = (name, gp, sov, team) => {
+      if (!name) return;
+      const c = canon(name);
+      const k = nameKey(c);
+      if (!k) return;
+      if (!by[k]) by[k] = { name: c, team: teamOf(name, team), gp: 0, sov: 0, deals: 0 };
+      by[k].gp += num(gp);
+      by[k].sov += num(sov);
+      by[k].deals += 1;
+    };
+    pool.forEach((n) => {
+      const v = new Date(n.order_date + "T00:00:00").getTime();
+      if (v < f || v >= t) return;
+      const sov = n.count_sov === false ? 0 : num(n.contract_value);
+      add(n.closer_name, n.closer_gp, sov, n.closer_team);
+      if (n.referrer_name) add(n.referrer_name, n.referrer_gp, 0, n.referrer_team);
+    });
+    const rows = Object.values(by).filter((r) => r.gp > 0).sort((a, b) => b.gp - a.gp);
+    return { ...w, rows: rows.slice(0, 3), total: rows.reduce((s, r) => s + r.gp, 0), people: rows.length };
+  }), [windows, pool, canon, teamOf]);
+
+  const MEDALS = ["#B8860B", "#8A8A8A", "#A0642A"];
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-3 flex-wrap">
+        <Trophy size={18} style={{ color: "var(--primary)" }} />
+        <h2 className="sw-display text-lg font-bold">Tops</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+          Top 3 agents · NetSuite New Net, {fyLabel(NEW_NET_FIRST_FY)} onwards
+        </span>
+      </div>
+
+      <div className="rounded-xl mb-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="flex items-center gap-2 px-3 py-2.5 flex-wrap">
+          <span className="text-xs font-semibold uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Financial year</span>
+          <select className="sw-input sw-focus" style={{ width: 112, height: 32, fontSize: 12.5 }}
+            value={fy} onChange={(e) => setFy(e.target.value)}>
+            {fyList().map((y) => <option key={y} value={y}>{fyLabel(y)}</option>)}
+          </select>
+          <span className="text-xs font-semibold uppercase ml-2" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Month</span>
+          <select className="sw-input sw-focus" style={{ width: 112, height: 32, fontSize: 12.5 }}
+            value={monthIdx} onChange={(e) => setMonthIdx(e.target.value)}>
+            {FY_MONTHS.map((lbl, i) => (
+              <option key={i} value={i}>{lbl} {String(i <= 8 ? fy : Number(fy) + 1).slice(2)}</option>
+            ))}
+          </select>
+          <span className="text-xs font-semibold uppercase ml-2" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Week of</span>
+          <input type="date" className="sw-input sw-focus" style={{ width: 150, height: 32, fontSize: 12.5 }}
+            value={weekOf} onChange={(e) => e.target.value && setWeekOf(e.target.value)}
+            title="Any date in the week — the board runs Monday to Sunday" />
+          <button onClick={() => {
+              const d = weekStart();
+              setWeekOf(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
+              setFy(String(fyYearOf()));
+              setMonthIdx(String((new Date().getMonth() - 3 + 12) % 12));
+            }}
+            className="sw-focus px-3 rounded-lg text-xs" style={{ height: 32, border: "1px solid var(--border)", color: "var(--ink-soft)" }}>
+            This week
+          </button>
+        </div>
+      </div>
+
+      {/* Three boards side by side. Inline grid on purpose — critical
+          layout, no Tailwind JIT dependence. */}
+      <div className="sw-cols-2" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "0.75rem", alignItems: "start" }}>
+        {boards.map((b) => (
+          <div key={b.key} className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--border)", background: "var(--surface-alt)" }}>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="sw-display" style={{ fontSize: 15, fontWeight: 600 }}>{b.label}</span>
+                <span className="sw-mono text-xs" style={{ color: "var(--ink-soft)" }}>{fmtGBP(b.total)}</span>
+              </div>
+              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                {b.sub}{b.people ? ` · ${b.people} selling` : ""}
+              </div>
+            </div>
+
+            {b.rows.length === 0 ? (
+              <div className="text-xs text-center py-10" style={{ color: "var(--ink-faint)" }}>
+                Nothing on the New Net list for this period.
+              </div>
+            ) : b.rows.map((r, i) => {
+              const max = b.rows[0].gp || 1;
+              return (
+                <div key={r.name} className="px-4 py-3" style={{ borderTop: i === 0 ? "none" : "1px solid var(--border)" }}>
+                  <div className="flex items-center gap-2.5">
+                    <span className="sw-display shrink-0" style={{
+                      width: 22, height: 22, borderRadius: 99, display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 11.5, fontWeight: 700, color: "#fff", background: MEDALS[i],
+                    }}>{i + 1}</span>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div className="truncate" style={{ fontSize: 13.5, fontWeight: 600 }}>{r.name}</div>
+                      <div className="text-xs truncate" style={{ color: "var(--ink-faint)" }}>{r.team}</div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="sw-mono" style={{ fontSize: 15, fontWeight: 700, color: "var(--green)" }}>{fmtGBP(r.gp)}</div>
+                      <div className="sw-mono text-xs" style={{ color: "var(--ink-faint)" }}>{fmtGBP(r.sov)} SOV</div>
+                    </div>
+                  </div>
+                  <div className="rounded-full mt-2" style={{ height: 5, background: "var(--surface-alt)" }}>
+                    <div className="rounded-full sw-bar-anim" style={{ width: `${Math.max(4, (r.gp / max) * 100)}%`, height: "100%", background: MEDALS[i] }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+
+      <p className="text-xs mt-3 px-1" style={{ color: "var(--ink-faint)" }}>
+        Scored on NetSuite New Net only — Lilac claims don't count here. Each person is credited their own
+        share of a deal (closer GP to the closer, referrer GP to the lead gen), so nobody is counted twice.
+        Anything flagged NGP, or classed as a resign or renewal, is excluded. The week runs Monday to Sunday.
+      </p>
+    </div>
+  );
+}
+
 function DistributionView({ orders, netsuite, staff }) {
   const aliases = useAliases();
 
@@ -9309,11 +9633,11 @@ function DistributionView({ orders, netsuite, staff }) {
 
   // Only deals with BOTH a closer and a lead gen — the point is the pairing.
   const pairs = useMemo(() => {
-    const from = periodStart(period);
+    const inP = periodTest(period);
     return (orders || []).filter((o) => {
       if (o.removed_at) return false;
       if (!o.closer_name || !o.lead_gen_name) return false;
-      if (from && (!o.submission_date || new Date(o.submission_date) < from)) return false;
+      if (!inP(o.submission_date)) return false;
       if (productFilter !== "All") {
         const hay = String(o.item_name_grouped || o.product_group_2 || "").toLowerCase();
         if (!hay.includes(productFilter.toLowerCase())) return false;
@@ -9378,9 +9702,7 @@ function DistributionView({ orders, netsuite, staff }) {
                 style={metric === k ? { background: "var(--primary)", color: "#fff" } : { background: "transparent", color: "var(--ink-soft)" }}>{lbl}</button>
             ))}
           </div>
-          <select className="sw-input sw-focus" style={{ width: 108 }} value={period} onChange={(e) => setPeriod(e.target.value)}>
-            {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
-          </select>
+          <PeriodSelect value={period} onChange={setPeriod} width={108} />
           <select className="sw-input sw-focus" style={{ width: 160 }} value={productFilter} onChange={(e) => setProductFilter(e.target.value)}>
             <option value="All">All products</option>
             {productOptions.map((p) => <option key={p} value={p}>{p}</option>)}
@@ -9635,6 +9957,7 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
   const go = (t) => () => { setTab(t); setMobileOpen(false); };
 
   const dashboards = [
+    { label: "Tops", icon: Trophy, active: tab === "tops", onClick: go("tops") },
     { label: "Day by Day", icon: CalendarDays, active: tab === "daybyday", onClick: go("daybyday") },
     { label: "Forecasting", icon: TrendingUp, active: tab === "forecast", onClick: go("forecast") },
     { label: "Sales Breakdown", icon: BarChart3, active: tab === "breakdown", onClick: go("breakdown") },
@@ -9652,7 +9975,7 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
     { label: "Change Password", icon: KeyRound, onClick: () => { onChangePassword(); setMobileOpen(false); } },
   ];
 
-  const dashActive = ["daybyday", "forecast", "breakdown", "distribution"].includes(tab);
+  const dashActive = ["tops", "daybyday", "forecast", "breakdown", "distribution"].includes(tab);
   const subActive = ["new", "landscapes", "quote"].includes(tab);
   const setActive = ["admin", "statuses"].includes(tab);
 
@@ -10443,6 +10766,7 @@ export default function App() {
         )}
         {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuiteResolved} forecasts={forecasts} staff={staff} profiles={allProfiles} payPlans={payPlans} planTiers={planTiers} planMetrics={planMetrics} onNewOrder={() => setTab("new")} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
         {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} />}
+        {tab === "tops" && <TopsView netsuite={netsuiteResolved} staff={staff} />}
         {tab === "daybyday" && <DayByDayView orders={orders} staff={staff} netsuite={netsuiteResolved} />}
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuiteResolved} />}
         {tab === "distribution" && <DistributionView orders={orders} netsuite={netsuiteResolved} staff={staff} />}
