@@ -4501,8 +4501,13 @@ function DayByDayView({ orders, staff, netsuite }) {
 /* Pay plan editor. The plan's own targets sit in the left column exactly
    as before; commission tiers are added as extra columns beside them, each
    with its own thresholds and a commission rate applied to statted GP. */
-function PayPlanForm({ plan, agentCount, tiers, metrics, error, onSave, onDelete,
-                      onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric }) {
+function PayPlanForm({ plan, agentCount, tiers, metrics, error, staff, onSave, onDelete,
+                      onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric, onAssignPlan }) {
+  const [addingPerson, setAddingPerson] = useState("");
+  const [movingId, setMovingId] = useState(null);
+  const onPlan = useMemo(() => (staff || []).filter((s) => s.pay_plan_id === plan.id && s.active !== false), [staff, plan.id]);
+  const notOnPlan = useMemo(() => (staff || []).filter((s) => s.sells !== false && s.active !== false && s.pay_plan_id !== plan.id), [staff, plan.id]);
+  const todayStr = () => new Date().toISOString().slice(0, 10);
   const [f, setF] = useState({
     name: plan.name || "", plan_kind: plan.plan_kind || "closer",
     description: plan.description || "",
@@ -4590,6 +4595,50 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, error, onSave, onDelete
             {agentCount} on this plan
           </span>
         </div>
+
+      {/* Who's on this plan, movable straight from here — saves hopping
+          back and forth to the agent's own record. */}
+      {onAssignPlan && (
+        <div className="rounded-xl p-4 mt-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>People on this plan</span>
+            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{onPlan.length}</span>
+          </div>
+
+          {onPlan.length === 0 ? (
+            <div className="text-xs py-2" style={{ color: "var(--ink-faint)" }}>Nobody yet.</div>
+          ) : (
+            <div className="flex flex-col gap-1 mb-2">
+              {onPlan.map((s) => (
+                <div key={s.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg" style={{ background: "var(--surface-alt)" }}>
+                  <span className="text-xs flex-1 truncate">{s.full_name}</span>
+                  <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{s.team || "—"}</span>
+                  <button
+                    disabled={movingId === s.id}
+                    onClick={async () => { setMovingId(s.id); await onAssignPlan(s.id, null, todayStr()); setMovingId(null); }}
+                    className="sw-focus text-xs" style={{ color: "var(--red)" }} title="Take off this plan">
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex items-center gap-2">
+            <select className="sw-input sw-focus" style={{ flex: 1, height: 30, fontSize: 12.5 }}
+              value={addingPerson} onChange={(e) => setAddingPerson(e.target.value)}>
+              <option value="">Move someone onto this plan…</option>
+              {notOnPlan.map((s) => <option key={s.id} value={s.id}>{s.full_name}{s.pay_plan_id ? " (switching)" : ""}</option>)}
+            </select>
+            <button disabled={!addingPerson}
+              onClick={async () => { const id = addingPerson; setAddingPerson(""); await onAssignPlan(id, plan.id, todayStr()); }}
+              className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg"
+              style={{ background: addingPerson ? "var(--primary)" : "var(--surface-alt)", color: addingPerson ? "#fff" : "var(--ink-faint)" }}>
+              Add
+            </button>
+          </div>
+        </div>
+      )}
 
         {/* Plan settings — unchanged */}
         <div className="px-4 py-3" style={{ display: "grid", gridTemplateColumns: "170px 1fr", gap: "0.5rem 0.75rem", alignItems: "center" }}>
@@ -4784,7 +4833,7 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, error, onSave, onDelete
 }
 
 function PayPlansView({ plans, staff, tiers, metrics, tablesMissing, error, onSave, onAdd, onDelete,
-                       onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric }) {
+                       onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric, onAssignPlan }) {
   const [selectedId, setSelectedId] = useState(null);
   const [newName, setNewName] = useState("");
   const [adding, setAdding] = useState(false);
@@ -4880,10 +4929,10 @@ function PayPlansView({ plans, staff, tiers, metrics, tablesMissing, error, onSa
         <div>
           {selected ? (
             <PayPlanForm key={selected.id} plan={selected} agentCount={countByPlan[selected.id] || 0}
-              tiers={tiers || []} metrics={metrics || []} error={error}
+              tiers={tiers || []} metrics={metrics || []} error={error} staff={staff}
               onSave={onSave} onDelete={onDelete}
               onSaveTier={onSaveTier} onAddTier={onAddTier} onDeleteTier={onDeleteTier}
-              onAddMetric={onAddMetric} onDeleteMetric={onDeleteMetric} />
+              onAddMetric={onAddMetric} onDeleteMetric={onDeleteMetric} onAssignPlan={onAssignPlan} />
           ) : (
             <div className="rounded-xl p-10 text-center" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
               <div className="text-sm" style={{ color: "var(--ink-faint)" }}>Select a plan from the list to edit its targets.</div>
@@ -5214,7 +5263,10 @@ function CoachSettingsView({ scenarios, settings, stages, onSaveScenario, onAddS
 
       {/* Stages, method and scenarios side by side — they're edited
           together and each is narrow enough to work in a column. */}
-      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr)", gap: "1rem", alignItems: "start" }}>
+      {/* Auto-fit rather than fixed thirds — this now sits in roughly half
+          the page (Order Status shares the row with it), so it needs to
+          wrap gracefully rather than being squeezed into three slivers. */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem", alignItems: "start" }}>
 
       {/* Call stages */}
       <div className="rounded-2xl p-4" style={{ background: "var(--surface-alt)", border: "1px solid var(--border)" }}>
@@ -5430,19 +5482,16 @@ function OtherVisualsView({ orders, netsuite, forecasts, staff }) {
 /*  SETTINGS — office-only, holds Statuses and Pay Plans                   */
 /* ---------------------------------------------------------------------- */
 
-function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSavePlan, onAddPlan, onDeletePlan,
-                       planTiers, planMetrics, planTablesMissing, planError, onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric,
+function SettingsView({ statusRows, onSaveStatus, newCount,
                        coachScenarios, coachSettings, onSaveCoachScenario, onAddCoachScenario, onDeleteCoachScenario, onSaveCoachSettings,
                        coachStages, onSaveStage, onAddStage, onDeleteStage,
-                       orders, netsuite, forecasts }) {
+                       orders, netsuite, forecasts, staff }) {
   const [section, setSection] = useState("statuses");
   return (
     <div>
       <div className="flex items-center gap-2 mb-5">
         {[
-          { key: "statuses", label: "Order Statuses", icon: Palette, badge: newCount },
-          { key: "payplans", label: "Pay Plans", icon: Target, badge: 0 },
-          { key: "coach", label: "Coach Setup", icon: Headphones, badge: 0 },
+          { key: "statuses", label: "Order Status & Coach Setup", icon: Palette, badge: newCount },
           { key: "visuals", label: "Other Visuals", icon: BarChart3, badge: 0 },
         ].map((s) => (
           <button key={s.key} onClick={() => setSection(s.key)}
@@ -5455,35 +5504,19 @@ function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSave
           </button>
         ))}
       </div>
-      {/* Statuses and pay plans side by side — both are reference data a
-          manager tends to set up in one sitting. */}
+      {/* Order statuses on the left; Coach Setup fills the space pay plans
+          used to occupy here, since pay plans now live on Sales Agents. */}
       {section === "statuses" && (
-        <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: "1rem", alignItems: "start" }}>
+        <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1.3fr)", gap: "1rem", alignItems: "start" }}>
           <StatusSettingsView rows={statusRows} onSave={onSaveStatus} newCount={newCount} />
-          <PayPlansView plans={plans} staff={staff}
-            tiers={planTiers} metrics={planMetrics}
-            tablesMissing={planTablesMissing} error={planError}
-            onSave={onSavePlan} onAdd={onAddPlan} onDelete={onDeletePlan}
-            onSaveTier={onSaveTier} onAddTier={onAddTier} onDeleteTier={onDeleteTier}
-            onAddMetric={onAddMetric} onDeleteMetric={onDeleteMetric} />
+          <CoachSettingsView scenarios={coachScenarios} settings={coachSettings} stages={coachStages}
+            onSaveStage={onSaveStage} onAddStage={onAddStage} onDeleteStage={onDeleteStage}
+            onSaveScenario={onSaveCoachScenario} onAddScenario={onAddCoachScenario}
+            onDeleteScenario={onDeleteCoachScenario} onSaveSettings={onSaveCoachSettings} />
         </div>
-      )}
-      {section === "payplans" && (
-        <PayPlansView plans={plans} staff={staff}
-          tiers={planTiers} metrics={planMetrics}
-          tablesMissing={planTablesMissing} error={planError}
-          onSave={onSavePlan} onAdd={onAddPlan} onDelete={onDeletePlan}
-          onSaveTier={onSaveTier} onAddTier={onAddTier} onDeleteTier={onDeleteTier}
-          onAddMetric={onAddMetric} onDeleteMetric={onDeleteMetric} />
       )}
       {section === "visuals" && (
         <OtherVisualsView orders={orders} netsuite={netsuite} forecasts={forecasts} staff={staff} />
-      )}
-      {section === "coach" && (
-        <CoachSettingsView scenarios={coachScenarios} settings={coachSettings} stages={coachStages}
-          onSaveStage={onSaveStage} onAddStage={onAddStage} onDeleteStage={onDeleteStage}
-          onSaveScenario={onSaveCoachScenario} onAddScenario={onAddCoachScenario}
-          onDeleteScenario={onDeleteCoachScenario} onSaveSettings={onSaveCoachSettings} />
       )}
     </div>
   );
@@ -5879,7 +5912,9 @@ function AdminIssues({ staff, netsuite, aliases, onAddAlias, onDeleteAlias, plan
 }
 
 function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, onResetPassword, onSetActive, plans,
-                    netsuite, aliases, onAddAlias, onDeleteAlias, planHistory, onAssignPlan, onDeleteAssignment }) {
+                    netsuite, aliases, onAddAlias, onDeleteAlias, planHistory, onAssignPlan, onDeleteAssignment,
+                    planTiers, planMetrics, planTablesMissing, planError,
+                    onSavePlan, onAddPlan, onDeletePlan, onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric }) {
   const teamOptions = useMemo(() => Array.from(new Set(staff.map((s) => s.team).filter(Boolean))), [staff]);
   const profileByUserId = useMemo(() => {
     const m = {};
@@ -5915,7 +5950,12 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
       <AdminIssues staff={staff} netsuite={netsuite} aliases={aliases}
         onAddAlias={onAddAlias} onDeleteAlias={onDeleteAlias} plans={plans} />
 
-      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "280px minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }}>
+      {/* Two big columns: agents on the left, pay plans on the right — set
+          up once, in one place, rather than hopping between pages. */}
+      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.15fr) minmax(0, 1fr)", gap: "1rem", alignItems: "start" }}>
+
+      <div>
+      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "240px minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }}>
 
         {/* LIST */}
         <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
@@ -5973,6 +6013,16 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
         Adding someone creates their staff record so they're ready to go. Their role dropdown appears once
         they've logged in for the first time — that's when their account links up automatically.
       </p>
+      </div>
+
+      <PayPlansView plans={plans} staff={staff}
+        tiers={planTiers} metrics={planMetrics}
+        tablesMissing={planTablesMissing} error={planError}
+        onSave={onSavePlan} onAdd={onAddPlan} onDelete={onDeletePlan}
+        onSaveTier={onSaveTier} onAddTier={onAddTier} onDeleteTier={onDeleteTier}
+        onAddMetric={onAddMetric} onDeleteMetric={onDeleteMetric}
+        onAssignPlan={onAssignPlan} />
+      </div>
     </div>
   );
 }
@@ -9397,7 +9447,7 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
     { label: "Quote Builder", icon: FileText, active: tab === "quote", onClick: go("quote") },
   ];
   const settings = [
-    { label: "Admin", icon: Users, active: tab === "admin", onClick: go("admin") },
+    { label: "Sales Agents", icon: Users, active: tab === "admin", onClick: go("admin") },
     { label: "Settings", icon: Palette, active: tab === "statuses", badge: newStatusCount, onClick: go("statuses") },
     { label: "Change Password", icon: KeyRound, onClick: () => { onChangePassword(); setMobileOpen(false); } },
   ];
@@ -10206,16 +10256,17 @@ export default function App() {
         {tab === "coach" && <SalesCoachView />}
         {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onResetPassword={resetPassword} onSetActive={setStaffActive} plans={payPlans}
           netsuite={netsuiteResolved} aliases={aliases} onAddAlias={addAlias} onDeleteAlias={deleteAlias}
-          planHistory={planHistory} onAssignPlan={assignPlan} onDeleteAssignment={deleteAssignment} />}
-        {tab === "statuses" && profile?.role === "office" && <SettingsView statusRows={statusRows} onSaveStatus={saveStatusCfg} newCount={newStatusCount} plans={payPlans} staff={staff} onSavePlan={savePayPlan} onAddPlan={addPayPlan} onDeletePlan={deletePayPlan}
+          planHistory={planHistory} onAssignPlan={assignPlan} onDeleteAssignment={deleteAssignment}
           planTiers={planTiers} planMetrics={planMetrics} planTablesMissing={planTablesMissing} planError={planError}
+          onSavePlan={savePayPlan} onAddPlan={addPayPlan} onDeletePlan={deletePayPlan}
           onSaveTier={savePlanTier} onAddTier={addPlanTier} onDeleteTier={deletePlanTier}
-          onAddMetric={addPlanMetric} onDeleteMetric={deletePlanMetric}
+          onAddMetric={addPlanMetric} onDeleteMetric={deletePlanMetric} />}
+        {tab === "statuses" && profile?.role === "office" && <SettingsView statusRows={statusRows} onSaveStatus={saveStatusCfg} newCount={newStatusCount}
           coachScenarios={coachScenarios} coachSettings={coachSettings}
           onSaveCoachScenario={saveCoachScenario} onAddCoachScenario={addCoachScenario}
           onDeleteCoachScenario={deleteCoachScenario} onSaveCoachSettings={saveCoachSettings}
           coachStages={coachStages} onSaveStage={saveCoachStage} onAddStage={addCoachStage} onDeleteStage={deleteCoachStage}
-          orders={orders} netsuite={netsuiteResolved} forecasts={forecasts} />}
+          orders={orders} netsuite={netsuiteResolved} forecasts={forecasts} staff={staff} />}
       </main>
 
       {selected && <OrderDrawer order={selected} ns={selected.document_number ? netsuite.find((n) => String(n.document_number) === String(selected.document_number)) : null} onClose={() => setSelected(null)} canEdit={canEditOrder(selected)} onSave={saveOrder} saving={savingEdit} onRemove={removeOrder} />}
