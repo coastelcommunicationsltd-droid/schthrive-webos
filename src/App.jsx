@@ -6,7 +6,7 @@ import {
   Loader2, Users, Eye, EyeOff, ArrowLeft, LogIn, KeyRound, Palette, MapPin,
   BarChart3, CalendarDays, Target, Headphones, Phone,
   ChevronDown, ClipboardList, LayoutDashboard, Settings as SettingsIcon,
-  PanelLeftClose, PanelLeftOpen, History, FileText, Inbox,
+  PanelLeftClose, PanelLeftOpen, History, FileText, Inbox, Menu,
 } from "lucide-react";
 
 /* ====================================================================== */
@@ -126,6 +126,42 @@ const STYLE = `
 .sw-req{color:var(--red);margin-left:2px;}
 .sw-err{color:var(--red);font-size:12px;margin-top:4px;}
 .sw-clamp2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;}
+
+/* ---- Mobile ----------------------------------------------------------
+   Below 900px the two- and four-column layouts stack, the sidebar becomes
+   a slide-over, and the order list drops its less critical columns rather
+   than shrinking everything to unreadable. Marker classes are applied in
+   the components so this stays in one place. */
+@media (max-width: 900px) {
+  .sw-cols { grid-template-columns: 1fr !important; }
+  .sw-cols-2 { grid-template-columns: 1fr 1fr !important; }
+  .sw-hide-sm { display: none !important; }
+  .sw-sticky-col { position: static !important; max-height: none !important; }
+  .sw-main { padding: 12px !important; }
+  .sw-filter-row { gap: 6px !important; padding: 8px !important; }
+  .sw-filter-row > * { flex: 1 1 auto; min-width: 0; }
+  .sw-hero-num { font-size: 30px !important; }
+  table.sw-orders { table-layout: auto !important; }
+  table.sw-orders col { width: auto !important; }
+}
+@media (max-width: 560px) {
+  .sw-cols-2 { grid-template-columns: 1fr !important; }
+  .sw-hide-xs { display: none !important; }
+  .sw-hero-num { font-size: 26px !important; }
+}
+
+/* Slide-over sidebar on small screens */
+@media (max-width: 900px) {
+  .sw-sidebar {
+    position: fixed !important; top: 0; left: 0; z-index: 60;
+    transform: translateX(-100%); transition: transform .2s ease;
+    box-shadow: 0 0 40px rgba(0,0,0,0.18);
+  }
+  .sw-sidebar.sw-open { transform: translateX(0); }
+  .sw-scrim { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 55; }
+  .sw-menu-btn { display: inline-flex !important; }
+}
+.sw-menu-btn { display: none; }
 `;
 
 /* ---------------------------------------------------------------------- */
@@ -1716,7 +1752,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
 
       {topView ? (
         /* Just GP and SOV, given room to breathe */
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }} className="mb-3">
+        <div className="sw-cols-2 mb-3" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
           {[
             { label: gpLabel, value: fmtGBP(gpTotal), target: targets.gp, fullTarget: targets.full.gp, raw: gpTotal,
               acq: { value: fmtGBP(splits.acqGp), pct: splits.acqPct }, acqLabel: "ACQ GP",
@@ -1740,7 +1776,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                     </div>
                   )}
                 </div>
-                <div className="sw-display" style={{ fontSize: 46, fontWeight: 600, letterSpacing: "-0.03em", lineHeight: 1.05, marginTop: 10 }}>
+                <div className="sw-display sw-hero-num" style={{ fontSize: 46, fontWeight: 600, letterSpacing: "-0.03em", lineHeight: 1.05, marginTop: 10 }}>
                   {c.value}
                 </div>
                 {tone && (
@@ -1759,7 +1795,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         </div>
       ) : (
       /* Headline row */
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) minmax(0,1.1fr) minmax(260px,1.15fr)", gap: "0.75rem" }} className="mb-3">
+      <div className="sw-cols-2 mb-3" style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) minmax(0,1.1fr) minmax(260px,1.15fr)", gap: "0.75rem" }}>
 
         <div>
           <HeroCard label={gpLabel} value={fmtGBP(gpTotal)} accent="#1F7A3D"
@@ -1900,10 +1936,10 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       </div>
 
       {/* Ranked team on the left, orders on the right */}
-      <div style={{ display: "grid", gridTemplateColumns: "300px minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }}>
+      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "300px minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }}>
 
         {/* LEFT */}
-        <div style={{ position: "sticky", top: 12, maxHeight: "calc(100vh - 24px)", overflowY: "auto" }} className="flex flex-col gap-3 pr-0.5">
+        <div className="sw-sticky-col flex flex-col gap-3 pr-0.5" style={{ position: "sticky", top: 12, maxHeight: "calc(100vh - 24px)", overflowY: "auto" }}>
 
           {/* The ranking is the agent picker */}
           <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
@@ -1996,7 +2032,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       <div className="rounded-xl mb-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
 
         {/* Row 1 — what we're looking at */}
-        <div className="flex items-center gap-2 px-3 py-2.5 flex-wrap">
+        <div className="sw-filter-row flex items-center gap-2 px-3 py-2.5 flex-wrap">
           <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 32 }}>
             {[["forecast", "Forecast"], ["claimed", "Claimed"], ["statted", "Statted"]].map(([k, lbl]) => (
               <button key={k} onClick={() => { setDataView(k); setStatusFilter("All"); setProductFilter("All"); setFocusFilter("All"); }}
@@ -2032,21 +2068,19 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
         </div>
 
         {/* Row 2 — narrow it down */}
-        <div className="flex items-center gap-2 px-3 py-2.5 flex-wrap" style={{ borderTop: "1px solid var(--border)" }}>
-          <select className="sw-input sw-focus" style={{ width: 140, height: 32, fontSize: 12.5 }} value={productFilter} onChange={(e) => setProductFilter(e.target.value)}>
+        <div className="sw-filter-row flex items-center gap-2 px-3 py-2.5 flex-wrap" style={{ borderTop: "1px solid var(--border)" }}>
+          <select className="sw-input sw-focus" style={{ width: 124, height: 32, fontSize: 12.5 }} value={productFilter} onChange={(e) => setProductFilter(e.target.value)}>
             <option value="All">All products</option>
             {productOptions.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
 
-          <select className="sw-input sw-focus" style={{ width: 160, height: 32, fontSize: 12.5 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+          <select className="sw-input sw-focus" style={{ width: 138, height: 32, fontSize: 12.5 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
             <option value="All">All statuses</option>
             {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
             {dataView === "claimed" && <option value="__not_statted">Not Statted</option>}
           </select>
 
-          <span style={{ width: 1, height: 20, background: "var(--border)" }} />
-
-          {/* Exceptions — one consistent segmented group */}
+            {/* Exceptions — one consistent segmented group */}
           <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 32 }}>
             {[
               ["hide", "Hide NGP", null, "NGP orders don't count toward GP"],
@@ -2054,11 +2088,11 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
               ["only", "Only NGP", ngpCount, "Just the NGP orders"],
             ].map(([k, lbl, n, hint]) => (
               <button key={k} onClick={() => { setNgpMode(k); setFocusFilter("All"); }} title={hint}
-                className="sw-focus px-2.5 text-xs whitespace-nowrap"
+                className="sw-focus px-2 text-xs whitespace-nowrap"
                 style={ngpMode === k && focusFilter === "All"
                   ? { background: "var(--surface-alt)", color: "var(--ink)", fontWeight: 600, height: "100%" }
                   : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
-                {lbl}{n ? ` (${n})` : ""}
+                {lbl}{n ? ` ${n}` : ""}
               </button>
             ))}
           </div>
@@ -2066,43 +2100,43 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
           <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 32 }}>
             <button onClick={() => { setNsovMode(nsovMode === "only" ? "show" : "only"); setFocusFilter("All"); }}
               title="Orders flagged NSOV — excluded from SOV, still counts toward GP"
-              className="sw-focus px-2.5 text-xs whitespace-nowrap"
+              className="sw-focus px-2 text-xs whitespace-nowrap"
               style={nsovMode === "only" && focusFilter === "All"
                 ? { background: "var(--amber-soft)", color: "var(--amber)", fontWeight: 600, height: "100%" }
                 : { background: "transparent", color: nsovCount ? "var(--ink-soft)" : "var(--ink-faint)", height: "100%" }}>
-              NSOV{nsovCount ? ` (${nsovCount})` : ""}
+              NSOV{nsovCount ? ` ${nsovCount}` : ""}
             </button>
             <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
             <button onClick={() => setFocusFilter(focusFilter === "attention" ? "All" : "attention")}
               title="Orders at a status that needs the agent to act"
-              className="sw-focus px-2.5 text-xs whitespace-nowrap"
+              className="sw-focus px-2 text-xs whitespace-nowrap"
               style={focusFilter === "attention"
                 ? { background: "var(--amber-soft)", color: "var(--amber)", fontWeight: 600, height: "100%" }
                 : { background: "transparent", color: attentionCount ? "var(--ink-soft)" : "var(--ink-faint)", height: "100%" }}>
-              Needs action{attentionCount ? ` (${attentionCount})` : ""}
+              Action{attentionCount ? ` ${attentionCount}` : ""}
             </button>
             <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
             <button onClick={() => setFocusFilter(focusFilter === "aged" ? "All" : "aged")}
               title="Submitted more than 90 days ago"
-              className="sw-focus px-2.5 text-xs whitespace-nowrap"
+              className="sw-focus px-2 text-xs whitespace-nowrap"
               style={focusFilter === "aged"
                 ? { background: "var(--red-soft)", color: "var(--red)", fontWeight: 600, height: "100%" }
                 : { background: "transparent", color: agedCount ? "var(--ink-soft)" : "var(--ink-faint)", height: "100%" }}>
-              90+ days{agedCount ? ` (${agedCount})` : ""}
+              90d+{agedCount ? ` ${agedCount}` : ""}
             </button>
           </div>
 
-          <div className="flex items-center rounded-lg overflow-hidden ml-auto" style={{ border: "1px solid var(--border)", height: 32 }}>
+          <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 32 }}>
             <button onClick={() => setCampaignOnly((v) => !v)} title="Only deals from a named campaign"
-              className="sw-focus px-2.5 text-xs whitespace-nowrap flex items-center gap-1"
+              className="sw-focus px-2 text-xs whitespace-nowrap flex items-center gap-1"
               style={campaignOnly
                 ? { background: "var(--primary-soft)", color: "var(--primary)", fontWeight: 600, height: "100%" }
                 : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
-              🎯 Campaign
+              🎯
             </button>
             <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
             <button onClick={() => setAcqOnly((v) => !v)} title="Only acquisitions — new business"
-              className="sw-focus px-2.5 text-xs whitespace-nowrap"
+              className="sw-focus px-2 text-xs whitespace-nowrap"
               style={acqOnly
                 ? { background: "var(--primary-soft)", color: "var(--primary)", fontWeight: 600, height: "100%" }
                 : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
@@ -2114,7 +2148,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
 
       <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div>
-          <table className="w-full text-sm" style={{ tableLayout: "fixed" }}>
+          <table className="w-full text-sm sw-orders" style={{ tableLayout: "fixed" }}>
             <colgroup>
               <col style={{ width: "24%" }} />
               <col style={{ width: "17%" }} />
@@ -2127,18 +2161,18 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
             <thead>
               <tr style={{ background: "var(--surface-alt)" }}>
                 {[
-                  { label: "Company", key: "company" },
-                  { label: "People", key: "agent" },
-                  { label: "Product", key: null },
-                  { label: "SOV", key: "sov" },
-                  { label: "GP", key: "gp" },
-                  { label: "Status", key: "status" },
-                  { label: dataView === "forecast" ? "Expected" : "Date", key: "date" },
-                ].map(({ label, key }) => (
+                  { label: "Company", key: "company", hide: "" },
+                  { label: "People", key: "agent", hide: "" },
+                  { label: "Product", key: null, hide: "sw-hide-sm" },
+                  { label: "SOV", key: "sov", hide: "sw-hide-xs" },
+                  { label: "GP", key: "gp", hide: "" },
+                  { label: "Status", key: "status", hide: "" },
+                  { label: dataView === "forecast" ? "Expected" : "Date", key: "date", hide: "sw-hide-sm" },
+                ].map(({ label, key, hide }) => (
                   <th
                     key={label}
                     onClick={key ? () => toggleSort(key) : undefined}
-                    className={`text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide ${key ? "cursor-pointer select-none" : ""}`}
+                    className={`text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide ${hide} ${key ? "cursor-pointer select-none" : ""}`}
                     style={{ color: "var(--ink-soft)" }}
                   >
                     {label}{key && sortKey === key ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
@@ -2186,9 +2220,9 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                     )}
                   </td>
 
-                  <td className="px-3 py-2 text-xs sw-clamp2" style={{ color: "var(--ink-soft)", lineHeight: 1.3 }}>{r.product}</td>
+                  <td className="px-3 py-2 text-xs sw-clamp2 sw-hide-sm" style={{ color: "var(--ink-soft)", lineHeight: 1.3 }}>{r.product}</td>
 
-                  <td className="px-3 py-2 sw-mono text-xs">{fmtGBP(r.sov)}</td>
+                  <td className="px-3 py-2 sw-mono text-xs sw-hide-xs">{fmtGBP(r.sov)}</td>
 
                   {/* 3: GP with the split underneath */}
                   <td className="px-3 py-2">
@@ -2214,7 +2248,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                     })()}
                   </td>
 
-                  <td className="px-2 py-2 text-xs" style={{ color: "var(--ink-faint)", fontSize: 11, lineHeight: 1.3 }}>{r.date ? fmtDate(r.date) : "—"}</td>
+                  <td className="px-2 py-2 text-xs sw-hide-sm" style={{ color: "var(--ink-faint)", fontSize: 11, lineHeight: 1.3 }}>{r.date ? fmtDate(r.date) : "—"}</td>
                 </tr>
               ))}
               {filtered.length === 0 && (
@@ -3980,7 +4014,7 @@ function DayByDayView({ orders }) {
           </button>
         )} />
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(280px, 1fr)", gap: "0.75rem", alignItems: "start" }}>
+      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(280px, 1fr)", gap: "0.75rem", alignItems: "start" }}>
 
         <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <div className="overflow-x-auto">
@@ -4183,7 +4217,7 @@ function PayPlansView({ plans, staff, onSave, onAdd, onDelete }) {
         passed — a card turns green at <b>{Math.round((wdDone / wd) * 100)}%</b> of target, amber from 75% of that.
       </p>
 
-      <div style={{ display: "grid", gridTemplateColumns: "260px minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }} className="mb-4">
+      <div className="sw-cols mb-4" style={{ display: "grid", gridTemplateColumns: "260px minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }}>
 
         {/* LIST */}
         <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
@@ -4874,8 +4908,9 @@ function AdminIssues({ staff, netsuite, aliases, onAddAlias, onDeleteAlias, plan
   const [newAlias, setNewAlias] = useState("");
   const [newTarget, setNewTarget] = useState("");
   const [tab, setTab] = useState("staff");
+  const [open, setOpen] = useState(false);   // collapsed by default
 
-  const issues = useMemo(() => (staff || []).map((s) => {
+  const issues = useMemo(() => (staff || []).filter((s) => s.active !== false).map((s) => {
     const problems = [];
     if (!s.user_id) problems.push("never signed in");
     if (!s.team) problems.push("no team");
@@ -4905,20 +4940,28 @@ function AdminIssues({ staff, netsuite, aliases, onAddAlias, onDeleteAlias, plan
 
   return (
     <div className="rounded-2xl overflow-hidden mb-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-      <div className="flex items-center gap-2 px-3 py-2" style={{ borderBottom: "1px solid var(--border)" }}>
-        <AlertTriangle size={15} style={{ color: unmatched.length || issues.length ? "var(--amber)" : "var(--green)" }} />
-        <span className="sw-display font-bold text-sm">Needs attention</span>
-        <div className="ml-auto flex items-center gap-1.5">
-          {[["staff", `Setup (${issues.length})`], ["names", `Unmatched names (${unmatched.length})`]].map(([k, lbl]) => (
-            <button key={k} onClick={() => setTab(k)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold"
-              style={tab === k ? { background: "var(--primary)", color: "#fff" } : { background: "var(--surface-alt)", color: "var(--ink-soft)" }}>
-              {lbl}
-            </button>
-          ))}
-        </div>
+      <div className="flex items-center gap-2 px-3 py-2" style={{ borderBottom: open ? "1px solid var(--border)" : "none" }}>
+        <button onClick={() => setOpen((v) => !v)} className="sw-focus flex items-center gap-2 flex-1 text-left">
+          <ChevronDown size={13} style={{ color: "var(--ink-faint)", transform: open ? "rotate(0)" : "rotate(-90deg)", transition: "transform .15s" }} />
+          <AlertTriangle size={14} style={{ color: unmatched.length || issues.length ? "var(--amber)" : "var(--green)" }} />
+          <span className="text-sm font-semibold">Needs attention</span>
+          <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+            {issues.length + unmatched.length === 0 ? "all clear" : `${issues.length + unmatched.length} to review`}
+          </span>
+        </button>
+        {open && (
+          <div className="flex items-center gap-1.5">
+            {[["staff", `Setup (${issues.length})`], ["names", `Unmatched names (${unmatched.length})`]].map(([k, lbl]) => (
+              <button key={k} onClick={() => setTab(k)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold"
+                style={tab === k ? { background: "var(--primary)", color: "#fff" } : { background: "var(--surface-alt)", color: "var(--ink-soft)" }}>
+                {lbl}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      {tab === "staff" && (
+      {open && tab === "staff" && (
         issues.length === 0 ? (
           <div className="px-4 py-6 text-center text-xs" style={{ color: "var(--green)" }}>Everyone is fully set up.</div>
         ) : (
@@ -4945,7 +4988,7 @@ function AdminIssues({ staff, netsuite, aliases, onAddAlias, onDeleteAlias, plan
         )
       )}
 
-      {tab === "names" && (
+      {open && tab === "names" && (
         <>
           <div className="px-3 py-2 flex items-center gap-2 flex-wrap" style={{ background: "var(--surface-alt)" }}>
             <input className="sw-input sw-focus" style={{ maxWidth: 200 }} placeholder="Name as NetSuite spells it"
@@ -5045,7 +5088,7 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
       <AdminIssues staff={staff} netsuite={netsuite} aliases={aliases}
         onAddAlias={onAddAlias} onDeleteAlias={onDeleteAlias} plans={plans} />
 
-      <div style={{ display: "grid", gridTemplateColumns: "280px minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }}>
+      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "280px minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }}>
 
         {/* LIST */}
         <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
@@ -6203,7 +6246,7 @@ function ForecastView({ netsuite, profile, staff }) {
       {/* SUMMARY */}
       {view === "summary" && (
         <>
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px", gap: "0.75rem", alignItems: "start" }} className="mb-4">
+        <div className="sw-cols mb-4" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px", gap: "0.75rem", alignItems: "start" }}>
 
           {/* Expandable breakdown — all teams first, then each team */}
           <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
@@ -6298,7 +6341,7 @@ function ForecastView({ netsuite, profile, staff }) {
           </div>
 
           {/* Charts, pinned beside the table */}
-          <div style={{ position: "sticky", top: 12, maxHeight: "calc(100vh - 24px)", overflowY: "auto" }} className="flex flex-col gap-3 pr-0.5">
+          <div className="sw-sticky-col flex flex-col gap-3 pr-0.5" style={{ position: "sticky", top: 12, maxHeight: "calc(100vh - 24px)", overflowY: "auto" }}>
             <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
               <div className="flex items-baseline justify-between mb-2">
                 <span className="sw-display font-bold text-xs" style={{ color: "var(--ink-soft)" }}>GP BY PILLAR</span>
@@ -6365,7 +6408,7 @@ function ForecastView({ netsuite, profile, staff }) {
                       <td className="px-3 py-2 text-xs">{r.agent_name}{r.agent_team ? <span style={{ color: "var(--ink-faint)" }}> · {r.agent_team}</span> : null}</td>
                       <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-soft)" }}>{r.lead_gen_name || "—"}</td>
                       <td className="px-3 py-2 text-xs">{r.pillar}</td>
-                      <td className="px-3 py-2 sw-mono text-xs">{fmtGBP(r.sov)}</td>
+                      <td className="px-3 py-2 sw-mono text-xs sw-hide-xs">{fmtGBP(r.sov)}</td>
                       <td className="px-3 py-2 sw-mono text-xs font-semibold">{fmtGBP(r.gp)}</td>
                       <td className="px-3 py-2 sw-mono text-xs">{num(r.units) || "—"}</td>
                       <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-faint)" }}>{r.forecast_date ? fmtDate(r.forecast_date) : "—"}</td>
@@ -6505,7 +6548,7 @@ function QuoteBuilderView({ profile, staff }) {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 320px) minmax(0, 1fr)", gap: "1rem", alignItems: "start" }}>
+      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(260px, 320px) minmax(0, 1fr)", gap: "1rem", alignItems: "start" }}>
 
         {/* Inputs */}
         <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
@@ -7245,7 +7288,7 @@ function SidebarSection({ icon: Icon, label, collapsed, open, onToggle, childAct
   );
 }
 
-function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSignOut }) {
+function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSignOut, mobileOpen, onCloseMobile }) {
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem(SIDEBAR_KEY) === "collapsed"; } catch (_) { return false; }
   });
@@ -7256,6 +7299,9 @@ function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSig
   const [dashOpen, setDashOpen] = useState(() => ["breakdown", "distribution"].includes(tab));
   const [settingsOpen, setSettingsOpen] = useState(() => ["admin", "statuses"].includes(tab));
   const isOffice = profile?.role === "office";
+
+  // On mobile the sidebar is a slide-over, so choosing something closes it
+  const go = (fn) => () => { fn(); if (onCloseMobile) onCloseMobile(); };
 
   const toggleCollapsed = () => {
     setCollapsed((c) => {
@@ -7271,7 +7317,8 @@ function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSig
   const settingsActive = ["admin", "statuses"].includes(tab);
 
   return (
-    <div className="shrink-0 flex flex-col" style={{ width: collapsed ? 64 : 226, borderRight: "1px solid var(--border)", background: "var(--surface)", height: "100vh", position: "sticky", top: 0, transition: "width .15s" }}>
+    <div className={`sw-sidebar shrink-0 flex flex-col ${mobileOpen ? "sw-open" : ""}`}
+      style={{ width: collapsed ? 64 : 226, borderRight: "1px solid var(--border)", background: "var(--surface)", height: "100vh", position: "sticky", top: 0, transition: "width .15s" }}>
       <div className="flex items-center gap-2 px-3 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
         <Logo height={28} />
         {!collapsed && (
@@ -7286,37 +7333,37 @@ function Sidebar({ tab, setTab, profile, newStatusCount, onChangePassword, onSig
 
       <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-0.5">
         <SidebarSection icon={ClipboardList} label="Main Views" collapsed={collapsed} open={mainOpen} onToggle={() => setMainOpen((o) => !o)} childActive={mainActive}>
-          <SidebarItem icon={ClipboardList} label="Claimed" collapsed={collapsed} active={tab === "dashboard"} indent onClick={() => setTab("dashboard")} />
-          <SidebarItem icon={TrendingUp} label="Forecasting" collapsed={collapsed} active={tab === "forecast"} indent onClick={() => setTab("forecast")} />
-          <SidebarItem icon={CalendarDays} label="Day by Day" collapsed={collapsed} active={tab === "daybyday"} indent onClick={() => setTab("daybyday")} />
+          <SidebarItem icon={ClipboardList} label="Claimed" collapsed={collapsed} active={tab === "dashboard"} indent onClick={go(() => setTab("dashboard"))} />
+          <SidebarItem icon={TrendingUp} label="Forecasting" collapsed={collapsed} active={tab === "forecast"} indent onClick={go(() => setTab("forecast"))} />
+          <SidebarItem icon={CalendarDays} label="Day by Day" collapsed={collapsed} active={tab === "daybyday"} indent onClick={go(() => setTab("daybyday"))} />
         </SidebarSection>
 
         <div className="my-1" />
 
         <SidebarSection icon={Inbox} label="Submission Boxes" collapsed={collapsed} open={submitOpen} onToggle={() => setSubmitOpen((o) => !o)} childActive={submitActive}>
-          <SidebarItem icon={Plus} label="Submit Lilac Box" collapsed={collapsed} active={tab === "new"} indent onClick={() => setTab("new")} />
-          <SidebarItem icon={MapPin} label="Landscapes" collapsed={collapsed} active={tab === "landscapes"} indent onClick={() => setTab("landscapes")} />
-          <SidebarItem icon={FileText} label="Quote Builder" collapsed={collapsed} active={tab === "quote"} indent onClick={() => setTab("quote")} />
+          <SidebarItem icon={Plus} label="Submit Lilac Box" collapsed={collapsed} active={tab === "new"} indent onClick={go(() => setTab("new"))} />
+          <SidebarItem icon={MapPin} label="Landscapes" collapsed={collapsed} active={tab === "landscapes"} indent onClick={go(() => setTab("landscapes"))} />
+          <SidebarItem icon={FileText} label="Quote Builder" collapsed={collapsed} active={tab === "quote"} indent onClick={go(() => setTab("quote"))} />
         </SidebarSection>
 
         <div className="my-1" />
 
         <SidebarSection icon={LayoutDashboard} label="Dashboards" collapsed={collapsed} open={dashOpen} onToggle={() => setDashOpen((o) => !o)} childActive={dashboardsActive}>
-          <SidebarItem icon={BarChart3} label="Sales Breakdown" collapsed={collapsed} active={tab === "breakdown"} indent onClick={() => setTab("breakdown")} />
-          <SidebarItem icon={Users} label="Sales Distribution" collapsed={collapsed} active={tab === "distribution"} indent onClick={() => setTab("distribution")} />
+          <SidebarItem icon={BarChart3} label="Sales Breakdown" collapsed={collapsed} active={tab === "breakdown"} indent onClick={go(() => setTab("breakdown"))} />
+          <SidebarItem icon={Users} label="Sales Distribution" collapsed={collapsed} active={tab === "distribution"} indent onClick={go(() => setTab("distribution"))} />
           <SidebarItem icon={Radio} label="TV Mode" collapsed={collapsed} active={false} indent href="#tv" onClick={() => setTimeout(() => window.location.reload(), 0)} />
         </SidebarSection>
 
         <div className="my-1" />
 
-        <SidebarItem icon={Headphones} label="Sales Coach" collapsed={collapsed} active={tab === "coach"} onClick={() => setTab("coach")} />
+        <SidebarItem icon={Headphones} label="Sales Coach" collapsed={collapsed} active={tab === "coach"} onClick={go(() => setTab("coach"))} />
 
         {isOffice && (
           <>
             <div className="my-1" />
             <SidebarSection icon={SettingsIcon} label="Settings" collapsed={collapsed} open={settingsOpen} onToggle={() => setSettingsOpen((o) => !o)} childActive={settingsActive}>
-              <SidebarItem icon={Users} label="Admin" collapsed={collapsed} active={tab === "admin"} indent onClick={() => setTab("admin")} />
-              <SidebarItem icon={Palette} label="Settings" collapsed={collapsed} active={tab === "statuses"} indent badge={newStatusCount} onClick={() => setTab("statuses")} />
+              <SidebarItem icon={Users} label="Admin" collapsed={collapsed} active={tab === "admin"} indent onClick={go(() => setTab("admin"))} />
+              <SidebarItem icon={Palette} label="Settings" collapsed={collapsed} active={tab === "statuses"} indent badge={newStatusCount} onClick={go(() => setTab("statuses"))} />
               <SidebarItem icon={KeyRound} label="Change Password" collapsed={collapsed} active={false} indent onClick={onChangePassword} />
             </SidebarSection>
           </>
@@ -7363,6 +7410,7 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(null); // { company, ref } after a successful save
   const [changingPassword, setChangingPassword] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);   // mobile sidebar
   // Simple route detection: /tv (path or #tv) shows the TV board.
   const isTVRoute = typeof window !== "undefined" && (window.location.pathname.replace(/\/$/, "").endsWith("/tv") || window.location.hash === "#tv");
 
@@ -7812,11 +7860,25 @@ export default function App() {
     <StaffContext.Provider value={staffValue}>
     <div className="sw-root" style={{ display: "flex", minHeight: "100vh" }}>
       <style>{STYLE}</style>
+
+      {menuOpen && <div className="sw-scrim" onClick={() => setMenuOpen(false)} />}
       <Sidebar tab={tab} setTab={setTab} profile={profile} newStatusCount={newStatusCount}
-        onChangePassword={() => setChangingPassword(true)} onSignOut={signOut} />
+        onChangePassword={() => { setChangingPassword(true); setMenuOpen(false); }} onSignOut={signOut}
+        mobileOpen={menuOpen} onCloseMobile={() => setMenuOpen(false)} />
 
       <div style={{ flex: 1, minWidth: 0 }}>
-      <main className={`p-6 mx-auto ${["breakdown", "daybyday", "forecast", "landscapes", "dashboard", "distribution", "admin", "statuses"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
+        {/* Mobile header — the only way back to navigation on a phone */}
+        <div className="sw-menu-btn items-center gap-2 px-3 py-2.5"
+          style={{ borderBottom: "1px solid var(--border)", background: "var(--surface)", position: "sticky", top: 0, zIndex: 40 }}>
+          <button onClick={() => setMenuOpen(true)} className="sw-focus p-1.5 rounded-lg" style={{ color: "var(--ink-soft)" }} aria-label="Open menu">
+            <Menu size={18} />
+          </button>
+          <Logo height={22} />
+          <span className="text-xs ml-auto" style={{ color: "var(--ink-faint)" }}>
+            {profile?.role === "office" ? "Office" : profile?.role === "2ic" ? "2IC" : "Agent"}
+          </span>
+        </div>
+      <main className={`sw-main p-6 mx-auto ${["breakdown", "daybyday", "forecast", "landscapes", "dashboard", "distribution", "admin", "statuses"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
         {submitted && (
           <div className="sw-rise rounded-2xl p-4 mb-5 flex items-center justify-between gap-4" style={{ background: "var(--green-soft)", border: "1px solid var(--green)" }}>
             <div className="flex items-center gap-3">
