@@ -7468,6 +7468,23 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
   const isManager = profile?.role === "office" || profile?.role === "sd";
   const canAllocate = isManager || profile?.role === "sd_2ic";
 
+  // NetSuite's Admin Agent is who actually picked the order up. If nobody
+  // has been allocated here, fall back to that rather than showing it as
+  // unallocated work Tracy needs to hand out.
+  const nsByDoc = useMemo(() => {
+    const m = {};
+    (netsuite || []).forEach((n) => { if (n.document_number) m[String(n.document_number)] = n; });
+    return m;
+  }, [netsuite]);
+
+  const allocationOf = useCallback((o) => {
+    if (o.allocated_to_name) return { name: o.allocated_to_name, fromNetsuite: false };
+    const n = o.document_number ? nsByDoc[String(o.document_number)] : null;
+    const admin = n && n.admin_agent && String(n.admin_agent).trim();
+    if (admin && !/unassigned/i.test(admin)) return { name: admin, fromNetsuite: true };
+    return { name: null, fromNetsuite: false };
+  }, [nsByDoc]);
+
   // The delivery team's members — who work can be allocated to
   const team = useMemo(
     () => (staff || []).filter((s) => s.team === deliveryTeam && s.active !== false)
@@ -7489,8 +7506,9 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
     const counts = {};
     let unallocated = 0;
     inPeriod.forEach((o) => {
-      if (!o.allocated_to_name) { unallocated += 1; return; }
-      const k = o.allocated_to_name;
+      const alloc = allocationOf(o);
+      if (!alloc.name) { unallocated += 1; return; }
+      const k = alloc.name;
       if (!counts[k]) counts[k] = { total: 0, open: 0, done: 0 };
       counts[k].total += 1;
       if (String(o.delivery_status || "") === "Complete") counts[k].done += 1;
@@ -7505,22 +7523,23 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
       if (!rows.some((r) => r.name === nm)) rows.push({ name: nm, ...counts[nm] });
     });
     return { rows: rows.sort((a, b) => b.total - a.total || a.name.localeCompare(b.name)), unallocated };
-  }, [inPeriod, team]);
+  }, [inPeriod, team, allocationOf]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return inPeriod.filter((o) => {
       if (q && !String(o.company_name || "").toLowerCase().includes(q)
             && !String(o.lbcr_ref || "").toLowerCase().includes(q)) return false;
-      if (agentFilter === "__unallocated") { if (o.allocated_to_name) return false; }
-      else if (agentFilter !== "All" && o.allocated_to_name !== agentFilter) return false;
+      const alloc = allocationOf(o);
+      if (agentFilter === "__unallocated") { if (alloc.name) return false; }
+      else if (agentFilter !== "All" && alloc.name !== agentFilter) return false;
       if (stateFilter !== "All") {
         const st = o.delivery_status || "Unallocated";
         if (st !== stateFilter) return false;
       }
       return true;
     }).sort((a, b) => String(b.submission_date || "").localeCompare(String(a.submission_date || "")));
-  }, [inPeriod, query, agentFilter, stateFilter]);
+  }, [inPeriod, query, agentFilter, stateFilter, allocationOf]);
 
   const totals = useMemo(() => ({
     all: inPeriod.length,
@@ -7657,7 +7676,9 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
               </tr>
             </thead>
             <tbody>
-              {filtered.map((o) => (
+              {filtered.map((o) => {
+                const alloc = allocationOf(o);
+                return (
                 <tr key={o.id} style={{ borderTop: "1px solid var(--border)" }}>
                   <td className="px-3 py-2">
                     <button onClick={() => onOpenOrder(o)} className="sw-focus text-left">
@@ -7669,23 +7690,28 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
 
                   <td className="px-2 py-2">
                     {canAllocate ? (
-                      <select className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }}
-                        value={o.allocated_to_name || ""}
-                        disabled={busyId === o.id}
-                        onChange={async (e) => {
-                          setBusyId(o.id);
-                          const person = team.find((t) => t.full_name === e.target.value) || null;
-                          await onAllocate(o.id, person, e.target.value);
-                          setBusyId(null);
-                        }}>
-                        <option value="">Unallocated</option>
-                        {team.map((t) => <option key={t.id} value={t.full_name}>{t.full_name}</option>)}
-                        {o.allocated_to_name && !team.some((t) => t.full_name === o.allocated_to_name) && (
-                          <option value={o.allocated_to_name}>{o.allocated_to_name}</option>
+                      <>
+                        <select className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }}
+                          value={alloc.name || ""}
+                          disabled={busyId === o.id}
+                          onChange={async (e) => {
+                            setBusyId(o.id);
+                            const person = team.find((t) => t.full_name === e.target.value) || null;
+                            await onAllocate(o.id, person, e.target.value);
+                            setBusyId(null);
+                          }}>
+                          <option value="">Unallocated</option>
+                          {team.map((t) => <option key={t.id} value={t.full_name}>{t.full_name}</option>)}
+                          {alloc.name && !team.some((t) => t.full_name === alloc.name) && (
+                            <option value={alloc.name}>{alloc.name}</option>
+                          )}
+                        </select>
+                        {alloc.fromNetsuite && (
+                          <div style={{ fontSize: 9.5, color: "var(--ink-faint)", marginTop: 2 }}>from NetSuite</div>
                         )}
-                      </select>
+                      </>
                     ) : (
-                      <span className="text-xs">{o.allocated_to_name || <span style={{ color: "var(--ink-faint)" }}>Unallocated</span>}</span>
+                      <span className="text-xs">{alloc.name || <span style={{ color: "var(--ink-faint)" }}>Unallocated</span>}</span>
                     )}
                   </td>
 
@@ -7711,7 +7737,8 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAlloca
                     {o.submission_date ? fmtDate(o.submission_date) : "—"}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
               {filtered.length === 0 && (
                 <tr><td colSpan={6} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
                   No orders match.
@@ -8316,21 +8343,6 @@ export default function App() {
 
   const deliveryTeam = appSettings.delivery_team || "Tracy Webber";
 
-  // Allocate an order to someone on the delivery team
-  const allocateOrder = useCallback(async (orderId, person, name) => {
-    const patch = {
-      allocated_to: person?.id || null,
-      allocated_to_name: name || null,
-      allocated_at: name ? new Date().toISOString() : null,
-      allocated_by_name: profile?.full_name || null,
-      last_updated: new Date().toISOString(),
-    };
-    // Moving it to someone puts it in play unless it's already further on
-    const { error } = await supabase.from("orders").update(patch).eq("id", orderId);
-    if (error) { setToast(`Couldn't allocate: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
-    loadOrders();
-  }, [profile, loadOrders]);
-
   // Name aliases — NetSuite spellings mapped back to the staff list
   const loadAliases = useCallback(async () => {
     const { data } = await supabase.from("staff_aliases").select("*").order("alias");
@@ -8621,6 +8633,21 @@ export default function App() {
 
   // Save SOV/GP edits. RLS enforces who's actually allowed; this mirror keeps the UI honest.
   const [savingEdit, setSavingEdit] = useState(false);
+  // Allocate an order to someone on the delivery team
+  const allocateOrder = useCallback(async (orderId, person, name) => {
+    const patch = {
+      allocated_to: person?.id || null,
+      allocated_to_name: name || null,
+      allocated_at: name ? new Date().toISOString() : null,
+      allocated_by_name: profile?.full_name || null,
+      last_updated: new Date().toISOString(),
+    };
+    // Moving it to someone puts it in play unless it's already further on
+    const { error } = await supabase.from("orders").update(patch).eq("id", orderId);
+    if (error) { setToast(`Couldn't allocate: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    loadOrders();
+  }, [profile, loadOrders]);
+
   const saveOrder = useCallback(async (id, patch) => {
     setSavingEdit(true);
     const { error } = await supabase.from("orders").update(patch).eq("id", id);
