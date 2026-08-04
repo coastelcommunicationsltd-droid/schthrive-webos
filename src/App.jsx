@@ -1934,7 +1934,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
       </div>
 
       {/* Ranked team on the left, orders on the right */}
-      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "300px minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }}>
+      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(320px, 1fr) minmax(0, 2fr)", gap: "0.75rem", alignItems: "start" }}>
 
         {/* LEFT */}
         <div className="sw-sticky-col flex flex-col gap-3 pr-0.5" style={{ position: "sticky", top: 66, maxHeight: "calc(100vh - 78px)", overflowY: "auto" }}>
@@ -1942,7 +1942,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
           {/* The ranking is the agent picker */}
           <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
             <div className="flex items-baseline justify-between mb-3">
-              <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>
+              <span className="text-sm font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>
                 {isOffice && scope !== "office" ? scope : is2ic && profile?.team ? profile.team : "Office"}
               </span>
               {agentFilter !== "All" && (
@@ -1952,7 +1952,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
             {agentRanking.length === 0 ? (
               <div className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>No figures for this period.</div>
             ) : (
-              <div style={{ maxHeight: "calc(100vh - 190px)", overflowY: "auto" }}>
+              <div style={{ maxHeight: "calc(100vh - 210px)", overflowY: "auto" }}>
                 {agentRanking.map((a, i) => {
                   // Traffic light comes from the pay plan pace, exactly as the
                   // KPI cards do — so a name reads the same everywhere.
@@ -1965,7 +1965,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                     .filter((s) => s.v > 0);
                   return (
                     <button key={a.name} onClick={() => setAgentFilter(sel ? "All" : a.name)}
-                      className="sw-focus w-full text-left px-2 py-1.5"
+                      className="sw-focus w-full text-left px-2.5 py-2"
                       style={{
                         background: sel ? "var(--primary-soft)" : "transparent",
                         borderTop: i === 0 ? "none" : "1px solid var(--border)",
@@ -1975,12 +1975,12 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                         : fmtGBP(a.gp)}>
                       <div className="flex items-center gap-1.5">
                         <span title={tone ? `${Math.round((a.gp / (a.pace || 1)) * 100)}% of pace` : "No pay plan"}
-                          style={{ width: 6, height: 6, borderRadius: 99, background: dot, flexShrink: 0 }} />
+                          style={{ width: 7, height: 7, borderRadius: 99, background: dot, flexShrink: 0 }} />
                         {scope === "office" && !is2ic && <TeamTag team={a.team} allTeams={teamOptions} />}
-                        <span className="truncate" style={{ fontSize: 12, color: sel ? "var(--primary)" : "var(--ink)", fontWeight: sel ? 600 : 500 }}>
+                        <span className="truncate" style={{ fontSize: 13.5, color: sel ? "var(--primary)" : "var(--ink)", fontWeight: sel ? 600 : 500 }}>
                           {a.name}
                         </span>
-                        <span className="sw-mono ml-auto shrink-0" style={{ fontSize: 12, fontWeight: 600, color: a.gp ? "var(--ink)" : "var(--ink-faint)" }}>
+                        <span className="sw-mono ml-auto shrink-0" style={{ fontSize: 13.5, fontWeight: 600, color: a.gp ? "var(--ink)" : "var(--ink-faint)" }}>
                           {fmtGBP(a.gp)}
                         </span>
                       </div>
@@ -1999,7 +1999,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                         const pacePct = scaleMax > 0 ? Math.min(100, (a.pace / scaleMax) * 100) : 0;
                         const baseTone = paceTone(a.statted, a.pace);
                         return (
-                          <div className="mt-1" style={{ height: 4, background: "var(--surface-alt)", borderRadius: 2, position: "relative", overflow: "hidden" }}
+                          <div className="mt-1.5" style={{ height: 6, background: "var(--surface-alt)", borderRadius: 3, position: "relative", overflow: "hidden" }}
                             title={`Statted: ${fmtGBP(a.statted)} of ${fmtGBP(a.target)} target${overAmt > 0 ? ` — ${fmtGBP(overAmt)} over` : ""}`}>
                             <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${basePct}%`, background: baseTone ? baseTone.fg : "var(--ink-faint)" }} />
                             {overPct > 0 && (
@@ -2011,7 +2011,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, onOpenOrd
                           </div>
                         );
                       })() : (
-                        <div className="mt-1" style={{ height: 2, background: "var(--red)", opacity: 0.6, borderRadius: 1 }}
+                        <div className="mt-1.5" style={{ height: 3, background: "var(--red)", opacity: 0.6, borderRadius: 2 }}
                           title="No pay plan set" />
                       )}
                     </button>
