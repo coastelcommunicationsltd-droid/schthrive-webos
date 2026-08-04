@@ -295,6 +295,46 @@ function totalSOV(orders) {
   return orders.reduce((s, o) => s + num(o.contract_value), 0);
 }
 
+/* ---- Totals strip above an orders list -------------------------------
+   Two thin cards — Total GP and Total SOV — spanning the full width of
+   the list column, so the figures always describe exactly the rows
+   showing underneath. Deliberately inline grid/flex styles: this is a
+   critical layout and must not depend on Tailwind JIT picking classes up
+   after a file replacement. */
+function ListTotalsStrip({ gp, sov, count, label }) {
+  const Card = ({ title, value, colour }) => (
+    <div
+      className="rounded-lg"
+      style={{
+        background: "var(--surface)", border: "1px solid var(--border)",
+        padding: "6px 12px", minWidth: 0,
+        display: "flex", alignItems: "baseline", gap: 8,
+      }}>
+      <span className="text-xs font-semibold uppercase"
+        style={{ color: "var(--ink-faint)", letterSpacing: "0.04em", whiteSpace: "nowrap" }}>
+        {title}
+      </span>
+      <span className="sw-mono"
+        style={{ marginLeft: "auto", color: colour, fontWeight: 700, fontSize: 15, whiteSpace: "nowrap" }}>
+        {fmtGBP(value)}
+      </span>
+    </div>
+  );
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem", marginBottom: count != null ? 4 : "0.5rem" }}>
+        <Card title="Total GP" value={gp} colour="var(--green)" />
+        <Card title="Total SOV" value={sov} colour="var(--primary)" />
+      </div>
+      {count != null && (
+        <div className="text-xs" style={{ color: "var(--ink-faint)", marginBottom: "0.5rem" }}>
+          {count.toLocaleString("en-GB")} {count === 1 ? "order" : "orders"}{label ? ` · ${label}` : ""}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---- Product detection from the free-text Order Details -------------- */
 // Agents describe what they've sold in prose, so the product is inferred
 // from that text plus the structured yes/no flags on the form. Mirrors the
@@ -1454,6 +1494,28 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
     });
   }, [viewRows, query, statusFilter, agentFilter, productFilter, focusFilter, sortKey, sortDir, ngpMode, nsovMode, campaignOnly, acqOnly]);
 
+  // Totals for the strip sitting directly above the list. These follow the
+  // VISIBLE rows — every filter, the search box and the dataset toggle — so
+  // the two figures always add up to what's on screen. NGP is out of GP and
+  // NSOV is out of SOV, matching the rules the KPI cards use.
+  const listTotals = useMemo(() => {
+    let gp = 0, sov = 0;
+    filtered.forEach((r) => {
+      if (!r.nsov) sov += num(r.sov);
+      if (r.ngp) return;
+      // One agent selected -> credit them their own share only, never the
+      // whole deal (that would include their colleague's cut). Forecast rows
+      // carry no split, so they fall back to the deal figure.
+      if (agentFilter !== "All" && (r.closer_share != null || r.lead_gen_share != null)) {
+        if (r.closer_name === agentFilter) gp += num(r.closer_share);
+        if (r.lead_gen_name === agentFilter) gp += num(r.lead_gen_share);
+      } else {
+        gp += num(r.gp);
+      }
+    });
+    return { gp, sov };
+  }, [filtered, agentFilter]);
+
   // Statuses actually present — Lilac stages plus whatever NetSuite reports
   const statusOptions = useMemo(() => {
     const set = new Set();
@@ -2450,6 +2512,10 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
           </div>
         </div>
       </div>
+
+      {/* Totals for the list below — follows every filter on the page */}
+      <ListTotalsStrip gp={listTotals.gp} sov={listTotals.sov} count={filtered.length}
+        label={dataView === "statted" ? "statted" : dataView === "forecast" ? "forecast" : "claimed"} />
 
       <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div>
@@ -8587,6 +8653,13 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
     });
   }, [inPeriod, query, agentFilter, stateFilter, allocationOf, statusOf]);
 
+  // Totals for the strip above the claimed list — the filtered rows, not the
+  // whole period, so search/allocation/state filters are reflected.
+  const listTotals = useMemo(() => ({
+    gp: filtered.reduce((s, o) => s + num(o.gp_office != null ? o.gp_office : o.sales_agent_gp), 0),
+    sov: filtered.reduce((s, o) => s + num(o.contract_value), 0),
+  }), [filtered]);
+
   const totals = useMemo(() => {
     const gp = inPeriod.reduce((s, o) => s + num(o.gp_office != null ? o.gp_office : o.sales_agent_gp), 0);
     const sov = inPeriod.reduce((s, o) => s + num(o.contract_value), 0);
@@ -9071,6 +9144,10 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
           </table>
         </div>
         ) : (
+        <div>
+        {/* Totals for the list below — follows the search and filters */}
+        <ListTotalsStrip gp={listTotals.gp} sov={listTotals.sov} count={filtered.length} />
+
         <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
           <table className="w-full text-sm sw-orders sw-anim-rows sw-hover-rows" style={{ tableLayout: "fixed" }}>
             <colgroup>
@@ -9181,6 +9258,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
               )}
             </tbody>
           </table>
+        </div>
         </div>
         )}
       </div>
