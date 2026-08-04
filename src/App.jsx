@@ -1458,14 +1458,35 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, planTiers
     }
     if (agentFilter !== "All") people = people.filter((s) => s.full_name === agentFilter);
 
+    // Targets come from the plan's tiers where they exist — specifically
+    // the tier labelled "Target", or the middle band if none is. That keeps
+    // the KPI cards in step with the commission table without a second set
+    // of numbers to maintain. Plans with no tiers fall back to their own
+    // columns, so older plans keep working.
+    const headlineTier = (planId) => {
+      const ts = (planTiers || []).filter((t) => t.plan_id === planId)
+        .sort((a, b) => num(a.gp_min) - num(b.gp_min));
+      if (!ts.length) return null;
+      return ts.find((t) => /target/i.test(String(t.label || ""))) || ts[Math.floor(ts.length / 2)];
+    };
+
     const monthly = { gp: 0, cloud: 0, conn: 0, mobile: 0 };
     people.forEach((s) => {
       const p = planById[s.pay_plan_id];
       if (!p || p.active === false) return;
-      monthly.gp += num(p.target_gp);
-      monthly.cloud += num(p.target_cloud_sov);
-      monthly.conn += num(p.target_connectivity_sov);
-      monthly.mobile += num(p.target_mobile_sov);
+      const tier = headlineTier(p.id);
+      if (tier) {
+        const th = tier.thresholds || {};
+        monthly.gp += num(tier.gp_min);
+        monthly.cloud += num(th.cloud_sov);
+        monthly.conn += num(th.connectivity_sov);
+        monthly.mobile += num(th.mobile_sov);
+      } else {
+        monthly.gp += num(p.target_gp);
+        monthly.cloud += num(p.target_cloud_sov);
+        monthly.conn += num(p.target_connectivity_sov);
+        monthly.mobile += num(p.target_mobile_sov);
+      }
     });
 
     return {
@@ -1636,10 +1657,21 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, planTiers
       if (n.referrer_name) statted[n.referrer_name] = (statted[n.referrer_name] || 0) + num(n.referrer_gp);
     });
 
+    // Same tier-derived target the KPI cards use, so a person's bar and the
+    // headline agree.
+    const tierGp = (planId) => {
+      const ts = (planTiers || []).filter((t) => t.plan_id === planId)
+        .sort((a, b) => num(a.gp_min) - num(b.gp_min));
+      if (!ts.length) return null;
+      const t = ts.find((x) => /target/i.test(String(x.label || ""))) || ts[Math.floor(ts.length / 2)];
+      return num(t.gp_min);
+    };
+
     const rows = people.map((s) => {
       const plan = s.pay_plan_id ? planById[s.pay_plan_id] : null;
       const hasPlan = !!(plan && plan.active !== false);
-      const monthly = hasPlan ? num(plan.target_gp) : 0;
+      const fromTier = hasPlan ? tierGp(plan.id) : null;
+      const monthly = hasPlan ? (fromTier != null ? fromTier : num(plan.target_gp)) : 0;
       return {
         name: s.full_name,
         team: s.team,
@@ -1669,7 +1701,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, planTiers
     // Everyone shows, including those on nothing — that's the point of a
     // ranking. Zero-GP people sort to the bottom, alphabetically.
     return rows.sort((a, b) => (b.gp - a.gp) || a.name.localeCompare(b.name));
-  }, [staff, payPlans, gpCountable, netsuite, statusCfg, isOffice, is2ic, scope, profile, period]);
+  }, [staff, payPlans, planTiers, gpCountable, netsuite, statusCfg, isOffice, is2ic, scope, profile, period]);
 
   // ---- Pay plan measured against what NetSuite actually statted -------
   // The KPI cards use claimed GP; this asks the harder question — has the
@@ -1966,6 +1998,11 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, planTiers
                   {tierStanding.met ? tierStanding.met.label || "Tier met" : "No tier met"}
                 </span>
               </div>
+              {tierStanding.met && (
+                <div className="text-xs mt-0.5" style={{ color: "var(--green)" }}>
+                  {fmtGBP(num(tierStanding.actuals.gp) * num(tierStanding.met.payment_pct) / 100)} on {fmtGBP(tierStanding.actuals.gp)} GP
+                </div>
+              )}
 
               {tierStanding.shortfalls.length > 0 && (
                 <div className="mt-2 flex flex-col gap-1">
@@ -4268,94 +4305,16 @@ function DayByDayView({ orders, staff }) {
 /* ---------------------------------------------------------------------- */
 
 /* One commission band. Thresholds are whatever KPIs the plan declares. */
-function TierRow({ tier, metrics, onSave, onDelete }) {
-  const [f, setF] = useState({
-    label: tier.label || "", gp_min: tier.gp_min ?? 0, gp_max: tier.gp_max ?? "",
-    payment_pct: tier.payment_pct ?? 0, notes: tier.notes || "",
-    thresholds: { ...(tier.thresholds || {}) },
-  });
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  const dirty = f.label !== (tier.label || "")
-    || String(f.gp_min) !== String(tier.gp_min ?? 0)
-    || String(f.gp_max) !== String(tier.gp_max ?? "")
-    || String(f.payment_pct) !== String(tier.payment_pct ?? 0)
-    || f.notes !== (tier.notes || "")
-    || JSON.stringify(f.thresholds) !== JSON.stringify(tier.thresholds || {});
-
-  const cell = { fontSize: 12, height: 28, padding: "0 6px" };
-
-  return (
-    <tr style={{ borderTop: "1px solid var(--border)" }}>
-      <td className="px-2 py-1.5">
-        <input className="sw-input sw-focus" style={{ ...cell, width: 92 }} value={f.label}
-          placeholder="Tier" onChange={(e) => setF((p) => ({ ...p, label: e.target.value }))} />
-      </td>
-      <td className="px-2 py-1.5">
-        <div className="flex items-center gap-1">
-          <input className="sw-input sw-focus" style={{ ...cell, width: 74 }} value={f.gp_min}
-            onChange={(e) => setF((p) => ({ ...p, gp_min: e.target.value }))} />
-          <span style={{ fontSize: 11, color: "var(--ink-faint)" }}>–</span>
-          <input className="sw-input sw-focus" style={{ ...cell, width: 74 }} value={f.gp_max}
-            placeholder="no cap" onChange={(e) => setF((p) => ({ ...p, gp_max: e.target.value }))} />
-        </div>
-      </td>
-      {metrics.map((m) => (
-        <td key={m.id} className="px-2 py-1.5">
-          <input className="sw-input sw-focus" style={{ ...cell, width: 86 }}
-            value={f.thresholds[m.key] ?? ""}
-            placeholder={m.unit === "percent" ? "%" : m.unit === "count" ? "0" : "£"}
-            onChange={(e) => setF((p) => ({
-              ...p,
-              thresholds: e.target.value === ""
-                ? Object.fromEntries(Object.entries(p.thresholds).filter(([k]) => k !== m.key))
-                : { ...p.thresholds, [m.key]: e.target.value },
-            }))} />
-        </td>
-      ))}
-      <td className="px-2 py-1.5">
-        <div className="flex items-center gap-1">
-          <input className="sw-input sw-focus" style={{ ...cell, width: 60 }} value={f.payment_pct}
-            onChange={(e) => setF((p) => ({ ...p, payment_pct: e.target.value }))} />
-          <span style={{ fontSize: 11, color: "var(--ink-faint)" }}>%</span>
-        </div>
-      </td>
-      <td className="px-2 py-1.5">
-        <div className="flex items-center gap-1.5">
-          <button disabled={!dirty || saving}
-            onClick={async () => {
-              setSaving(true);
-              const th = {};
-              Object.keys(f.thresholds).forEach((k) => { if (f.thresholds[k] !== "") th[k] = parseFloat(f.thresholds[k]) || 0; });
-              await onSave(tier.id, {
-                label: f.label, gp_min: parseFloat(f.gp_min) || 0,
-                gp_max: f.gp_max === "" ? null : parseFloat(f.gp_max),
-                payment_pct: parseFloat(f.payment_pct) || 0,
-                notes: f.notes, thresholds: th,
-              });
-              setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 1500);
-            }}
-            className="sw-focus text-xs font-semibold px-2 py-1 rounded-lg"
-            style={{ background: dirty ? "var(--primary)" : "var(--surface-alt)", color: dirty ? "#fff" : "var(--ink-faint)" }}>
-            {saving ? "..." : saved ? "✓" : "Save"}
-          </button>
-          <button onClick={() => onDelete(tier.id)} className="sw-focus text-xs" style={{ color: "var(--red)" }}>✕</button>
-        </div>
-      </td>
-    </tr>
-  );
-}
-
+/* Pay plan editor. Tiers run as COLUMNS across the targets, so it reads
+   like the commission table it came from: each tier is a band with its own
+   GP and KPI thresholds, and the commission rate applied to statted GP. */
 function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
                       onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric }) {
   const [f, setF] = useState({
     name: plan.name || "", plan_kind: plan.plan_kind || "closer",
     description: plan.description || "",
     effective_from: plan.effective_from || "", effective_to: plan.effective_to || "",
-    target_gp: plan.target_gp ?? 0,
-    target_cloud_sov: plan.target_cloud_sov ?? 0, target_connectivity_sov: plan.target_connectivity_sov ?? 0,
-    target_mobile_sov: plan.target_mobile_sov ?? 0, active: plan.active !== false,
+    active: plan.active !== false,
   });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -4363,21 +4322,56 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
   const [newMetric, setNewMetric] = useState({ key: "", label: "", unit: "money" });
 
   const dirty = Object.keys(f).some((k) => String(f[k]) !== String(plan[k] ?? (k === "active" ? true : k === "plan_kind" ? "closer" : "")));
-  const planMetrics = metrics.filter((m) => m.plan_id === plan.id);
-  const planTiers = tiers.filter((t) => t.plan_id === plan.id);
+  const planMetrics = useMemo(() => metrics.filter((m) => m.plan_id === plan.id), [metrics, plan.id]);
+  const planTiers = useMemo(
+    () => tiers.filter((t) => t.plan_id === plan.id).sort((a, b) => num(a.gp_min) - num(b.gp_min)),
+    [tiers, plan.id]
+  );
 
-  const Row = ({ label, children }) => (
-    <div style={{ display: "grid", gridTemplateColumns: "150px 1fr", gap: "0.75rem", alignItems: "center" }} className="py-1.5">
-      <label className="text-xs" style={{ color: "var(--ink-faint)" }}>{label}</label>
-      {children}
-    </div>
-  );
-  const moneyField = (key) => (
-    <div className="relative" style={{ maxWidth: 180 }}>
-      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs" style={{ color: "var(--ink-faint)" }}>£</span>
-      <input className="sw-input sw-focus" style={{ paddingLeft: 20 }} value={f[key]} onChange={(e) => setF((p) => ({ ...p, [key]: e.target.value }))} />
-    </div>
-  );
+  /* Each cell edits one tier. Saved on blur so tabbing across a row works
+     without a save button per box. */
+  const Cell = ({ tier, field, metricKey, unit, placeholder }) => {
+    const current = metricKey
+      ? (tier.thresholds || {})[metricKey] ?? ""
+      : tier[field] ?? "";
+    const [v, setV] = useState(String(current));
+    useEffect(() => { setV(String(current)); }, [current]);
+
+    const commit = () => {
+      if (String(v) === String(current)) return;
+      if (metricKey) {
+        const th = { ...(tier.thresholds || {}) };
+        if (v === "") delete th[metricKey]; else th[metricKey] = parseFloat(v) || 0;
+        onSaveTier(tier.id, { thresholds: th });
+      } else {
+        onSaveTier(tier.id, { [field]: v === "" ? (field === "gp_max" ? null : 0) : parseFloat(v) || 0 });
+      }
+    };
+
+    return (
+      <div className="relative">
+        {unit === "money" && <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs" style={{ color: "var(--ink-faint)" }}>£</span>}
+        <input className="sw-input sw-focus" value={v} placeholder={placeholder}
+          onChange={(e) => setV(e.target.value)} onBlur={commit}
+          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+          style={{ height: 30, fontSize: 12.5, textAlign: "center", paddingLeft: unit === "money" ? 16 : 6, paddingRight: unit === "percent" ? 16 : 6 }} />
+        {unit === "percent" && <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs" style={{ color: "var(--ink-faint)" }}>%</span>}
+      </div>
+    );
+  };
+
+  const TierName = ({ tier }) => {
+    const [v, setV] = useState(tier.label || "");
+    useEffect(() => { setV(tier.label || ""); }, [tier.label]);
+    return (
+      <input className="sw-input sw-focus" value={v} placeholder="Tier name"
+        onChange={(e) => setV(e.target.value)}
+        onBlur={() => { if (v !== (tier.label || "")) onSaveTier(tier.id, { label: v }); }}
+        style={{ height: 30, fontSize: 12.5, fontWeight: 600, textAlign: "center" }} />
+    );
+  };
+
+  const labelCell = { fontSize: 12, color: "var(--ink-soft)", padding: "6px 10px", whiteSpace: "nowrap" };
 
   return (
     <div className="flex flex-col gap-3">
@@ -4392,38 +4386,33 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
           </span>
         </div>
 
-        <div className="px-4 py-2">
-          <Row label="Plan type">
-            <select className="sw-input sw-focus" style={{ maxWidth: 180 }} value={f.plan_kind} onChange={(e) => setF((p) => ({ ...p, plan_kind: e.target.value }))}>
-              <option value="closer">Closer</option>
-              <option value="lead_gen">Lead Gen</option>
-              <option value="other">Other</option>
-            </select>
-          </Row>
-          <Row label="In force from">
-            <div className="flex items-center gap-2 flex-wrap">
-              <input type="date" className="sw-input sw-focus" style={{ maxWidth: 160 }} value={f.effective_from || ""}
-                onChange={(e) => setF((p) => ({ ...p, effective_from: e.target.value }))} />
-              <span className="text-xs" style={{ color: "var(--ink-faint)" }}>until</span>
-              <input type="date" className="sw-input sw-focus" style={{ maxWidth: 160 }} value={f.effective_to || ""}
-                onChange={(e) => setF((p) => ({ ...p, effective_to: e.target.value }))} />
-              <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{f.effective_to ? "" : "leave blank while current"}</span>
-            </div>
-          </Row>
-          <Row label="Notes">
-            <input className="sw-input sw-focus" value={f.description} placeholder="What this plan is for"
-              onChange={(e) => setF((p) => ({ ...p, description: e.target.value }))} />
-          </Row>
-          <Row label="Headline GP target">{moneyField("target_gp")}</Row>
-          <Row label="Cloud SOV target">{moneyField("target_cloud_sov")}</Row>
-          <Row label="Connectivity SOV target">{moneyField("target_connectivity_sov")}</Row>
-          <Row label="Mobile SOV target">{moneyField("target_mobile_sov")}</Row>
-          <Row label="Active">
-            <label className="flex items-center gap-2 text-xs" style={{ color: "var(--ink-soft)" }}>
-              <input type="checkbox" checked={f.active} onChange={(e) => setF((p) => ({ ...p, active: e.target.checked }))} />
-              Available to assign, and counted in KPI targets
-            </label>
-          </Row>
+        <div className="px-4 py-2" style={{ display: "grid", gridTemplateColumns: "150px 1fr", gap: "0.5rem 0.75rem", alignItems: "center" }}>
+          <label className="text-xs" style={{ color: "var(--ink-faint)" }}>Plan type</label>
+          <select className="sw-input sw-focus" style={{ maxWidth: 180 }} value={f.plan_kind} onChange={(e) => setF((p) => ({ ...p, plan_kind: e.target.value }))}>
+            <option value="closer">Closer</option>
+            <option value="lead_gen">Lead Gen</option>
+            <option value="other">Other</option>
+          </select>
+
+          <label className="text-xs" style={{ color: "var(--ink-faint)" }}>In force from</label>
+          <div className="flex items-center gap-2 flex-wrap">
+            <input type="date" className="sw-input sw-focus" style={{ maxWidth: 160 }} value={f.effective_from || ""}
+              onChange={(e) => setF((p) => ({ ...p, effective_from: e.target.value }))} />
+            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>until</span>
+            <input type="date" className="sw-input sw-focus" style={{ maxWidth: 160 }} value={f.effective_to || ""}
+              onChange={(e) => setF((p) => ({ ...p, effective_to: e.target.value }))} />
+            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{f.effective_to ? "" : "blank while current"}</span>
+          </div>
+
+          <label className="text-xs" style={{ color: "var(--ink-faint)" }}>Notes</label>
+          <input className="sw-input sw-focus" value={f.description} placeholder="What this plan is for"
+            onChange={(e) => setF((p) => ({ ...p, description: e.target.value }))} />
+
+          <label className="text-xs" style={{ color: "var(--ink-faint)" }}>Active</label>
+          <label className="flex items-center gap-2 text-xs" style={{ color: "var(--ink-soft)" }}>
+            <input type="checkbox" checked={f.active} onChange={(e) => setF((p) => ({ ...p, active: e.target.checked }))} />
+            Available to assign, and counted in KPI targets
+          </label>
         </div>
 
         <div className="flex items-center gap-2 px-4 py-3" style={{ borderTop: "1px solid var(--border)", background: "var(--surface-alt)" }}>
@@ -4433,10 +4422,7 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
               await onSave(plan.id, {
                 name: f.name, plan_kind: f.plan_kind, description: f.description,
                 effective_from: f.effective_from || null, effective_to: f.effective_to || null,
-                target_gp: parseFloat(f.target_gp) || 0,
-                target_cloud_sov: parseFloat(f.target_cloud_sov) || 0,
-                target_connectivity_sov: parseFloat(f.target_connectivity_sov) || 0,
-                target_mobile_sov: parseFloat(f.target_mobile_sov) || 0, active: f.active,
+                active: f.active,
               });
               setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 1600);
             }}
@@ -4451,31 +4437,26 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
         </div>
       </div>
 
-      {/* KPIs this plan is judged on */}
-      <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>KPIs on this plan</span>
-          <button onClick={() => setAddingMetric((v) => !v)} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>
-            {addingMetric ? "Cancel" : "+ Add KPI"}
-          </button>
-        </div>
-
-        <div className="flex gap-1.5 flex-wrap">
-          {planMetrics.map((m) => (
-            <span key={m.id} className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs"
-              style={{ background: "var(--surface-alt)", color: "var(--ink-soft)" }}>
-              {m.label} <span style={{ color: "var(--ink-faint)", fontSize: 10 }}>{m.unit}</span>
-              <button onClick={() => onDeleteMetric(m.id)} className="sw-focus" style={{ color: "var(--red)" }}>✕</button>
-            </span>
-          ))}
-          {planMetrics.length === 0 && (
-            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>None yet — tiers will be judged on GP alone.</span>
-          )}
+      {/* Tier matrix — tiers across, targets down */}
+      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="flex items-center justify-between px-4 py-2.5" style={{ borderBottom: "1px solid var(--border)" }}>
+          <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>
+            Tiers &amp; targets
+          </span>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setAddingMetric((v) => !v)} className="sw-focus text-xs font-semibold" style={{ color: "var(--ink-soft)" }}>
+              {addingMetric ? "Cancel" : "+ Add KPI row"}
+            </button>
+            <button onClick={() => onAddTier(plan.id)} className="sw-focus text-xs font-semibold px-2.5 py-1 rounded-lg"
+              style={{ background: "var(--primary)", color: "#fff" }}>
+              + Add tier
+            </button>
+          </div>
         </div>
 
         {addingMetric && (
-          <div className="flex items-end gap-2 mt-3 flex-wrap">
-            <select className="sw-input sw-focus" style={{ width: 190 }} value=""
+          <div className="flex items-end gap-2 px-4 py-2.5 flex-wrap" style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
+            <select className="sw-input sw-focus" style={{ width: 180 }} value=""
               onChange={(e) => {
                 const p = METRIC_PRESETS.find((x) => x.key === e.target.value);
                 if (p) setNewMetric({ key: p.key, label: p.label, unit: p.unit });
@@ -4483,7 +4464,7 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
               <option value="">Pick a common KPI…</option>
               {METRIC_PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
             </select>
-            <input className="sw-input sw-focus" style={{ width: 150 }} placeholder="Label" value={newMetric.label}
+            <input className="sw-input sw-focus" style={{ width: 150 }} placeholder="Row label" value={newMetric.label}
               onChange={(e) => setNewMetric((p) => ({ ...p, label: e.target.value }))} />
             <input className="sw-input sw-focus" style={{ width: 130 }} placeholder="key_name" value={newMetric.key}
               onChange={(e) => setNewMetric((p) => ({ ...p, key: e.target.value.replace(/\s+/g, "_").toLowerCase() }))} />
@@ -4494,43 +4475,104 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
             <button disabled={!newMetric.key || !newMetric.label}
               onClick={async () => { await onAddMetric(plan.id, newMetric.key, newMetric.label, newMetric.unit); setNewMetric({ key: "", label: "", unit: "money" }); setAddingMetric(false); }}
               className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg"
-              style={{ background: newMetric.key && newMetric.label ? "var(--primary)" : "var(--surface-alt)", color: newMetric.key && newMetric.label ? "#fff" : "var(--ink-faint)" }}>
-              Add
+              style={{ background: newMetric.key && newMetric.label ? "var(--primary)" : "var(--surface)", color: newMetric.key && newMetric.label ? "#fff" : "var(--ink-faint)" }}>
+              Add row
             </button>
           </div>
         )}
-      </div>
 
-      {/* The bands */}
-      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-        <div className="flex items-center justify-between px-4 py-2.5" style={{ borderBottom: "1px solid var(--border)" }}>
-          <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Commission tiers</span>
-          <button onClick={() => onAddTier(plan.id)} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>+ Add tier</button>
-        </div>
-        <div style={{ overflowX: "auto" }}>
-          <table className="w-full" style={{ borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ background: "var(--surface-alt)" }}>
-                {["Tier", "GP band", ...planMetrics.map((m) => m.label), "Payment", ""].map((h, i) => (
-                  <th key={i} className="text-left px-2 py-2 text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)", whiteSpace: "nowrap" }}>{h}</th>
+        {planTiers.length === 0 ? (
+          <div className="px-4 py-10 text-center text-xs" style={{ color: "var(--ink-faint)" }}>
+            No tiers yet. Add one to start banding this plan — an agent with no tiers simply isn't measured
+            against commission, which is a valid state.
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ borderCollapse: "collapse", width: "100%" }}>
+              <tbody>
+                {/* Tier names */}
+                <tr style={{ background: "var(--surface-alt)" }}>
+                  <td style={{ ...labelCell, fontWeight: 600, minWidth: 190 }}>Tier</td>
+                  {planTiers.map((t) => (
+                    <td key={t.id} style={{ padding: "6px", minWidth: 130 }}><TierName tier={t} /></td>
+                  ))}
+                  <td style={{ width: 40 }} />
+                </tr>
+
+                {/* Commission — the headline, so it sits first */}
+                <tr style={{ borderTop: "1px solid var(--border)", background: "var(--green-soft)" }}>
+                  <td style={{ ...labelCell, fontWeight: 600, color: "var(--green)" }}>
+                    Commission rate
+                    <div style={{ fontSize: 10, fontWeight: 400, color: "var(--ink-faint)" }}>% of statted GP</div>
+                  </td>
+                  {planTiers.map((t) => (
+                    <td key={t.id} style={{ padding: "6px" }}><Cell tier={t} field="payment_pct" unit="percent" placeholder="0" /></td>
+                  ))}
+                  <td />
+                </tr>
+
+                {/* GP entry threshold */}
+                <tr style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={{ ...labelCell, fontWeight: 600 }}>
+                    GP from
+                    <div style={{ fontSize: 10, fontWeight: 400, color: "var(--ink-faint)" }}>tier applies at or above</div>
+                  </td>
+                  {planTiers.map((t) => (
+                    <td key={t.id} style={{ padding: "6px" }}><Cell tier={t} field="gp_min" unit="money" placeholder="0" /></td>
+                  ))}
+                  <td />
+                </tr>
+                <tr style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={{ ...labelCell }}>
+                    GP to
+                    <div style={{ fontSize: 10, color: "var(--ink-faint)" }}>blank = no upper limit</div>
+                  </td>
+                  {planTiers.map((t) => (
+                    <td key={t.id} style={{ padding: "6px" }}><Cell tier={t} field="gp_max" unit="money" placeholder="no cap" /></td>
+                  ))}
+                  <td />
+                </tr>
+
+                {/* One row per KPI the plan declares */}
+                {planMetrics.map((m) => (
+                  <tr key={m.id} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={labelCell}>
+                      <div className="flex items-center gap-1.5">
+                        <span>{m.label}</span>
+                        <button onClick={() => onDeleteMetric(m.id)} className="sw-focus" style={{ color: "var(--red)", fontSize: 11 }} title="Remove this KPI row">✕</button>
+                      </div>
+                      <div style={{ fontSize: 10, color: "var(--ink-faint)" }}>blank = not required</div>
+                    </td>
+                    {planTiers.map((t) => (
+                      <td key={t.id} style={{ padding: "6px" }}>
+                        <Cell tier={t} metricKey={m.key} unit={m.unit} placeholder="—" />
+                      </td>
+                    ))}
+                    <td />
+                  </tr>
                 ))}
-              </tr>
-            </thead>
-            <tbody>
-              {planTiers.map((t) => (
-                <TierRow key={t.id} tier={t} metrics={planMetrics} onSave={onSaveTier} onDelete={onDeleteTier} />
-              ))}
-              {planTiers.length === 0 && (
-                <tr><td colSpan={3 + planMetrics.length} className="px-4 py-8 text-center text-xs" style={{ color: "var(--ink-faint)" }}>
-                  No tiers yet. Add one to start banding this plan.
-                </td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+
+                {/* Remove a tier */}
+                <tr style={{ borderTop: "1px solid var(--border)", background: "var(--surface-alt)" }}>
+                  <td style={{ ...labelCell, color: "var(--ink-faint)" }}>Remove</td>
+                  {planTiers.map((t) => (
+                    <td key={t.id} style={{ padding: "6px", textAlign: "center" }}>
+                      <button onClick={() => onDeleteTier(t.id)} className="sw-focus text-xs font-semibold px-2 py-1 rounded-lg"
+                        style={{ color: "var(--red)", border: "1px solid var(--border)", background: "var(--surface)" }}>
+                        Remove tier
+                      </button>
+                    </td>
+                  ))}
+                  <td />
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        )}
+
         <p className="text-xs px-4 py-2.5" style={{ color: "var(--ink-faint)", borderTop: "1px solid var(--border)" }}>
-          A tier pays out when GP lands inside its band <b>and</b> every KPI on that row is met. Leave a KPI
-          blank on a row if that tier doesn't gate on it. Leave the upper GP figure blank for an open-ended top band.
+          A tier pays out when statted GP lands in its band <b>and</b> every KPI below it is met. The commission
+          rate is the percentage of statted GP earned at that tier. Edits save as you leave each box.
         </p>
       </div>
     </div>
