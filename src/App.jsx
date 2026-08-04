@@ -1458,35 +1458,14 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, planTiers
     }
     if (agentFilter !== "All") people = people.filter((s) => s.full_name === agentFilter);
 
-    // Targets come from the plan's tiers where they exist — specifically
-    // the tier labelled "Target", or the middle band if none is. That keeps
-    // the KPI cards in step with the commission table without a second set
-    // of numbers to maintain. Plans with no tiers fall back to their own
-    // columns, so older plans keep working.
-    const headlineTier = (planId) => {
-      const ts = (planTiers || []).filter((t) => t.plan_id === planId)
-        .sort((a, b) => num(a.gp_min) - num(b.gp_min));
-      if (!ts.length) return null;
-      return ts.find((t) => /target/i.test(String(t.label || ""))) || ts[Math.floor(ts.length / 2)];
-    };
-
     const monthly = { gp: 0, cloud: 0, conn: 0, mobile: 0 };
     people.forEach((s) => {
       const p = planById[s.pay_plan_id];
       if (!p || p.active === false) return;
-      const tier = headlineTier(p.id);
-      if (tier) {
-        const th = tier.thresholds || {};
-        monthly.gp += num(tier.gp_min);
-        monthly.cloud += num(th.cloud_sov);
-        monthly.conn += num(th.connectivity_sov);
-        monthly.mobile += num(th.mobile_sov);
-      } else {
-        monthly.gp += num(p.target_gp);
-        monthly.cloud += num(p.target_cloud_sov);
-        monthly.conn += num(p.target_connectivity_sov);
-        monthly.mobile += num(p.target_mobile_sov);
-      }
+      monthly.gp += num(p.target_gp);
+      monthly.cloud += num(p.target_cloud_sov);
+      monthly.conn += num(p.target_connectivity_sov);
+      monthly.mobile += num(p.target_mobile_sov);
     });
 
     return {
@@ -1657,21 +1636,10 @@ function DashboardView({ orders, netsuite, forecasts, staff, payPlans, planTiers
       if (n.referrer_name) statted[n.referrer_name] = (statted[n.referrer_name] || 0) + num(n.referrer_gp);
     });
 
-    // Same tier-derived target the KPI cards use, so a person's bar and the
-    // headline agree.
-    const tierGp = (planId) => {
-      const ts = (planTiers || []).filter((t) => t.plan_id === planId)
-        .sort((a, b) => num(a.gp_min) - num(b.gp_min));
-      if (!ts.length) return null;
-      const t = ts.find((x) => /target/i.test(String(x.label || ""))) || ts[Math.floor(ts.length / 2)];
-      return num(t.gp_min);
-    };
-
     const rows = people.map((s) => {
       const plan = s.pay_plan_id ? planById[s.pay_plan_id] : null;
       const hasPlan = !!(plan && plan.active !== false);
-      const fromTier = hasPlan ? tierGp(plan.id) : null;
-      const monthly = hasPlan ? (fromTier != null ? fromTier : num(plan.target_gp)) : 0;
+      const monthly = hasPlan ? num(plan.target_gp) : 0;
       return {
         name: s.full_name,
         team: s.team,
@@ -2479,6 +2447,7 @@ function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove }) 
     ["CUG", order.cug], ["Partner", order.partner], ["Partner Role", order.partner_role],
     ["Quantity", order.quantity], ["Admin Agent", order.admin_agent], ["Schedule 5", order.schedule_5],
     ["Document No.", order.document_number], ["Campaign Source", order.campaign_source],
+    ["Allocated to", order.allocated_to_name], ["Delivery", order.delivery_status],
     ["Product Group", order.product_group_2],
     ["Closer", order.closer_name ? `${order.closer_name}${order.closer_team ? ` (${order.closer_team})` : ""}` : null],
     ["Lead Gen", order.lead_gen_name ? `${order.lead_gen_name}${order.lead_gen_team ? ` (${order.lead_gen_team})` : ""}` : null],
@@ -2589,6 +2558,28 @@ function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove }) 
             </div>
           );
         })()}
+
+        {/* Google Drive folder — where the PDF of the Lilac Box and any
+            supporting documents live. */}
+        <div className="rounded-xl mb-4 p-3" style={{ background: "var(--surface-alt)", border: "1px solid var(--border)" }}>
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)", letterSpacing: "0.04em" }}>Documents</span>
+            {order.drive_link && (
+              <a href={order.drive_link} target="_blank" rel="noreferrer" className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>
+                Open in Drive ↗
+              </a>
+            )}
+          </div>
+          {canEdit ? (
+            <input className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }}
+              defaultValue={order.drive_link || ""} placeholder="Paste the Google Drive folder link"
+              onBlur={(e) => { if (e.target.value !== (order.drive_link || "")) onSave(order.id, { drive_link: e.target.value || null }); }} />
+          ) : (
+            <div className="text-xs" style={{ color: order.drive_link ? "var(--ink-soft)" : "var(--ink-faint)" }}>
+              {order.drive_link || "No folder linked yet"}
+            </div>
+          )}
+        </div>
 
         <h4 className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--ink-soft)" }}>Order Details</h4>
         <div className="rounded-xl overflow-hidden mb-4" style={{ border: "1px solid var(--border)" }}>
@@ -4308,12 +4299,19 @@ function DayByDayView({ orders, staff }) {
 /* Pay plan editor. Tiers run as COLUMNS across the targets, so it reads
    like the commission table it came from: each tier is a band with its own
    GP and KPI thresholds, and the commission rate applied to statted GP. */
+/* Pay plan editor. The plan's own targets sit in the left column exactly
+   as before; commission tiers are added as extra columns beside them, each
+   with its own thresholds and a commission rate applied to statted GP. */
 function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
                       onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric }) {
   const [f, setF] = useState({
     name: plan.name || "", plan_kind: plan.plan_kind || "closer",
     description: plan.description || "",
     effective_from: plan.effective_from || "", effective_to: plan.effective_to || "",
+    target_gp: plan.target_gp ?? 0,
+    target_cloud_sov: plan.target_cloud_sov ?? 0,
+    target_connectivity_sov: plan.target_connectivity_sov ?? 0,
+    target_mobile_sov: plan.target_mobile_sov ?? 0,
     active: plan.active !== false,
   });
   const [saving, setSaving] = useState(false);
@@ -4328,15 +4326,11 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
     [tiers, plan.id]
   );
 
-  /* Each cell edits one tier. Saved on blur so tabbing across a row works
-     without a save button per box. */
-  const Cell = ({ tier, field, metricKey, unit, placeholder }) => {
-    const current = metricKey
-      ? (tier.thresholds || {})[metricKey] ?? ""
-      : tier[field] ?? "";
+  /* A tier cell. Saves on blur so you can tab across a row. */
+  const TierCell = ({ tier, field, metricKey, unit, placeholder }) => {
+    const current = metricKey ? (tier.thresholds || {})[metricKey] ?? "" : tier[field] ?? "";
     const [v, setV] = useState(String(current));
     useEffect(() => { setV(String(current)); }, [current]);
-
     const commit = () => {
       if (String(v) === String(current)) return;
       if (metricKey) {
@@ -4347,14 +4341,13 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
         onSaveTier(tier.id, { [field]: v === "" ? (field === "gp_max" ? null : 0) : parseFloat(v) || 0 });
       }
     };
-
     return (
       <div className="relative">
         {unit === "money" && <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs" style={{ color: "var(--ink-faint)" }}>£</span>}
         <input className="sw-input sw-focus" value={v} placeholder={placeholder}
           onChange={(e) => setV(e.target.value)} onBlur={commit}
           onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
-          style={{ height: 30, fontSize: 12.5, textAlign: "center", paddingLeft: unit === "money" ? 16 : 6, paddingRight: unit === "percent" ? 16 : 6 }} />
+          style={{ height: 32, fontSize: 12.5, paddingLeft: unit === "money" ? 17 : 8, paddingRight: unit === "percent" ? 17 : 8 }} />
         {unit === "percent" && <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs" style={{ color: "var(--ink-faint)" }}>%</span>}
       </div>
     );
@@ -4367,16 +4360,25 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
       <input className="sw-input sw-focus" value={v} placeholder="Tier name"
         onChange={(e) => setV(e.target.value)}
         onBlur={() => { if (v !== (tier.label || "")) onSaveTier(tier.id, { label: v }); }}
-        style={{ height: 30, fontSize: 12.5, fontWeight: 600, textAlign: "center" }} />
+        style={{ height: 30, fontSize: 12, fontWeight: 600, textAlign: "center" }} />
     );
   };
 
-  const labelCell = { fontSize: 12, color: "var(--ink-soft)", padding: "6px 10px", whiteSpace: "nowrap" };
+  // Base column input — the plan's own target, unchanged from before
+  const baseField = (key) => (
+    <div className="relative">
+      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs" style={{ color: "var(--ink-faint)" }}>£</span>
+      <input className="sw-input sw-focus" style={{ height: 32, paddingLeft: 17, fontSize: 12.5 }}
+        value={f[key]} onChange={(e) => setF((p) => ({ ...p, [key]: e.target.value }))} />
+    </div>
+  );
+
+  const cols = `170px 150px repeat(${planTiers.length}, minmax(110px, 1fr)) 30px`;
+  const lbl = { fontSize: 12, color: "var(--ink-soft)", display: "flex", alignItems: "center" };
 
   return (
     <div className="flex flex-col gap-3">
 
-      {/* Plan header */}
       <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="flex items-center justify-between px-4 py-3 gap-2" style={{ borderBottom: "1px solid var(--border)" }}>
           <input className="sw-input sw-focus" style={{ fontWeight: 600, fontSize: 14, maxWidth: 300 }}
@@ -4386,15 +4388,16 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
           </span>
         </div>
 
-        <div className="px-4 py-2" style={{ display: "grid", gridTemplateColumns: "150px 1fr", gap: "0.5rem 0.75rem", alignItems: "center" }}>
-          <label className="text-xs" style={{ color: "var(--ink-faint)" }}>Plan type</label>
+        {/* Plan settings — unchanged */}
+        <div className="px-4 py-3" style={{ display: "grid", gridTemplateColumns: "170px 1fr", gap: "0.5rem 0.75rem", alignItems: "center" }}>
+          <label style={lbl}>Plan type</label>
           <select className="sw-input sw-focus" style={{ maxWidth: 180 }} value={f.plan_kind} onChange={(e) => setF((p) => ({ ...p, plan_kind: e.target.value }))}>
             <option value="closer">Closer</option>
             <option value="lead_gen">Lead Gen</option>
             <option value="other">Other</option>
           </select>
 
-          <label className="text-xs" style={{ color: "var(--ink-faint)" }}>In force from</label>
+          <label style={lbl}>In force from</label>
           <div className="flex items-center gap-2 flex-wrap">
             <input type="date" className="sw-input sw-focus" style={{ maxWidth: 160 }} value={f.effective_from || ""}
               onChange={(e) => setF((p) => ({ ...p, effective_from: e.target.value }))} />
@@ -4404,24 +4407,140 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
             <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{f.effective_to ? "" : "blank while current"}</span>
           </div>
 
-          <label className="text-xs" style={{ color: "var(--ink-faint)" }}>Notes</label>
+          <label style={lbl}>Notes</label>
           <input className="sw-input sw-focus" value={f.description} placeholder="What this plan is for"
             onChange={(e) => setF((p) => ({ ...p, description: e.target.value }))} />
+        </div>
 
-          <label className="text-xs" style={{ color: "var(--ink-faint)" }}>Active</label>
-          <label className="flex items-center gap-2 text-xs" style={{ color: "var(--ink-soft)" }}>
-            <input type="checkbox" checked={f.active} onChange={(e) => setF((p) => ({ ...p, active: e.target.checked }))} />
-            Available to assign, and counted in KPI targets
-          </label>
+        {/* Targets, with tiers as extra columns beside them */}
+        <div className="px-4 pb-3" style={{ overflowX: "auto" }}>
+          <div style={{ display: "grid", gridTemplateColumns: cols, gap: "0.5rem", alignItems: "center", minWidth: 460 }}>
+
+            {/* Header */}
+            <div />
+            <div className="text-xs font-semibold uppercase text-center" style={{ color: "var(--ink-faint)", letterSpacing: "0.03em" }}>Plan target</div>
+            {planTiers.map((t) => <TierName key={t.id} tier={t} />)}
+            <button onClick={() => onAddTier(plan.id)} title="Add a tier"
+              className="sw-focus rounded-lg text-sm font-bold"
+              style={{ height: 30, background: "var(--primary-soft)", color: "var(--primary)" }}>+</button>
+
+            {/* Commission — tiers only; the base column has no rate */}
+            <label style={{ ...lbl, fontWeight: 600, color: "var(--green)" }}>Commission rate</label>
+            <div className="text-xs text-center" style={{ color: "var(--ink-faint)" }}>—</div>
+            {planTiers.map((t) => (
+              <TierCell key={t.id} tier={t} field="payment_pct" unit="percent" placeholder="0" />
+            ))}
+            <div />
+
+            {/* GP */}
+            <label style={{ ...lbl, fontWeight: 600 }}>Headline GP target</label>
+            {baseField("target_gp")}
+            {planTiers.map((t) => <TierCell key={t.id} tier={t} field="gp_min" unit="money" placeholder="from" />)}
+            <div />
+
+            <label style={{ ...lbl, color: "var(--ink-faint)" }}>GP upper limit</label>
+            <div className="text-xs text-center" style={{ color: "var(--ink-faint)" }}>—</div>
+            {planTiers.map((t) => <TierCell key={t.id} tier={t} field="gp_max" unit="money" placeholder="no cap" />)}
+            <div />
+
+            {/* Fixed product targets */}
+            <label style={lbl}>Cloud SOV target</label>
+            {baseField("target_cloud_sov")}
+            {planTiers.map((t) => <TierCell key={t.id} tier={t} metricKey="cloud_sov" unit="money" placeholder="—" />)}
+            <div />
+
+            <label style={lbl}>Connectivity SOV target</label>
+            {baseField("target_connectivity_sov")}
+            {planTiers.map((t) => <TierCell key={t.id} tier={t} metricKey="connectivity_sov" unit="money" placeholder="—" />)}
+            <div />
+
+            <label style={lbl}>Mobile SOV target</label>
+            {baseField("target_mobile_sov")}
+            {planTiers.map((t) => <TierCell key={t.id} tier={t} metricKey="mobile_sov" unit="money" placeholder="—" />)}
+            <div />
+
+            {/* Any extra KPIs this plan declares */}
+            {planMetrics.filter((m) => !["cloud_sov", "connectivity_sov", "mobile_sov"].includes(m.key)).map((m) => (
+              <React.Fragment key={m.id}>
+                <label style={lbl}>
+                  {m.label}
+                  <button onClick={() => onDeleteMetric(m.id)} className="sw-focus ml-1.5" style={{ color: "var(--red)", fontSize: 11 }} title="Remove this KPI">✕</button>
+                </label>
+                <div className="text-xs text-center" style={{ color: "var(--ink-faint)" }}>—</div>
+                {planTiers.map((t) => <TierCell key={t.id} tier={t} metricKey={m.key} unit={m.unit} placeholder="—" />)}
+                <div />
+              </React.Fragment>
+            ))}
+
+            {/* Remove tier */}
+            {planTiers.length > 0 && (
+              <>
+                <div />
+                <div />
+                {planTiers.map((t) => (
+                  <button key={t.id} onClick={() => onDeleteTier(t.id)}
+                    className="sw-focus text-xs rounded-lg" style={{ height: 26, color: "var(--red)", border: "1px solid var(--border)", background: "var(--surface)" }}>
+                    Remove
+                  </button>
+                ))}
+                <div />
+              </>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 mt-3">
+            <button onClick={() => setAddingMetric((v) => !v)} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>
+              {addingMetric ? "Cancel" : "+ Add KPI row"}
+            </button>
+            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+              Blank in a tier column means that tier doesn't require it.
+            </span>
+          </div>
+
+          {addingMetric && (
+            <div className="flex items-end gap-2 mt-2 flex-wrap">
+              <select className="sw-input sw-focus" style={{ width: 180 }} value=""
+                onChange={(e) => {
+                  const p = METRIC_PRESETS.find((x) => x.key === e.target.value);
+                  if (p) setNewMetric({ key: p.key, label: p.label, unit: p.unit });
+                }}>
+                <option value="">Pick a common KPI…</option>
+                {METRIC_PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+              </select>
+              <input className="sw-input sw-focus" style={{ width: 150 }} placeholder="Row label" value={newMetric.label}
+                onChange={(e) => setNewMetric((p) => ({ ...p, label: e.target.value }))} />
+              <input className="sw-input sw-focus" style={{ width: 130 }} placeholder="key_name" value={newMetric.key}
+                onChange={(e) => setNewMetric((p) => ({ ...p, key: e.target.value.replace(/\s+/g, "_").toLowerCase() }))} />
+              <select className="sw-input sw-focus" style={{ width: 110 }} value={newMetric.unit}
+                onChange={(e) => setNewMetric((p) => ({ ...p, unit: e.target.value }))}>
+                {METRIC_UNITS.map((u) => <option key={u} value={u}>{u}</option>)}
+              </select>
+              <button disabled={!newMetric.key || !newMetric.label}
+                onClick={async () => { await onAddMetric(plan.id, newMetric.key, newMetric.label, newMetric.unit); setNewMetric({ key: "", label: "", unit: "money" }); setAddingMetric(false); }}
+                className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg"
+                style={{ background: newMetric.key && newMetric.label ? "var(--primary)" : "var(--surface)", color: newMetric.key && newMetric.label ? "#fff" : "var(--ink-faint)" }}>
+                Add row
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2 px-4 py-3" style={{ borderTop: "1px solid var(--border)", background: "var(--surface-alt)" }}>
+          <label className="flex items-center gap-2 text-xs mr-auto" style={{ color: "var(--ink-soft)" }}>
+            <input type="checkbox" checked={f.active} onChange={(e) => setF((p) => ({ ...p, active: e.target.checked }))} />
+            Active — available to assign
+          </label>
+          {saved && <span className="text-xs" style={{ color: "var(--green)" }}>Saved</span>}
           <button disabled={!dirty || saving}
             onClick={async () => {
               setSaving(true);
               await onSave(plan.id, {
                 name: f.name, plan_kind: f.plan_kind, description: f.description,
                 effective_from: f.effective_from || null, effective_to: f.effective_to || null,
+                target_gp: parseFloat(f.target_gp) || 0,
+                target_cloud_sov: parseFloat(f.target_cloud_sov) || 0,
+                target_connectivity_sov: parseFloat(f.target_connectivity_sov) || 0,
+                target_mobile_sov: parseFloat(f.target_mobile_sov) || 0,
                 active: f.active,
               });
               setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 1600);
@@ -4430,150 +4549,10 @@ function PayPlanForm({ plan, agentCount, tiers, metrics, onSave, onDelete,
             style={{ background: dirty ? "var(--primary)" : "var(--surface)", color: dirty ? "#fff" : "var(--ink-faint)", border: "1px solid var(--border)" }}>
             {saving ? "Saving..." : "Save plan"}
           </button>
-          {saved && <span className="text-xs" style={{ color: "var(--green)" }}>Saved</span>}
           {agentCount === 0 && (
-            <button onClick={() => onDelete(plan.id, plan.name)} className="sw-focus text-xs ml-auto" style={{ color: "var(--red)" }}>Delete plan</button>
+            <button onClick={() => onDelete(plan.id, plan.name)} className="sw-focus text-xs" style={{ color: "var(--red)" }}>Delete</button>
           )}
         </div>
-      </div>
-
-      {/* Tier matrix — tiers across, targets down */}
-      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-        <div className="flex items-center justify-between px-4 py-2.5" style={{ borderBottom: "1px solid var(--border)" }}>
-          <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>
-            Tiers &amp; targets
-          </span>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setAddingMetric((v) => !v)} className="sw-focus text-xs font-semibold" style={{ color: "var(--ink-soft)" }}>
-              {addingMetric ? "Cancel" : "+ Add KPI row"}
-            </button>
-            <button onClick={() => onAddTier(plan.id)} className="sw-focus text-xs font-semibold px-2.5 py-1 rounded-lg"
-              style={{ background: "var(--primary)", color: "#fff" }}>
-              + Add tier
-            </button>
-          </div>
-        </div>
-
-        {addingMetric && (
-          <div className="flex items-end gap-2 px-4 py-2.5 flex-wrap" style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
-            <select className="sw-input sw-focus" style={{ width: 180 }} value=""
-              onChange={(e) => {
-                const p = METRIC_PRESETS.find((x) => x.key === e.target.value);
-                if (p) setNewMetric({ key: p.key, label: p.label, unit: p.unit });
-              }}>
-              <option value="">Pick a common KPI…</option>
-              {METRIC_PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
-            </select>
-            <input className="sw-input sw-focus" style={{ width: 150 }} placeholder="Row label" value={newMetric.label}
-              onChange={(e) => setNewMetric((p) => ({ ...p, label: e.target.value }))} />
-            <input className="sw-input sw-focus" style={{ width: 130 }} placeholder="key_name" value={newMetric.key}
-              onChange={(e) => setNewMetric((p) => ({ ...p, key: e.target.value.replace(/\s+/g, "_").toLowerCase() }))} />
-            <select className="sw-input sw-focus" style={{ width: 110 }} value={newMetric.unit}
-              onChange={(e) => setNewMetric((p) => ({ ...p, unit: e.target.value }))}>
-              {METRIC_UNITS.map((u) => <option key={u} value={u}>{u}</option>)}
-            </select>
-            <button disabled={!newMetric.key || !newMetric.label}
-              onClick={async () => { await onAddMetric(plan.id, newMetric.key, newMetric.label, newMetric.unit); setNewMetric({ key: "", label: "", unit: "money" }); setAddingMetric(false); }}
-              className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg"
-              style={{ background: newMetric.key && newMetric.label ? "var(--primary)" : "var(--surface)", color: newMetric.key && newMetric.label ? "#fff" : "var(--ink-faint)" }}>
-              Add row
-            </button>
-          </div>
-        )}
-
-        {planTiers.length === 0 ? (
-          <div className="px-4 py-10 text-center text-xs" style={{ color: "var(--ink-faint)" }}>
-            No tiers yet. Add one to start banding this plan — an agent with no tiers simply isn't measured
-            against commission, which is a valid state.
-          </div>
-        ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ borderCollapse: "collapse", width: "100%" }}>
-              <tbody>
-                {/* Tier names */}
-                <tr style={{ background: "var(--surface-alt)" }}>
-                  <td style={{ ...labelCell, fontWeight: 600, minWidth: 190 }}>Tier</td>
-                  {planTiers.map((t) => (
-                    <td key={t.id} style={{ padding: "6px", minWidth: 130 }}><TierName tier={t} /></td>
-                  ))}
-                  <td style={{ width: 40 }} />
-                </tr>
-
-                {/* Commission — the headline, so it sits first */}
-                <tr style={{ borderTop: "1px solid var(--border)", background: "var(--green-soft)" }}>
-                  <td style={{ ...labelCell, fontWeight: 600, color: "var(--green)" }}>
-                    Commission rate
-                    <div style={{ fontSize: 10, fontWeight: 400, color: "var(--ink-faint)" }}>% of statted GP</div>
-                  </td>
-                  {planTiers.map((t) => (
-                    <td key={t.id} style={{ padding: "6px" }}><Cell tier={t} field="payment_pct" unit="percent" placeholder="0" /></td>
-                  ))}
-                  <td />
-                </tr>
-
-                {/* GP entry threshold */}
-                <tr style={{ borderTop: "1px solid var(--border)" }}>
-                  <td style={{ ...labelCell, fontWeight: 600 }}>
-                    GP from
-                    <div style={{ fontSize: 10, fontWeight: 400, color: "var(--ink-faint)" }}>tier applies at or above</div>
-                  </td>
-                  {planTiers.map((t) => (
-                    <td key={t.id} style={{ padding: "6px" }}><Cell tier={t} field="gp_min" unit="money" placeholder="0" /></td>
-                  ))}
-                  <td />
-                </tr>
-                <tr style={{ borderTop: "1px solid var(--border)" }}>
-                  <td style={{ ...labelCell }}>
-                    GP to
-                    <div style={{ fontSize: 10, color: "var(--ink-faint)" }}>blank = no upper limit</div>
-                  </td>
-                  {planTiers.map((t) => (
-                    <td key={t.id} style={{ padding: "6px" }}><Cell tier={t} field="gp_max" unit="money" placeholder="no cap" /></td>
-                  ))}
-                  <td />
-                </tr>
-
-                {/* One row per KPI the plan declares */}
-                {planMetrics.map((m) => (
-                  <tr key={m.id} style={{ borderTop: "1px solid var(--border)" }}>
-                    <td style={labelCell}>
-                      <div className="flex items-center gap-1.5">
-                        <span>{m.label}</span>
-                        <button onClick={() => onDeleteMetric(m.id)} className="sw-focus" style={{ color: "var(--red)", fontSize: 11 }} title="Remove this KPI row">✕</button>
-                      </div>
-                      <div style={{ fontSize: 10, color: "var(--ink-faint)" }}>blank = not required</div>
-                    </td>
-                    {planTiers.map((t) => (
-                      <td key={t.id} style={{ padding: "6px" }}>
-                        <Cell tier={t} metricKey={m.key} unit={m.unit} placeholder="—" />
-                      </td>
-                    ))}
-                    <td />
-                  </tr>
-                ))}
-
-                {/* Remove a tier */}
-                <tr style={{ borderTop: "1px solid var(--border)", background: "var(--surface-alt)" }}>
-                  <td style={{ ...labelCell, color: "var(--ink-faint)" }}>Remove</td>
-                  {planTiers.map((t) => (
-                    <td key={t.id} style={{ padding: "6px", textAlign: "center" }}>
-                      <button onClick={() => onDeleteTier(t.id)} className="sw-focus text-xs font-semibold px-2 py-1 rounded-lg"
-                        style={{ color: "var(--red)", border: "1px solid var(--border)", background: "var(--surface)" }}>
-                        Remove tier
-                      </button>
-                    </td>
-                  ))}
-                  <td />
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        <p className="text-xs px-4 py-2.5" style={{ color: "var(--ink-faint)", borderTop: "1px solid var(--border)" }}>
-          A tier pays out when statted GP lands in its band <b>and</b> every KPI below it is met. The commission
-          rate is the percentage of statted GP earned at that tier. Edits save as you leave each box.
-        </p>
       </div>
     </div>
   );
@@ -5140,7 +5119,8 @@ function SettingsView({ statusRows, onSaveStatus, newCount, plans, staff, onSave
 /*  ADMIN — office-only: manage staff records, roles, teams                */
 /* ---------------------------------------------------------------------- */
 
-const ROLE_OPTIONS = ["office", "2ic", "agent"];
+const ROLE_OPTIONS = ["office", "2ic", "agent", "sd", "sd_2ic"];
+const ROLE_LABELS = { office: "Office", "2ic": "2IC", agent: "Agent", sd: "Sales Delivery", sd_2ic: "Sales Delivery 2IC" };
 
 function StaffDetailForm({ s, profileForStaff, onSaveStaff, onSaveProfile, onResetPassword, onSetActive, plans,
                           planHistory, onAssignPlan, onDeleteAssignment }) {
@@ -7473,6 +7453,279 @@ function LandscapesView({ profile, staff }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  SALES DELIVERY — allocation and progress on claimed orders             */
+/* ---------------------------------------------------------------------- */
+
+const DELIVERY_STATES = ["Unallocated", "With agent", "Awaiting docs", "Submitted", "Complete", "On hold"];
+
+function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, onAllocate, onSaveOrder, onOpenOrder }) {
+  const [period, setPeriod] = useState("mtd");
+  const [query, setQuery] = useState("");
+  const [agentFilter, setAgentFilter] = useState("All");
+  const [stateFilter, setStateFilter] = useState("All");
+  const [busyId, setBusyId] = useState(null);
+
+  const isManager = profile?.role === "office" || profile?.role === "sd";
+  const canAllocate = isManager || profile?.role === "sd_2ic";
+
+  // The delivery team's members — who work can be allocated to
+  const team = useMemo(
+    () => (staff || []).filter((s) => s.team === deliveryTeam && s.active !== false)
+      .sort((a, b) => String(a.full_name).localeCompare(String(b.full_name))),
+    [staff, deliveryTeam]
+  );
+
+  const inPeriod = useMemo(() => {
+    const from = periodStart(period);
+    return (orders || []).filter((o) => {
+      if (o.removed_at) return false;
+      if (from && (!o.submission_date || new Date(o.submission_date) < from)) return false;
+      return true;
+    });
+  }, [orders, period]);
+
+  // Count per delivery agent, plus what's still waiting
+  const ranking = useMemo(() => {
+    const counts = {};
+    let unallocated = 0;
+    inPeriod.forEach((o) => {
+      if (!o.allocated_to_name) { unallocated += 1; return; }
+      const k = o.allocated_to_name;
+      if (!counts[k]) counts[k] = { total: 0, open: 0, done: 0 };
+      counts[k].total += 1;
+      if (String(o.delivery_status || "") === "Complete") counts[k].done += 1;
+      else counts[k].open += 1;
+    });
+    const rows = team.map((s) => ({
+      name: s.full_name,
+      ...(counts[s.full_name] || { total: 0, open: 0, done: 0 }),
+    }));
+    // Anyone allocated work who isn't on the team list still shows
+    Object.keys(counts).forEach((nm) => {
+      if (!rows.some((r) => r.name === nm)) rows.push({ name: nm, ...counts[nm] });
+    });
+    return { rows: rows.sort((a, b) => b.total - a.total || a.name.localeCompare(b.name)), unallocated };
+  }, [inPeriod, team]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return inPeriod.filter((o) => {
+      if (q && !String(o.company_name || "").toLowerCase().includes(q)
+            && !String(o.lbcr_ref || "").toLowerCase().includes(q)) return false;
+      if (agentFilter === "__unallocated") { if (o.allocated_to_name) return false; }
+      else if (agentFilter !== "All" && o.allocated_to_name !== agentFilter) return false;
+      if (stateFilter !== "All") {
+        const st = o.delivery_status || "Unallocated";
+        if (st !== stateFilter) return false;
+      }
+      return true;
+    }).sort((a, b) => String(b.submission_date || "").localeCompare(String(a.submission_date || "")));
+  }, [inPeriod, query, agentFilter, stateFilter]);
+
+  const totals = useMemo(() => ({
+    all: inPeriod.length,
+    unallocated: ranking.unallocated,
+    complete: inPeriod.filter((o) => o.delivery_status === "Complete").length,
+    noDrive: inPeriod.filter((o) => !o.drive_link).length,
+  }), [inPeriod, ranking]);
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-3 flex-wrap">
+        <Inbox size={18} style={{ color: "var(--primary)" }} />
+        <h2 className="sw-display text-lg" style={{ fontWeight: 600 }}>Sales Delivery</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+          {deliveryTeam} · allocation and progress
+        </span>
+      </div>
+
+      {/* Headline counts */}
+      <div className="sw-cols-2 mb-3" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: "0.75rem" }}>
+        {[
+          ["Orders in period", totals.all, "var(--ink)"],
+          ["Unallocated", totals.unallocated, totals.unallocated ? "var(--amber)" : "var(--ink-faint)"],
+          ["Complete", totals.complete, "var(--green)"],
+          ["No Drive link", totals.noDrive, totals.noDrive ? "var(--red)" : "var(--ink-faint)"],
+        ].map(([label, value, colour]) => (
+          <div key={label} className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{label}</div>
+            <div className="sw-display" style={{ fontSize: 27, fontWeight: 600, letterSpacing: "-0.025em", color: colour }}>{value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <div className="rounded-xl mb-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="sw-filter-row flex items-center gap-2 px-3 py-2.5 flex-wrap">
+          <select className="sw-input sw-focus" style={{ width: 112, height: 32, fontSize: 12.5 }} value={period} onChange={(e) => setPeriod(e.target.value)}>
+            {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+          </select>
+          <select className="sw-input sw-focus" style={{ width: 178, height: 32, fontSize: 12.5 }} value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)}>
+            <option value="All">Everyone</option>
+            <option value="__unallocated">Unallocated only</option>
+            {ranking.rows.map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
+          </select>
+          <select className="sw-input sw-focus" style={{ width: 152, height: 32, fontSize: 12.5 }} value={stateFilter} onChange={(e) => setStateFilter(e.target.value)}>
+            <option value="All">All states</option>
+            {DELIVERY_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <div className="relative" style={{ flex: 1, minWidth: 180 }}>
+            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: "var(--ink-faint)" }} />
+            <input className="sw-input sw-focus" style={{ paddingLeft: 28, height: 32, fontSize: 12.5 }}
+              placeholder="Search company or LBCR..." value={query} onChange={(e) => setQuery(e.target.value)} />
+          </div>
+        </div>
+      </div>
+
+      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(300px, 1fr) minmax(0, 2fr)", gap: "0.75rem", alignItems: "start" }}>
+
+        {/* Team workload — doubles as the agent picker */}
+        <div className="sw-sticky-col flex flex-col gap-3 pr-0.5" style={{ position: "sticky", top: 66, maxHeight: "calc(100vh - 78px)", overflowY: "auto" }}>
+          <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="flex items-baseline justify-between mb-3">
+              <span className="text-sm font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{deliveryTeam}</span>
+              {agentFilter !== "All" && (
+                <button onClick={() => setAgentFilter("All")} className="sw-focus text-xs" style={{ color: "var(--primary)" }}>Clear</button>
+              )}
+            </div>
+
+            {ranking.unallocated > 0 && (
+              <button onClick={() => setAgentFilter(agentFilter === "__unallocated" ? "All" : "__unallocated")}
+                className="sw-focus w-full text-left px-2.5 py-2 rounded-lg mb-2"
+                style={{ background: agentFilter === "__unallocated" ? "var(--amber)" : "var(--amber-soft)" }}>
+                <div className="flex items-center justify-between">
+                  <span style={{ fontSize: 13, fontWeight: 600, color: agentFilter === "__unallocated" ? "#fff" : "var(--amber)" }}>Unallocated</span>
+                  <span className="sw-mono" style={{ fontSize: 13.5, fontWeight: 700, color: agentFilter === "__unallocated" ? "#fff" : "var(--amber)" }}>{ranking.unallocated}</span>
+                </div>
+              </button>
+            )}
+
+            {ranking.rows.length === 0 ? (
+              <div className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>
+                Nobody on {deliveryTeam} yet — set their team on the Admin page.
+              </div>
+            ) : (
+              <div>
+                {ranking.rows.map((r, i) => {
+                  const sel = agentFilter === r.name;
+                  const max = Math.max(1, ...ranking.rows.map((x) => x.total));
+                  return (
+                    <button key={r.name} onClick={() => setAgentFilter(sel ? "All" : r.name)}
+                      className="sw-focus w-full text-left px-2.5 py-2"
+                      style={{ background: sel ? "var(--primary-soft)" : "transparent", borderTop: i === 0 ? "none" : "1px solid var(--border)" }}>
+                      <div className="flex items-center gap-2">
+                        <span className="truncate" style={{ fontSize: 13.5, color: sel ? "var(--primary)" : "var(--ink)", fontWeight: sel ? 600 : 500 }}>{r.name}</span>
+                        <span className="sw-mono ml-auto shrink-0" style={{ fontSize: 13.5, fontWeight: 600 }}>{r.total}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <div className="rounded-full flex-1" style={{ height: 5, background: "var(--surface-alt)", overflow: "hidden", display: "flex" }}>
+                          <div style={{ width: `${(r.done / max) * 100}%`, background: "var(--green)" }} />
+                          <div style={{ width: `${(r.open / max) * 100}%`, background: "var(--blue)" }} />
+                        </div>
+                        <span className="text-xs shrink-0" style={{ color: "var(--ink-faint)", fontSize: 10.5 }}>
+                          {r.open} open · {r.done} done
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <p className="text-xs mt-3" style={{ color: "var(--ink-faint)" }}>
+              Blue is open work, green is complete. Click a name to filter the list.
+            </p>
+          </div>
+        </div>
+
+        {/* The orders */}
+        <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <table className="w-full text-sm sw-orders" style={{ tableLayout: "fixed" }}>
+            <colgroup>
+              <col style={{ width: "26%" }} />
+              <col style={{ width: "17%" }} />
+              <col style={{ width: "20%" }} />
+              <col style={{ width: "17%" }} />
+              <col style={{ width: "12%" }} />
+              <col style={{ width: "8%" }} />
+            </colgroup>
+            <thead>
+              <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
+                {["Company", "Closer", "Allocated to", "Delivery state", "Drive", "Date"].map((h, i) => (
+                  <th key={i} className={`text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide ${i >= 4 ? "sw-hide-sm" : ""}`}
+                    style={{ color: "var(--ink-soft)" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((o) => (
+                <tr key={o.id} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td className="px-3 py-2">
+                    <button onClick={() => onOpenOrder(o)} className="sw-focus text-left">
+                      <div className="font-medium text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>{o.company_name}</div>
+                      {o.lbcr_ref && <div className="sw-mono" style={{ fontSize: 10, color: "var(--ink-faint)" }}>{o.lbcr_ref}</div>}
+                    </button>
+                  </td>
+                  <td className="px-3 py-2 text-xs sw-clamp2" style={{ color: "var(--ink-soft)", lineHeight: 1.3 }}>{o.closer_name || "—"}</td>
+
+                  <td className="px-2 py-2">
+                    {canAllocate ? (
+                      <select className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }}
+                        value={o.allocated_to_name || ""}
+                        disabled={busyId === o.id}
+                        onChange={async (e) => {
+                          setBusyId(o.id);
+                          const person = team.find((t) => t.full_name === e.target.value) || null;
+                          await onAllocate(o.id, person, e.target.value);
+                          setBusyId(null);
+                        }}>
+                        <option value="">Unallocated</option>
+                        {team.map((t) => <option key={t.id} value={t.full_name}>{t.full_name}</option>)}
+                        {o.allocated_to_name && !team.some((t) => t.full_name === o.allocated_to_name) && (
+                          <option value={o.allocated_to_name}>{o.allocated_to_name}</option>
+                        )}
+                      </select>
+                    ) : (
+                      <span className="text-xs">{o.allocated_to_name || <span style={{ color: "var(--ink-faint)" }}>Unallocated</span>}</span>
+                    )}
+                  </td>
+
+                  <td className="px-2 py-2">
+                    <select className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }}
+                      value={o.delivery_status || ""}
+                      onChange={(e) => onSaveOrder(o.id, { delivery_status: e.target.value || null })}>
+                      <option value="">—</option>
+                      {DELIVERY_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </td>
+
+                  <td className="px-2 py-2 sw-hide-sm">
+                    {o.drive_link ? (
+                      <a href={o.drive_link} target="_blank" rel="noreferrer"
+                        className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>Open</a>
+                    ) : (
+                      <span className="text-xs" style={{ color: "var(--ink-faint)" }}>—</span>
+                    )}
+                  </td>
+
+                  <td className="px-2 py-2 text-xs sw-hide-sm" style={{ color: "var(--ink-faint)", fontSize: 11 }}>
+                    {o.submission_date ? fmtDate(o.submission_date) : "—"}
+                  </td>
+                </tr>
+              ))}
+              {filtered.length === 0 && (
+                <tr><td colSpan={6} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                  No orders match.
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /*  SALES DISTRIBUTION — who generates for whom                            */
 /* ---------------------------------------------------------------------- */
 
@@ -7836,6 +8089,8 @@ function NavMenu({ icon: Icon, label, childActive, badge, items }) {
 
 function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSignOut, mobileOpen, setMobileOpen }) {
   const isOffice = profile?.role === "office";
+  const isDelivery = profile?.role === "sd" || profile?.role === "sd_2ic";
+  const canSeeDelivery = isOffice || isDelivery;
   const go = (t) => () => { setTab(t); setMobileOpen(false); };
 
   const dashboards = [
@@ -7874,6 +8129,9 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
         {/* Desktop nav */}
         <nav className="sw-hide-sm flex items-center gap-1">
           <NavLink icon={ClipboardList} label="Claimed" active={tab === "dashboard"} onClick={go("dashboard")} />
+          {canSeeDelivery && (
+            <NavLink icon={Inbox} label="Sales Delivery" active={tab === "delivery"} onClick={go("delivery")} />
+          )}
           <NavMenu icon={LayoutDashboard} label="Dashboards" childActive={dashActive} items={dashboards} />
           <NavMenu icon={Inbox} label="Submission Boxes" childActive={subActive} items={submissions} />
           <NavLink icon={Headphones} label="Sales Coach" active={tab === "coach"} onClick={go("coach")} />
@@ -7884,7 +8142,7 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
 
         <div className="ml-auto flex items-center gap-2 shrink-0">
           <span className="sw-hide-sm text-xs" style={{ color: "var(--ink-faint)" }}>
-            {profile?.role === "office" ? "Office" : profile?.role === "2ic" ? "2IC" : "Agent"}
+            {ROLE_LABELS[profile?.role] || "Agent"}
             {profile?.team ? ` · ${profile.team}` : ""}
           </span>
           <button onClick={onSignOut} title="Sign out" className="sw-focus p-1.5 rounded-lg" style={{ color: "var(--ink-faint)" }}>
@@ -7902,7 +8160,10 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
       {mobileOpen && (
         <div className="sw-menu-panel px-3 pb-3" style={{ borderTop: "1px solid var(--border)" }}>
           {[
-            { heading: null, items: [{ label: "Claimed", icon: ClipboardList, active: tab === "dashboard", onClick: go("dashboard") }] },
+            { heading: null, items: [
+              { label: "Claimed", icon: ClipboardList, active: tab === "dashboard", onClick: go("dashboard") },
+              ...(canSeeDelivery ? [{ label: "Sales Delivery", icon: Inbox, active: tab === "delivery", onClick: go("delivery") }] : []),
+            ] },
             { heading: "Dashboards", items: dashboards },
             { heading: "Submission Boxes", items: submissions },
             { heading: null, items: [{ label: "Sales Coach", icon: Headphones, active: tab === "coach", onClick: go("coach") }] },
@@ -7959,6 +8220,7 @@ export default function App() {
   const [planHistory, setPlanHistory] = useState([]);
   const [forecasts, setForecasts] = useState([]);
   const [aliases, setAliases] = useState([]);
+  const [appSettings, setAppSettings] = useState({});
   const [coachScenarios, setCoachScenarios] = useState([]);
   const [coachSettings, setCoachSettings] = useState({ rubric: "", what_good_looks_like: "" });
   const [allProfiles, setAllProfiles] = useState([]);
@@ -8042,6 +8304,32 @@ export default function App() {
     setForecasts(data || []);
   }, []);
   useEffect(() => { if (session?.user) loadForecasts(); }, [session, loadForecasts]);
+
+  // Small key/value settings — currently just which team does delivery
+  const loadAppSettings = useCallback(async () => {
+    const { data } = await supabase.from("app_settings").select("*");
+    const m = {};
+    (data || []).forEach((r) => { m[r.key] = r.value; });
+    setAppSettings(m);
+  }, []);
+  useEffect(() => { if (session?.user) loadAppSettings(); }, [session, loadAppSettings]);
+
+  const deliveryTeam = appSettings.delivery_team || "Tracy Webber";
+
+  // Allocate an order to someone on the delivery team
+  const allocateOrder = useCallback(async (orderId, person, name) => {
+    const patch = {
+      allocated_to: person?.id || null,
+      allocated_to_name: name || null,
+      allocated_at: name ? new Date().toISOString() : null,
+      allocated_by_name: profile?.full_name || null,
+      last_updated: new Date().toISOString(),
+    };
+    // Moving it to someone puts it in play unless it's already further on
+    const { error } = await supabase.from("orders").update(patch).eq("id", orderId);
+    if (error) { setToast(`Couldn't allocate: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    loadOrders();
+  }, [profile, loadOrders]);
 
   // Name aliases — NetSuite spellings mapped back to the staff list
   const loadAliases = useCallback(async () => {
@@ -8482,7 +8770,7 @@ export default function App() {
         mobileOpen={menuOpen} setMobileOpen={setMenuOpen} />
 
       <div style={{ minWidth: 0 }}>
-      <main className={`sw-main p-6 mx-auto ${["breakdown", "daybyday", "forecast", "landscapes", "dashboard", "distribution", "admin", "statuses"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
+      <main className={`sw-main p-6 mx-auto ${["breakdown", "daybyday", "forecast", "landscapes", "dashboard", "distribution", "admin", "statuses", "delivery"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
         {submitted && (
           <div className="sw-rise rounded-2xl p-4 mb-5 flex items-center justify-between gap-4" style={{ background: "var(--green-soft)", border: "1px solid var(--green)" }}>
             <div className="flex items-center gap-3">
@@ -8505,6 +8793,10 @@ export default function App() {
         {tab === "daybyday" && <DayByDayView orders={orders} staff={staff} />}
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuiteResolved} />}
         {tab === "distribution" && <DistributionView orders={orders} netsuite={netsuiteResolved} staff={staff} />}
+        {tab === "delivery" && (profile?.role === "office" || profile?.role === "sd" || profile?.role === "sd_2ic") && (
+          <DeliveryView orders={orders} netsuite={netsuiteResolved} staff={staff} profile={profile}
+            deliveryTeam={deliveryTeam} onAllocate={allocateOrder} onSaveOrder={saveOrder} onOpenOrder={setSelected} />
+        )}
         {tab === "forecast" && <ForecastView netsuite={netsuiteResolved} profile={profile} staff={staff} />}
         {tab === "landscapes" && <LandscapesView profile={profile} staff={staff} />}
         {tab === "quote" && <QuoteBuilderView profile={profile} staff={staff} />}
