@@ -5648,10 +5648,7 @@ function CoachSettingsView({ scenarios, settings, stages, onSaveScenario, onAddS
 
       {/* Stages, method and scenarios side by side — they're edited
           together and each is narrow enough to work in a column. */}
-      {/* Auto-fit rather than fixed thirds — this now sits in roughly half
-          the page (Order Status shares the row with it), so it needs to
-          wrap gracefully rather than being squeezed into three slivers. */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem", alignItems: "start" }}>
+      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr)", gap: "1rem", alignItems: "start" }}>
 
       {/* Call stages */}
       <div className="rounded-2xl p-4" style={{ background: "var(--surface-alt)", border: "1px solid var(--border)" }}>
@@ -5874,7 +5871,8 @@ function SettingsView({ statusRows, onSaveStatus, newCount,
     <div>
       <div className="flex items-center gap-2 mb-5">
         {[
-          { key: "statuses", label: "Order Status & Coach Setup", icon: Palette, badge: newCount },
+          { key: "statuses", label: "Order Statuses", icon: Palette, badge: newCount },
+          { key: "coach", label: "Coach Setup", icon: Headphones, badge: 0 },
           { key: "visuals", label: "Other Visuals", icon: BarChart3, badge: 0 },
         ].map((s) => (
           <button key={s.key} onClick={() => setSection(s.key)}
@@ -5887,16 +5885,14 @@ function SettingsView({ statusRows, onSaveStatus, newCount,
           </button>
         ))}
       </div>
-      {/* Order statuses on the left; Coach Setup fills the space pay plans
-          used to occupy here, since pay plans now live on Sales Agents. */}
       {section === "statuses" && (
-        <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1.3fr)", gap: "1rem", alignItems: "start" }}>
-          <StatusSettingsView rows={statusRows} onSave={onSaveStatus} newCount={newCount} />
-          <CoachSettingsView scenarios={coachScenarios} settings={coachSettings} stages={coachStages}
-            onSaveStage={onSaveStage} onAddStage={onAddStage} onDeleteStage={onDeleteStage}
-            onSaveScenario={onSaveCoachScenario} onAddScenario={onAddCoachScenario}
-            onDeleteScenario={onDeleteCoachScenario} onSaveSettings={onSaveCoachSettings} />
-        </div>
+        <StatusSettingsView rows={statusRows} onSave={onSaveStatus} newCount={newCount} />
+      )}
+      {section === "coach" && (
+        <CoachSettingsView scenarios={coachScenarios} settings={coachSettings} stages={coachStages}
+          onSaveStage={onSaveStage} onAddStage={onAddStage} onDeleteStage={onDeleteStage}
+          onSaveScenario={onSaveCoachScenario} onAddScenario={onAddCoachScenario}
+          onDeleteScenario={onDeleteCoachScenario} onSaveSettings={onSaveCoachSettings} />
       )}
       {section === "visuals" && (
         <OtherVisualsView orders={orders} netsuite={netsuite} forecasts={forecasts} staff={staff} />
@@ -6546,12 +6542,12 @@ function SalesCoachView() {
   const [stageList, setStageList] = useState([]);
   const [stageNote, setStageNote] = useState("");
   const [coachingNote, setCoachingNote] = useState("");
-  const [callRole, setCallRole] = useState("closer");     // lead_gen | closer
   const [difficulty, setDifficulty] = useState("normal"); // easy | normal | hard
   const [bonusesHit, setBonusesHit] = useState([]);
   const [typed, setTyped] = useState("");
   const [history, setHistory] = useState([]);
   const [openSession, setOpenSession] = useState(null);
+  const [rolling, setRolling] = useState(false);   // rollback in progress
   const [scenarios, setScenarios] = useState([]);
   const [coachCfg, setCoachCfg] = useState({ rubric: "", what_good_looks_like: "" });
 
@@ -6585,12 +6581,34 @@ function SalesCoachView() {
   }, []);
   useEffect(() => { loadHistory(); }, [loadHistory]);
 
+  // Best calls first — a leaderboard is more useful than reverse-chronological
+  // when the point is learning from what went well. Interrupted calls sort
+  // below finished ones at the same score, being less instructive.
+  const rankedHistory = useMemo(() => {
+    return [...(history || [])].sort((a, b) => {
+      const pa = a.points ?? 0, pb = b.points ?? 0;
+      if (pb !== pa) return pb - pa;
+      if (!!a.interrupted !== !!b.interrupted) return a.interrupted ? 1 : -1;
+      return String(b.created_at).localeCompare(String(a.created_at));
+    });
+  }, [history]);
+
+  const selectedSession = useMemo(
+    () => (history || []).find((h) => h.id === openSession) || null,
+    [history, openSession]
+  );
+
   const recogRef = useRef(null);
   const scrollRef = useRef(null);
   const turnsRef = useRef([]);
   useEffect(() => { turnsRef.current = turns; }, [turns]);
   const stageIdxRef = useRef(0);
   useEffect(() => { stageIdxRef.current = stageIndex; }, [stageIndex]);
+  const stageNoteRef = useRef("");
+  useEffect(() => { stageNoteRef.current = stageNote; }, [stageNote]);
+  const bonusesRef = useRef([]);
+  useEffect(() => { bonusesRef.current = bonusesHit; }, [bonusesHit]);
+  const undoRef = useRef(null);
 
   const supported = typeof window !== "undefined" &&
     (window.SpeechRecognition || window.webkitSpeechRecognition);
@@ -6616,7 +6634,7 @@ function SalesCoachView() {
         rubric: coachCfg.rubric || null,
         method: coachCfg.what_good_looks_like || null,
         stageIndex: stageIdxRef.current,
-        callRole, difficulty,
+        difficulty,
       }),
     });
     if (!res.ok) {
@@ -6624,7 +6642,7 @@ function SalesCoachView() {
       throw new Error(`Coach unavailable (${res.status}). ${t.slice(0, 160)}`);
     }
     return res.json();
-  }, [scenario, activeScenario, coachCfg, callRole, difficulty]);
+  }, [scenario, activeScenario, coachCfg, difficulty]);
 
   // Speech synthesis has two traps: getVoices() is populated asynchronously
   // in Chrome, so the first call can find nothing and silently do nothing;
@@ -6704,6 +6722,16 @@ function SalesCoachView() {
     const clean = (text || "").trim();
     if (!clean) return;
     setError("");
+    // Remember where we were, so "try that again" can put everything back —
+    // the stage can advance on a turn and bonuses can be awarded, so
+    // restoring the messages alone would leave those stuck forward.
+    undoRef.current = {
+      turns: turnsRef.current,
+      stageIndex: stageIdxRef.current,
+      stageNote: stageNoteRef.current,
+      bonuses: bonusesRef.current,
+      lastText: clean,
+    };
     const withAgent = [...turnsRef.current, { role: "agent", text: clean, heard: rawHeard || null }];
     setTurns(withAgent);
     setInterim("");
@@ -6794,6 +6822,7 @@ function SalesCoachView() {
     rollVoice();      // a different customer each time
     setTurns([]); setSummary(null); setError(""); setInterim("");
     setStageIndex(0); stageIdxRef.current = 0; setStageNote(""); setCoachingNote(""); setBonusesHit([]);
+    undoRef.current = null;
     setStatus("thinking");
     try {
       const r = await callCoach("turn", []);
@@ -6807,6 +6836,79 @@ function SalesCoachView() {
       setStatus("idle");
     }
   }, [callCoach, say, startListening, unlockSpeech, rollVoice]);
+
+  /* Take back the last thing said and try it again. Restores the stage and
+     any bonuses awarded on that turn, and drops both the agent's turn and
+     the customer's reply to it. The text comes back in the box so it can be
+     edited rather than retyped. One level of undo, not a full history. */
+  const rollbackTurn = useCallback(() => {
+    const snap = undoRef.current;
+    if (!snap) return;
+    if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.cancel();
+    setRolling(true);
+    setTurns(snap.turns);
+    setStageIndex(snap.stageIndex);
+    stageIdxRef.current = snap.stageIndex;
+    setStageNote(snap.stageNote || "");
+    setBonusesHit(snap.bonuses || []);
+    setTyped(snap.lastText || "");
+    setInterim("");
+    setStatus("live");
+    undoRef.current = null;
+    setTimeout(() => setRolling(false), 400);
+  }, []);
+
+  /* Walk away mid-call. The transcript is still worth keeping — knowing
+     someone bails at the objection stage repeatedly is a coaching signal —
+     so it's saved and flagged as interrupted. No summary, since the call
+     never finished. */
+  const leaveCall = useCallback(async () => {
+    stopListening();
+    if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.cancel();
+    const finalTurns = turnsRef.current;
+    const agentTurns = finalTurns.filter((t) => t.role === "agent" && t.score);
+
+    if (agentTurns.length > 0) {
+      const tally = {};
+      let pts = 0;
+      agentTurns.forEach((t) => {
+        tally[t.score] = (tally[t.score] || 0) + 1;
+        pts += SCORE_POINTS[t.score] ?? 0;
+      });
+      try {
+        const { data: sess } = await supabase.auth.getSession();
+        await supabase.from("coach_sessions").insert({
+          user_id: sess?.session?.user?.id || null,
+          user_name: sess?.session?.user?.email || null,
+          scenario,
+          grade: null,
+          headline: "Call left before finishing",
+          strengths: [], improvements: [], moment: null,
+          points: pts,
+          turn_count: agentTurns.length,
+          tally,
+          stages_reached: stageList.slice(0, stageIndex + 1).map((s) => s.label),
+          final_stage: stageList[stageIndex]?.label || null,
+          completed: false,
+          interrupted: true,
+          bonuses: bonusesHit.map((b) => b.label),
+          transcript: finalTurns,
+        });
+        loadHistory();
+      } catch {
+        // An abandoned practice call isn't worth blocking the exit for
+      }
+    }
+
+    setStatus("idle");
+    setTurns([]);
+    setSummary(null);
+    setInterim("");
+    setTyped("");
+    setStageIndex(0); stageIdxRef.current = 0;
+    setStageNote(""); setCoachingNote(""); setBonusesHit([]);
+    undoRef.current = null;
+  }, [scenario, stageList, stageIndex, bonusesHit, stopListening, loadHistory]);
 
   const endCall = useCallback(async () => {
     stopListening();
@@ -6839,7 +6941,6 @@ function SalesCoachView() {
           // How far through the call they actually got
           stages_reached: stageList.slice(0, stageIndex + 1).map((s) => s.label),
           final_stage: stageList[stageIndex]?.label || null,
-          call_role: callRole,
           bonuses: bonusesHit.map((b) => b.label),
           completed: stageList.length > 0 && stageIndex >= stageList.length - 1,
           transcript: finalTurns,
@@ -6893,28 +6994,9 @@ function SalesCoachView() {
               </button>
             ))}
           </div>
-          {/* Who you're being, and how hard the customer is */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }} className="mb-4">
-            <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              <div className="text-xs font-medium uppercase mb-2" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>I'm calling as</div>
-              <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-                {[["lead_gen", "Lead Gen"], ["closer", "Closer"]].map(([k, lbl]) => (
-                  <button key={k} onClick={() => setCallRole(k)}
-                    className="sw-focus flex-1 px-3 py-2 text-xs"
-                    style={callRole === k
-                      ? { background: "var(--primary)", color: "#fff", fontWeight: 600 }
-                      : { background: "transparent", color: "var(--ink-faint)" }}>
-                    {lbl}
-                  </button>
-                ))}
-              </div>
-              <div className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
-                {callRole === "lead_gen"
-                  ? "Cold call: qualify the need and set up a conversation with a closer."
-                  : "The lead gen has already spoken to them. Confirm, price, negotiate, close."}
-              </div>
-            </div>
-
+          {/* How hard the customer is. What kind of call it is now comes
+              from the scenario's own persona and stage set. */}
+          <div style={{ maxWidth: 420 }} className="mb-4">
             <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
               <div className="text-xs font-medium uppercase mb-2" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Customer</div>
               <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
@@ -7020,6 +7102,22 @@ function SalesCoachView() {
                   className="sw-focus text-xs px-2 py-1 rounded-lg" style={{ color: "var(--ink-faint)", border: "1px solid var(--border)" }}
                   title={voiceLabel ? `Currently ${voiceLabel} — click for a different voice` : "Try a different voice"}>
                   Change voice
+                </button>
+              )}
+              {status !== "ended" && undoRef.current && (
+                <button onClick={rollbackTurn} disabled={rolling}
+                  className="sw-focus text-xs px-2.5 py-1 rounded-lg flex items-center gap-1"
+                  style={{ color: "var(--ink-soft)", border: "1px solid var(--border)" }}
+                  title="Take back your last answer and try it again">
+                  <History size={12} /> Try that again
+                </button>
+              )}
+              {status !== "ended" && (
+                <button onClick={() => leaveCall()}
+                  className="sw-focus text-xs px-2.5 py-1 rounded-lg flex items-center gap-1"
+                  style={{ color: "var(--ink-faint)", border: "1px solid var(--border)" }}
+                  title="Leave without finishing — saved as an interrupted call">
+                  <ArrowLeft size={12} /> Back
                 </button>
               )}
               {status !== "ended" && (
@@ -7148,87 +7246,162 @@ function SalesCoachView() {
         </div>
       )}
 
-      {/* Previous practice calls — yours, plus your team's if you manage one */}
+      {/* Previous practice calls — list on the right, detail on the left,
+          ranked by points so the best ones are worth revisiting. */}
       {history.length > 0 && status === "idle" && (
         <div className="mt-6">
           <div className="flex items-center gap-2 mb-3">
             <History size={16} style={{ color: "var(--ink-soft)" }} />
             <h3 className="sw-display text-sm" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>PREVIOUS CALLS</h3>
-            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{history.length} kept</span>
+            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{history.length} kept · ranked by points</span>
           </div>
 
-          <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-            {history.map((h) => {
-              const isOpen = openSession === h.id;
-              const scen = (scenarios.length ? scenarios : COACH_SCENARIOS).find((s) => s.key === h.scenario);
-              return (
-                <div key={h.id} style={{ borderTop: "1px solid var(--border)" }}>
-                  <button onClick={() => setOpenSession(isOpen ? null : h.id)}
-                    className="sw-focus w-full flex items-center gap-3 px-4 py-3 text-left">
-                    <span className="sw-display font-bold text-lg rounded-lg px-2.5 py-0.5 shrink-0"
-                      style={{ background: "var(--primary-soft)", color: "var(--primary)" }}>{h.grade || "—"}</span>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-semibold truncate">{h.headline || "Practice call"}</div>
-                      <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
-                        {scen?.label || h.scenario} · {fmtDate(h.created_at)} · {h.turn_count} turns
-                        {h.user_name ? ` · ${h.user_name}` : ""}
+          <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px", gap: "0.75rem", alignItems: "start" }}>
+
+            {/* DETAIL */}
+            <div>
+              {selectedSession ? (
+                <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+                  <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="sw-display font-bold text-lg rounded-lg px-2.5 py-0.5"
+                        style={{ background: "var(--primary-soft)", color: "var(--primary)" }}>
+                        {selectedSession.grade || "—"}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-semibold">
+                          {selectedSession.interrupted && <span title="Left before finishing" style={{ marginRight: 5 }}>⏸</span>}
+                          {selectedSession.headline || "Practice call"}
+                        </div>
+                        <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                          {(scenarios.length ? scenarios : COACH_SCENARIOS).find((s) => s.key === selectedSession.scenario)?.label || selectedSession.scenario}
+                          {" · "}{fmtDate(selectedSession.created_at)}
+                          {selectedSession.user_name ? ` · ${selectedSession.user_name}` : ""}
+                        </div>
                       </div>
-                      {h.final_stage && (
-                        <div className="text-xs mt-0.5" style={{ color: h.completed ? "var(--green)" : "var(--amber)" }}>
-                          {h.completed ? "Reached the close" : `Got as far as: ${h.final_stage}`}
+                    </div>
+                  </div>
+
+                  {/* Stats across the top */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: "0.5rem" }} className="px-4 py-3">
+                    {[
+                      ["Points", `${(selectedSession.points ?? 0) > 0 ? "+" : ""}${selectedSession.points ?? 0}`,
+                        (selectedSession.points ?? 0) >= 0 ? "var(--green)" : "var(--red)"],
+                      ["Turns", selectedSession.turn_count ?? 0, "var(--ink)"],
+                      ["Reached", selectedSession.final_stage || "—", selectedSession.completed ? "var(--green)" : "var(--amber)"],
+                      ["Outcome", selectedSession.interrupted ? "Interrupted" : selectedSession.completed ? "Completed" : "Ended early",
+                        selectedSession.interrupted ? "var(--amber)" : selectedSession.completed ? "var(--green)" : "var(--ink-soft)"],
+                    ].map(([label, value, colour]) => (
+                      <div key={label} className="rounded-lg px-2.5 py-2" style={{ background: "var(--surface-alt)" }}>
+                        <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{label}</div>
+                        <div className="sw-display truncate" style={{ fontSize: 15, fontWeight: 600, color: colour }}>{value}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {selectedSession.tally && Object.keys(selectedSession.tally).length > 0 && (
+                    <div className="px-4 pb-3 flex items-center gap-1.5 flex-wrap">
+                      {Object.keys(selectedSession.tally).map((k) => (
+                        <span key={k} className="flex items-center gap-1">
+                          <ScoreBadge score={k} />
+                          <span className="sw-mono text-xs" style={{ color: "var(--ink-faint)" }}>×{selectedSession.tally[k]}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {(selectedSession.strengths?.length > 0 || selectedSession.improvements?.length > 0) && (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "0.6rem" }} className="px-4 pb-3">
+                      {selectedSession.strengths?.length > 0 && (
+                        <div className="rounded-xl p-3" style={{ background: "var(--green-soft)" }}>
+                          <div className="text-xs font-bold uppercase mb-1.5" style={{ color: "var(--green)" }}>What worked</div>
+                          {(selectedSession.strengths || []).map((s, i) => <div key={i} className="text-xs mb-1">• {s}</div>)}
+                        </div>
+                      )}
+                      {selectedSession.improvements?.length > 0 && (
+                        <div className="rounded-xl p-3" style={{ background: "var(--amber-soft)" }}>
+                          <div className="text-xs font-bold uppercase mb-1.5" style={{ color: "var(--amber)" }}>Work on this</div>
+                          {(selectedSession.improvements || []).map((s, i) => <div key={i} className="text-xs mb-1">• {s}</div>)}
                         </div>
                       )}
                     </div>
-                    <span className="sw-mono text-xs font-bold shrink-0 px-2 py-1 rounded-full"
-                      style={{ background: (h.points ?? 0) >= 0 ? "var(--green-soft)" : "var(--red-soft)", color: (h.points ?? 0) >= 0 ? "var(--green)" : "var(--red)" }}>
-                      {(h.points ?? 0) > 0 ? "+" : ""}{h.points ?? 0}
-                    </span>
-                    <ChevronDown size={15} className="shrink-0" style={{ color: "var(--ink-faint)", transform: isOpen ? "rotate(180deg)" : "none", transition: "transform .15s" }} />
-                  </button>
+                  )}
 
-                  {isOpen && (
-                    <div className="px-4 pb-4" style={{ background: "var(--surface-alt)" }}>
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "0.6rem" }} className="pt-3 mb-3">
-                        <div className="rounded-xl p-3" style={{ background: "var(--green-soft)" }}>
-                          <div className="text-xs font-bold uppercase mb-1.5" style={{ color: "var(--green)" }}>What worked</div>
-                          {(h.strengths || []).map((s, i) => <div key={i} className="text-xs mb-1">• {s}</div>)}
-                        </div>
-                        <div className="rounded-xl p-3" style={{ background: "var(--amber-soft)" }}>
-                          <div className="text-xs font-bold uppercase mb-1.5" style={{ color: "var(--amber)" }}>Work on this</div>
-                          {(h.improvements || []).map((s, i) => <div key={i} className="text-xs mb-1">• {s}</div>)}
-                        </div>
-                      </div>
-                      {h.moment && (
-                        <div className="rounded-xl p-3 mb-3" style={{ background: "var(--surface)" }}>
-                          <div className="text-xs font-bold uppercase mb-1" style={{ color: "var(--ink-soft)" }}>Turning point</div>
-                          <div className="text-xs">{h.moment}</div>
-                        </div>
-                      )}
-                      <div className="rounded-xl p-3" style={{ background: "var(--surface)", maxHeight: 260, overflowY: "auto" }}>
-                        <div className="text-xs font-bold uppercase mb-2" style={{ color: "var(--ink-soft)" }}>Transcript</div>
-                        {(h.transcript || []).map((t, i) => (
-                          <div key={i} className="flex items-start gap-2 mb-2">
-                            <span className="text-xs font-bold shrink-0 px-1.5 py-0.5 rounded"
-                              style={t.role === "agent" ? { background: "var(--primary-soft)", color: "var(--primary)" } : { background: "var(--surface-alt)", color: "var(--ink-soft)" }}>
-                              {t.role === "agent" ? "YOU" : "THEM"}
-                            </span>
-                            <div className="flex-1">
-                              <div className="text-xs">{t.text}</div>
-                              {t.score && (
-                                <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                                  <ScoreBadge score={t.score} />
-                                  {t.note && <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{t.note}</span>}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        ))}
+                  {selectedSession.moment && (
+                    <div className="px-4 pb-3">
+                      <div className="rounded-xl p-3" style={{ background: "var(--surface-alt)" }}>
+                        <div className="text-xs font-bold uppercase mb-1" style={{ color: "var(--ink-soft)" }}>Turning point</div>
+                        <div className="text-xs">{selectedSession.moment}</div>
                       </div>
                     </div>
                   )}
+
+                  {/* Transcript */}
+                  <div className="px-4 pb-4">
+                    <div className="text-xs font-bold uppercase mb-2" style={{ color: "var(--ink-soft)" }}>Transcript</div>
+                    <div className="rounded-xl p-3" style={{ background: "var(--surface-alt)", maxHeight: 420, overflowY: "auto" }}>
+                      {(selectedSession.transcript || []).length === 0 ? (
+                        <div className="text-xs" style={{ color: "var(--ink-faint)" }}>No transcript kept for this call.</div>
+                      ) : (selectedSession.transcript || []).map((t, i) => (
+                        <div key={i} className="flex items-start gap-2 mb-2">
+                          <span className="text-xs font-bold shrink-0 px-1.5 py-0.5 rounded"
+                            style={t.role === "agent"
+                              ? { background: "var(--primary-soft)", color: "var(--primary)" }
+                              : { background: "var(--surface)", color: "var(--ink-soft)" }}>
+                            {t.role === "agent" ? "YOU" : "THEM"}
+                          </span>
+                          <div className="flex-1">
+                            <div className="text-xs">{t.text}</div>
+                            {t.score && (
+                              <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                                <ScoreBadge score={t.score} />
+                                {t.note && <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{t.note}</span>}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
-              );
-            })}
+              ) : (
+                <div className="rounded-xl p-10 text-center" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+                  <div className="text-sm" style={{ color: "var(--ink-faint)" }}>Pick a call on the right to see how it went.</div>
+                </div>
+              )}
+            </div>
+
+            {/* LIST — ranked by points */}
+            <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)", maxHeight: "70vh", overflowY: "auto" }}>
+              {rankedHistory.map((h, i) => {
+                const sel = openSession === h.id;
+                const scen = (scenarios.length ? scenarios : COACH_SCENARIOS).find((s) => s.key === h.scenario);
+                return (
+                  <button key={h.id} onClick={() => setOpenSession(sel ? null : h.id)}
+                    className="sw-focus w-full text-left px-3 py-2.5"
+                    style={{ background: sel ? "var(--primary-soft)" : "transparent", borderTop: i === 0 ? "none" : "1px solid var(--border)" }}>
+                    <div className="flex items-center gap-2">
+                      <span className="sw-mono text-xs shrink-0" style={{ color: "var(--ink-faint)", width: 16 }}>{i + 1}</span>
+                      {h.interrupted && <span title="Left before finishing" style={{ fontSize: 11 }}>⏸</span>}
+                      <span className="text-xs truncate flex-1" style={{ color: sel ? "var(--primary)" : "var(--ink)", fontWeight: sel ? 600 : 500 }}>
+                        {scen?.label || h.scenario}
+                      </span>
+                      <span className="sw-mono text-xs font-bold shrink-0 px-1.5 py-0.5 rounded"
+                        style={{
+                          background: (h.points ?? 0) >= 0 ? "var(--green-soft)" : "var(--red-soft)",
+                          color: (h.points ?? 0) >= 0 ? "var(--green)" : "var(--red)",
+                        }}>
+                        {(h.points ?? 0) > 0 ? "+" : ""}{h.points ?? 0}
+                      </span>
+                    </div>
+                    <div className="text-xs truncate mt-0.5" style={{ color: "var(--ink-faint)", fontSize: 10.5 }}>
+                      {fmtDate(h.created_at)} · {h.turn_count} turns
+                      {h.user_name ? ` · ${h.user_name}` : ""}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}

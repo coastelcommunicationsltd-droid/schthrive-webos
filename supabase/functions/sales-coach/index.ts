@@ -1,39 +1,19 @@
-// ============================================================
-// SchThrive WebOS — Sales Coach
+// supabase/functions/sales-coach/index.ts
 //
-// Runs the roleplay customer and scores each of the agent's turns.
+// Sales roleplay coach — v2.
 //
-// DATA ISOLATION: this function has NO database access. It never
-// imports the Supabase client, never reads orders, staff, NetSuite
-// or anything else. It receives a scenario name and the conversation
-// so far, and returns the customer's next line plus a score. That's
-// the whole surface area.
+// The big change here is GRADING CALIBRATION. The first version listed
+// the grades but never said which one is normal, so the model treated
+// grading as fault-finding and marked almost everything as a mistake.
+// It now anchors on "good" and has to justify anything worse.
+//
+// Also: separate stage sets for lead gen and closer calls, a difficulty
+// dial on the customer, and bonus moves (the mobile question and friends)
+// that get spotted and rewarded.
 //
 // Deploy:  supabase functions deploy sales-coach
-// Secrets: supabase secrets set CLOUDFLARE_ACCOUNT_ID=...
-//          supabase secrets set CLOUDFLARE_API_TOKEN=...
-// ============================================================
 
-// Provider and model are read from secrets, so you can switch them with a
-// `supabase secrets set` and no code change or app redeploy.
-//
-//   AI_PROVIDER = cloudflare (default) | anthropic
-//   CF_MODEL    = which Cloudflare model to use
-//
-// IMPORTANT: only Cloudflare's *hosted* models draw on the free neuron
-// allocation. Proxied models (anything named gpt-*, claude-*) bill to that
-// provider's own account and get nothing free. Llama, Mistral, Qwen and
-// Gemma are hosted.
-const PROVIDER = (Deno.env.get("AI_PROVIDER") || "cloudflare").toLowerCase();
-
-// 70B gives much better roleplay and scoring; 8B stretches the daily
-// allowance several times further if you're running out.
-//   cheaper: @cf/meta/llama-3.1-8b-instruct
-const CF_MODEL = Deno.env.get("CF_MODEL") || "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
-const ANTHROPIC_MODEL = Deno.env.get("ANTHROPIC_MODEL") || "claude-haiku-4-5-20251001";
-
-// Trim runaway transcripts so a stuck loop can't drain the allowance.
-const MAX_TURNS = 40;
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -41,271 +21,354 @@ const CORS = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-const SCENARIOS: Record<string, string> = {
-  cold_call:
-    "You are the owner of a small independent business — a garage, a dental practice, a builder's merchant, pick one and stay consistent. " +
-    "You did NOT ask for this call. You are busy and mildly irritated at being interrupted. You will hang up if the caller " +
-    "is boring, robotic, or launches into a pitch without earning it. You warm up if they are human, brief, and give you a " +
-    "reason to care. You have a real problem with your current phone and broadband provider but you will not volunteer it " +
-    "unless asked a good question.",
-  objection:
-    "You are a business owner who has heard the pitch and is interested but hesitant. You raise real objections: you're mid-contract, " +
-    "you've been burned by a switch before, the price sounds high, you need to speak to your business partner. Push back genuinely. " +
-    "Concede only if the agent actually addresses the objection rather than talking over it.",
-  renewal:
-    "You are an existing customer whose contract is ending. You are lukewarm — not unhappy, not delighted. You have had one billing " +
-    "issue that annoyed you and you will mention it if pressed. A competitor has quoted you cheaper. You will stay if the agent gives " +
-    "you a reason beyond price, but you will test them on it.",
-  gatekeeper:
-    "You are a receptionist or office manager screening calls. You are polite but practised at deflecting sales calls. " +
-    "You ask who's calling and what it's regarding. You offer to take a message. You only put the caller through if they give you " +
-    "something specific and credible, and you do not respond well to being tricked or patronised.",
-  angry:
-    "You are an existing customer who is genuinely annoyed — an order went wrong, nobody called you back, and you have had to chase twice. " +
-    "You open hostile. You are not unreasonable, but you want acknowledgement before solutions. If the agent gets defensive or jumps " +
-    "to a fix without listening, you escalate. If they listen properly, you calm down.",
+const PROVIDER = Deno.env.get("AI_PROVIDER") || "cloudflare";
+const ANTHROPIC_KEY = Deno.env.get("ANTHROPIC_API_KEY") || "";
+const TURN_MODEL = Deno.env.get("ANTHROPIC_TURN_MODEL") || "claude-haiku-4-5-20251001";
+const SUMMARY_MODEL = Deno.env.get("ANTHROPIC_SUMMARY_MODEL") || "claude-sonnet-5";
+const CF_ACCOUNT = Deno.env.get("CLOUDFLARE_ACCOUNT_ID") || "";
+const CF_TOKEN = Deno.env.get("CLOUDFLARE_API_TOKEN") || "";
+
+async function askModel(system: string, user: string, model: string, maxTokens = 900) {
+  if (PROVIDER === "anthropic") {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": ANTHROPIC_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({ model, max_tokens: maxTokens, system, messages: [{ role: "user", content: user }] }),
+    });
+    if (!res.ok) throw new Error(`Anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    const data = await res.json();
+    return (data.content || []).map((c: any) => c.text || "").join("\n");
+  }
+  const res = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT}/ai/run/@cf/meta/llama-3.1-8b-instruct`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${CF_TOKEN}` },
+      body: JSON.stringify({
+        messages: [{ role: "system", content: system }, { role: "user", content: user }],
+        max_tokens: maxTokens,
+      }),
+    },
+  );
+  if (!res.ok) throw new Error(`Cloudflare ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const data = await res.json();
+  return data?.result?.response || "";
+}
+
+function parseJSON(raw: string) {
+  const cleaned = String(raw || "").replace(/```json|```/g, "").trim();
+  try { return JSON.parse(cleaned); } catch { /* try harder */ }
+  const m = cleaned.match(/\{[\s\S]*\}/);
+  if (m) { try { return JSON.parse(m[0]); } catch { /* give up */ } }
+  return null;
+}
+
+/* ------------------------------------------------------------------ */
+/*  How hard the customer is                                           */
+/* ------------------------------------------------------------------ */
+
+const DIFFICULTY: Record<string, string> = {
+  easy: `You are in a good mood and genuinely open to the conversation. You answer questions willingly and volunteer detail. You only object when something honestly doesn't add up.`,
+
+  normal: `You are a normal business owner taking a call. Mildly guarded for the first exchange or two because you get a lot of these, then perfectly friendly once you can see the agent knows what they're doing. You ANSWER questions properly — with real detail, not one-word replies. You are curious about anything that might save you money or hassle. You raise an objection only occasionally, when one would genuinely occur to you.`,
+
+  hard: `You are busy and have been let down by suppliers before, so you give shorter answers at first and want the agent to get to the point. You still engage properly and answer questions — you are demanding, not obstructive. You never become rude, and you stay on the call as long as the agent is being professional.`,
 };
 
-const TURN_SYSTEM = `You are running a sales training roleplay for a UK B2B telecoms sales agent (BT Local Business — phone, broadband, mobile, cloud voice).
+// The single biggest failure mode is a customer who fights every turn and
+// tries to end the call. This is non-negotiable regardless of difficulty.
+const CONVERSATION_RULES = `
+KEEPING THE CALL ALIVE — THESE OVERRIDE YOUR MOOD
 
-You do two things each turn:
-1. Play the CUSTOMER. Stay in character. Be realistic, not helpful. Real prospects are distracted, sceptical, and don't follow a script. Keep replies SHORT — one to three sentences, like real speech. Never coach or break character in this part.
-2. Score the AGENT'S most recent turn, like chess move annotations.
+This is practice. A call that ends after three turns teaches nothing, so:
+- NEVER try to get off the phone. Do not say you're busy, have to go, have a
+  meeting, or ask them to call back, unless the agent has been genuinely rude.
+- NEVER end the call yourself. "ended" stays false unless the agent has
+  abandoned it or been offensive.
+- ANSWER the questions you're asked. If an agent asks who your mobiles are
+  with, tell them. If they ask when your contract ends, give a date. Invent
+  plausible details about your business and keep them consistent — that is
+  the raw material the agent needs to practise with.
+- Give the agent something to work with. A flat "no" or "we're fine" with
+  nothing attached is a dead end. If you deflect, attach a reason they can
+  actually engage with.
+- ONE objection at a time, and not every turn. Most turns should simply
+  move the conversation forward.
+- Match their energy. If they're professional and warm, be warm back.
+- You are allowed to be interested. A realistic customer sometimes says
+  "actually, that is a bit annoying" or "go on then, what would that cost?"
 
-Scoring scale — use one of these exact words:
-brilliant   = rare, genuinely excellent, changed the call
-excellent   = strong technique, well executed
-good        = solid and on track (most turns are this or below)
-inaccuracy  = slightly off, missed opening, weak phrasing
-mistake     = real error: talking over, pitching too early, closed question where open was needed
-blunder     = serious: arguing, lying, unprompted price, insulting, losing the call
+You are here to give the agent a REALISTIC conversation, not to defeat them.`;
 
-Be honest. Coaching that flatters is useless. Do not hand out "brilliant" for mere competence.
+// Speech-to-text mangles words constantly; the customer must not react to
+// artefacts as if they were what the agent said.
+const TRANSCRIPTION_TOLERANCE = `
+THE AGENT'S WORDS COME FROM SPEECH RECOGNITION
 
-Output ONLY a JSON object. No markdown, no code fences, no explanation before or after. Never use a double-quote character inside any value — use single quotes if you need to quote something:
-{"customer":"what the customer says next","score":"good","note":"one short sentence on why, addressed to the agent as 'you'"}`;
+What you receive is an imperfect machine transcript of someone speaking.
+It WILL contain errors — missing words, wrong homophones, mangled product
+names, no punctuation.
 
-const SUMMARY_SYSTEM = `You are a sales coach reviewing a completed practice call by a UK B2B telecoms agent.
+- Read for INTENT, not literal text. If something is garbled, work out what
+  they most likely meant and respond to that.
+- Product names are the most commonly mangled: "beat ee net"/"BT net" is
+  BT Net, "dee vee four" is DV4, "open reach" is Openreach, "sim"/"sims"
+  are SIM cards. Assume the sensible reading.
+- NEVER grade an agent down for a transcription artefact. Grammar, half
+  words and odd phrasing are the microphone's fault, not theirs.
+- Only ask them to repeat if a whole turn is genuinely unintelligible — and
+  then do it naturally ("sorry, you cut out there"), not robotically.
+- If you are unsure between two readings, assume the competent one.`;
 
-Be specific and honest. Reference actual things they said. Vague praise helps nobody.
+/* ------------------------------------------------------------------ */
+/*  Grading — the part that was wrong                                  */
+/* ------------------------------------------------------------------ */
 
-Output ONLY a JSON object. No markdown, no code fences, no explanation before or after. Never use a double-quote character inside any value — use single quotes if you need to quote something:
-{"grade":"A","headline":"one sentence overall verdict","strengths":["specific thing they did well"],"improvements":["specific thing to change, with what to say instead"],"moment":"the turning point of the call and why it mattered"}
+const GRADING_CALIBRATION = `
+HOW TO GRADE — READ THIS CAREFULLY
 
-grade must be A, B, C or D. Give two or three items in each list.`;
+"good" is the DEFAULT and should be the most common grade by a wide margin.
+A competent, unremarkable turn is "good". You do not need to find something
+wrong with it. Most turns in a decent call are "good".
 
-Deno.serve(async (req: Request) => {
+Use the grades like this:
+  brilliant   — rare. A genuinely excellent move that changes the call:
+                a perfectly judged question, or handling an objection so
+                well the customer's position visibly shifts. Expect at most
+                one or two in a whole call, often none.
+  excellent   — noticeably strong. A well-chosen open question, a benefit
+                tied precisely to something the customer said, a clean ask.
+  good        — competent and appropriate. THE DEFAULT. Use this whenever
+                the agent has done something reasonable, even if it wasn't
+                the theoretically optimal move.
+  inaccuracy  — a small, clear misstep that costs a little ground. A closed
+                question where an open one was needed, a slightly early
+                pitch. Only when there is something specific to point at.
+  mistake     — clearly poor technique with a real cost: pitching before
+                any discovery, talking over the customer, ignoring a direct
+                question.
+  blunder     — rare and serious: being rude, inventing facts about
+                pricing or products, or abandoning the call.
+
+RULES YOU MUST FOLLOW
+- Do NOT mark a turn down for being merely adequate. Adequate is "good".
+- Do NOT mark down for phrasing you would have worded differently.
+- Do NOT mark down for not covering everything at once — calls are
+  sequential and the agent has more turns coming.
+- Do NOT mark down an opening turn for being brief; brief openings are correct.
+- Only use "mistake" or "blunder" when you can name the specific damage done.
+- If you are hesitating between two grades, choose the more generous one.`;
+
+/* ------------------------------------------------------------------ */
+/*  Prompts                                                            */
+/* ------------------------------------------------------------------ */
+
+function stageBlock(stage: any, index: number, total: number) {
+  if (!stage) return "No stage structure — run a natural conversation.";
+  return `
+CURRENT STAGE: ${stage.label} (${index + 1} of ${total})
+  The agent is trying to: ${stage.goal || "—"}
+  Let the call move on when: ${stage.advance_when || "the agent has achieved the goal above"}
+  Objections that fit here: ${stage.objections || "any that arise naturally"}
+  This is going badly if: ${stage.fail_when || "—"}
+  Aim for at most ${stage.max_turns || 6} exchanges here before things move on.`;
+}
+
+function bonusBlock(bonuses: any[]) {
+  if (!bonuses.length) return "";
+  return `
+MOVES WORTH SPOTTING
+If the agent's last turn does any of these, list its key in "bonuses_hit".
+Judge by meaning, not exact wording.
+${bonuses.map((b) => `  ${b.key} — ${b.label}: ${b.description}`).join("\n")}`;
+}
+
+function turnSystem(o: {
+  persona: string; method: string; rubric: string; difficulty: string;
+  callRole: string; stage: any; stageIndex: number; stageCount: number;
+  stagesSummary: string; bonuses: any[];
+}) {
+  const roleContext = o.callRole === "lead_gen"
+    ? `This is a LEAD GENERATION call. The agent is calling cold to find out whether there is an opportunity worth passing to a closer. They are NOT trying to sell or price anything today — they are qualifying, and setting up a proper conversation with a colleague.`
+    : `This is a CLOSER call. The customer has already spoken to a lead gen and knows roughly why this call is happening. The product area is broadly established. This call is about confirming detail, pricing it, handling pushback and getting agreement.`;
+
+  return `You are roleplaying a BUSINESS CUSTOMER on a practice sales call so a BT Local Business agent can rehearse. Stay in character in the "customer" field at all times.
+
+${roleContext}
+
+WHO YOU ARE
+${o.persona || "A small business owner in Devon or Cornwall. You run a busy firm and handle your own suppliers."}
+
+YOUR MOOD
+${DIFFICULTY[o.difficulty] || DIFFICULTY.normal}
+
+HOW THE CALL IS STRUCTURED
+${o.stagesSummary}
+${stageBlock(o.stage, o.stageIndex, o.stageCount)}
+
+${CONVERSATION_RULES}
+
+${TRANSCRIPTION_TOLERANCE}
+
+PLAYING THE CUSTOMER
+- Speak like a real person on the phone: one or two sentences, contractions, British English.
+- Never coach or explain inside the customer's speech.
+
+WHAT GOOD LOOKS LIKE (for grading, not for you to say aloud)
+${o.method || "Open questions before pitching. Listen more than you talk. Tie benefits to what they actually said. Always agree a concrete next step."}
+
+${GRADING_CALIBRATION}
+${o.rubric ? `\nADDITIONAL HOUSE RULES\n${o.rubric}` : ""}
+${bonusBlock(o.bonuses)}
+
+RETURN ONLY JSON — no prose, no code fences:
+{
+  "customer": "what you say next",
+  "score": "brilliant|excellent|good|inaccuracy|mistake|blunder",
+  "note": "one short sentence to the agent — say what worked, not just what didn't",
+  "bonuses_hit": ["keys of any moves above that the agent just made"],
+  "advance": true or false,
+  "stage_note": "if advancing, what earned it; if not, what is still needed",
+  "ended": false
+}`;
+}
+
+function summarySystem(rubric: string, method: string, stagesSummary: string, callRole: string) {
+  return `You are a sales coach reviewing a practice ${callRole === "lead_gen" ? "lead generation" : "closing"} call by a BT Local Business agent.
+
+Be specific, warm and genuinely useful. Quote what they actually said. Assume they are competent and looking to improve, not failing — most agents doing this are doing a reasonable job and need sharpening, not rescuing.
+
+The agent's turns are a SPEECH RECOGNITION transcript and contain errors. Judge what they meant, never how it was transcribed. Do not comment on grammar, half-finished words or phrasing artefacts — those are the microphone's.
+
+THE CALL STRUCTURE
+${stagesSummary}
+
+WHAT GOOD LOOKS LIKE
+${method || "Open questions before pitching. Listen more than you talk. Tie benefits to stated problems. Always agree a concrete next step."}
+${rubric ? `\nHOUSE RULES\n${rubric}` : ""}
+
+GRADE FAIRLY: C is a solid, ordinary call. B is good. A is genuinely excellent.
+D and E are for calls with real problems, not merely imperfect ones.
+
+RETURN ONLY JSON — no prose, no code fences:
+{
+  "grade": "A|B|C|D|E",
+  "headline": "one sentence summing up the call",
+  "strengths": ["two or three specific things they did well, quoting them"],
+  "improvements": ["two or three specific changes, with what to say instead"],
+  "moment": "the turn that most changed the call, and why",
+  "stage_feedback": [{"stage": "stage label", "comment": "how they handled it"}],
+  "next_focus": "the one thing to work on before the next call"
+}`;
+}
+
+/* ------------------------------------------------------------------ */
+
+Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   try {
-    // Must be signed in — this spends a shared daily allowance.
-    if (!req.headers.get("Authorization")) return json({ error: "Not signed in" }, 401);
-
     const body = await req.json();
-    const mode = body.mode === "summary" ? "summary" : "turn";
-    const scenarioKey: string = body.scenario || "cold_call";
-    let history: Array<{ role: string; text: string }> = body.history || [];
-    if (history.length > MAX_TURNS) history = history.slice(-MAX_TURNS);
+    const {
+      mode, scenario, history = [], persona, rubric, method,
+      stageIndex = 0, difficulty = "normal",
+    } = body;
 
-    const scenario = SCENARIOS[scenarioKey] || SCENARIOS.cold_call;
+    // The agent no longer picks lead-gen vs closer. A scenario carries its
+    // own stages; if it hasn't got any, its call_role decides which of the
+    // default sets applies, defaulting to closer.
+    let callRole = "closer";
 
-    // The transcript is the ONLY thing that goes to the model.
-    const transcript = history
-      .map((h) => `${h.role === "agent" ? "AGENT" : "CUSTOMER"}: ${h.text}`)
-      .join("\n");
-
-    const system =
-      mode === "summary"
-        ? SUMMARY_SYSTEM
-        : `${TURN_SYSTEM}\n\nYOUR CHARACTER FOR THIS CALL:\n${scenario}`;
-
-    const userContent =
-      mode === "summary"
-        ? `Here is the full call transcript. Review it.\n\n${transcript}`
-        : transcript.length
-        ? `Conversation so far:\n\n${transcript}\n\nRespond as the customer and score the agent's last turn.`
-        : `The agent hasn't spoken yet. Open the call as the customer would — you've just picked up the phone. Score "good" with an empty note.`;
-
-    const raw = PROVIDER === "cloudflare"
-      ? await callCloudflare(system, userContent)
-      : await callAnthropic(system, userContent);
-
-    if (raw.error) return json({ error: raw.error }, raw.status || 502);
-
-    const parsed = extractJson(raw.text || "");
-    if (parsed && parsed.customer) return json(parsed, 200);
-    if (parsed && (parsed.grade || parsed.headline)) return json(parsed, 200);
-
-    // Open models frequently produce almost-valid JSON — a stray unescaped
-    // quote inside the dialogue is enough to fail strict parsing. Pull the
-    // fields out directly with regex rather than requiring the whole
-    // object to be perfectly formed.
-    const loose = extractLoose(raw.text || "", mode);
-    if (loose) return json(loose, 200);
-
-    // Genuine last resort — still better than silence.
-    return json(
-      mode === "summary"
-        ? { grade: "C", headline: "Summary couldn't be parsed", strengths: [], improvements: [], moment: (raw.text || "").slice(0, 400) }
-        : { customer: firstSentences(raw.text || "") || "Sorry, could you say that again?", score: "good", note: "" },
-      200
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
-  } catch (err) {
-    return json({ error: String(err) }, 500);
+
+    // Scenario-specific stages win; otherwise the default set for this role
+    let stages: any[] = [];
+    const { data: specific } = await supabase
+      .from("coach_stages").select("*")
+      .eq("scenario_key", scenario).eq("active", true).order("sort_order");
+    if (specific && specific.length) {
+      stages = specific;
+    } else {
+      const { data: scen } = await supabase
+        .from("coach_scenarios").select("call_role").eq("key", scenario).maybeSingle();
+      if (scen?.call_role) callRole = scen.call_role;
+
+      const { data: general } = await supabase
+        .from("coach_stages").select("*")
+        .is("scenario_key", null).eq("call_role", callRole).eq("active", true).order("sort_order");
+      stages = general || [];
+    }
+
+    const { data: bonusRows } = await supabase
+      .from("coach_bonuses").select("*").eq("active", true).order("sort_order");
+    const bonuses = (bonusRows || []).filter((b) => !b.call_role || b.call_role === callRole);
+
+    const stagesSummary = stages.length
+      ? stages.map((s, i) => `  ${i + 1}. ${s.label} — ${s.goal || ""}`).join("\n")
+      : "  (no stages configured — run a natural conversation)";
+
+    if (mode === "summary") {
+      const transcript = history
+        .map((t: any) => `${t.role === "agent" ? "AGENT" : "CUSTOMER"}: ${t.text}`).join("\n");
+      const raw = await askModel(
+        summarySystem(rubric, method, stagesSummary, callRole),
+        `Here is the full call. Review it.\n\n${transcript}`,
+        SUMMARY_MODEL, 1600,
+      );
+      const parsed = parseJSON(raw) || {
+        grade: "C", headline: "Practice call complete.",
+        strengths: [], improvements: [], moment: "", stage_feedback: [], next_focus: "",
+      };
+      return new Response(JSON.stringify(parsed), { headers: { ...CORS, "content-type": "application/json" } });
+    }
+
+    const idx = Math.min(Math.max(0, stageIndex), Math.max(0, stages.length - 1));
+    const stage = stages.length ? stages[idx] : null;
+
+    const transcript = history.length
+      ? history.map((t: any) => `${t.role === "agent" ? "AGENT" : "YOU"}: ${t.text}`).join("\n")
+      : "(the agent has just dialled — answer the phone as the customer)";
+
+    const raw = await askModel(
+      turnSystem({
+        persona, method, rubric, difficulty, callRole,
+        stage, stageIndex: idx, stageCount: stages.length, stagesSummary, bonuses,
+      }),
+      transcript, TURN_MODEL, 800,
+    );
+
+    const parsed = parseJSON(raw) || {};
+    const advance = parsed.advance === true && idx < stages.length - 1;
+    const hit = Array.isArray(parsed.bonuses_hit) ? parsed.bonuses_hit : [];
+    const hitDetail = hit
+      .map((k: string) => bonuses.find((b) => b.key === k))
+      .filter(Boolean)
+      .map((b: any) => ({ key: b.key, label: b.label, points: b.points }));
+
+    return new Response(JSON.stringify({
+      customer: parsed.customer || "Sorry, could you say that again?",
+      score: parsed.score || "good",
+      note: parsed.note || "",
+      bonuses: hitDetail,
+      advance,
+      stageIndex: advance ? idx + 1 : idx,
+      stageLabel: stages.length ? (stages[advance ? idx + 1 : idx]?.label || "") : "",
+      stageNote: parsed.stage_note || "",
+      coachingNote: stages.length ? (stages[advance ? idx + 1 : idx]?.coaching_note || "") : "",
+      ended: parsed.ended === true,
+      stages: stages.map((s) => ({ key: s.key, label: s.label })),
+    }), { headers: { ...CORS, "content-type": "application/json" } });
+
+  } catch (e) {
+    return new Response(JSON.stringify({ error: String((e as any)?.message || e) }), {
+      status: 500, headers: { ...CORS, "content-type": "application/json" },
+    });
   }
 });
-
-// ---------------------------------------------------------------
-// Providers
-// ---------------------------------------------------------------
-
-async function callCloudflare(system: string, user: string): Promise<any> {
-  const account = Deno.env.get("CLOUDFLARE_ACCOUNT_ID");
-  const token = Deno.env.get("CLOUDFLARE_API_TOKEN");
-  if (!account || !token) {
-    return { error: "CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN not set on the function", status: 500 };
-  }
-
-  const res = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/${CF_MODEL}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-        max_tokens: 600,
-        temperature: 0.8,
-      }),
-    }
-  );
-
-  const data = await res.json().catch(() => null);
-  if (!res.ok || !data?.success) {
-    const detail = data?.errors?.[0]?.message || `HTTP ${res.status}`;
-    // 10,000 neurons/day, reset at midnight UTC — worth saying plainly.
-    const friendly = /neuron|quota|limit|exceed|capacity/i.test(String(detail))
-      ? "Daily free allowance used up — it resets at midnight UTC."
-      : String(detail);
-    return { error: friendly, status: 502 };
-  }
-  return { text: extractCfText(data.result) };
-}
-
-// Cloudflare's response shape varies by model. Usually result.response is
-// a plain string, but some models nest it, or return an OpenAI-style
-// content array. Blindly doing String(result.response) on an object gives
-// the literal text "[object Object]" — this checks the actual shape
-// instead, so the roleplay never breaks like that again.
-function extractCfText(result: any): string {
-  if (!result) return "";
-  const r = result.response;
-  if (typeof r === "string") return r;
-  if (r && typeof r === "object") {
-    if (typeof r.response === "string") return r.response;
-    if (typeof r.content === "string") return r.content;
-    if (typeof r.text === "string") return r.text;
-    if (Array.isArray(r)) {
-      return r.map((b: any) => (typeof b === "string" ? b : b?.text || "")).join("");
-    }
-  }
-  if (Array.isArray(result.output)) {
-    return result.output.map((b: any) => b?.content || b?.text || "").join("");
-  }
-  // Last resort: readable JSON rather than a useless "[object Object]".
-  return JSON.stringify(result);
-}
-
-async function callAnthropic(system: string, user: string): Promise<any> {
-  const key = Deno.env.get("ANTHROPIC_API_KEY");
-  if (!key) return { error: "ANTHROPIC_API_KEY not set on the function", status: 500 };
-
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: ANTHROPIC_MODEL,
-      max_tokens: 1000,
-      system,
-      messages: [{ role: "user", content: user }],
-    }),
-  });
-
-  if (!res.ok) return { error: `Model call failed (${res.status})`, status: 502 };
-  const data = await res.json();
-  return {
-    text: (data.content || []).map((b: any) => (b.type === "text" ? b.text : "")).join("").trim(),
-  };
-}
-
-// ---------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------
-
-// Open models like to wrap JSON in prose or fences. Take the outermost
-// braces and try that.
-function extractJson(text: string): any | null {
-  const cleaned = String(text).replace(/```(?:json)?/gi, "").trim();
-  const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) return null;
-  try {
-    return JSON.parse(cleaned.slice(start, end + 1));
-  } catch {
-    return null;
-  }
-}
-
-function firstSentences(text: string, n = 2) {
-  const clean = String(text).replace(/```(?:json)?/gi, "").replace(/[{}"]/g, " ").trim();
-  return clean.split(/(?<=[.!?])\s+/).slice(0, n).join(" ").slice(0, 280);
-}
-
-// Pulls "customer"/"score"/"note" (or "grade"/"headline"/etc) straight out
-// of near-JSON text with regex, tolerant of a broken quote or trailing
-// comma elsewhere in the object that would fail a strict JSON.parse.
-function extractLoose(text: string, mode: string): any | null {
-  const t = String(text).replace(/```(?:json)?/gi, "");
-  const field = (name: string): string | null => {
-    // Matches "name": "value" — value may run to the next ", "key": pattern
-    // or the end, and tolerates an unescaped quote inside by being greedy
-    // up to the LAST quote before the next known key or closing brace.
-    const m = t.match(new RegExp(`"${name}"\\s*:\\s*"([\\s\\S]*?)"\\s*(?:,\\s*"(?:customer|score|note|grade|headline|strengths|improvements|moment)"|\\})`, "i"));
-    return m ? m[1].replace(/\\"/g, '"').replace(/\\n/g, " ").trim() : null;
-  };
-
-  if (mode === "summary") {
-    const grade = field("grade");
-    const headline = field("headline");
-    if (!grade && !headline) return null;
-    return {
-      grade: (grade || "C").toUpperCase().slice(0, 1),
-      headline: headline || "Call reviewed.",
-      strengths: [], improvements: [],
-      moment: field("moment") || "",
-    };
-  }
-
-  const customer = field("customer");
-  if (!customer) return null;
-  const scoreRaw = (field("score") || "good").toLowerCase();
-  const validScores = ["brilliant", "excellent", "good", "inaccuracy", "mistake", "blunder"];
-  return {
-    customer,
-    score: validScores.includes(scoreRaw) ? scoreRaw : "good",
-    note: field("note") || "",
-  };
-}
-
-function json(payload: unknown, status: number) {
-  return new Response(JSON.stringify(payload), {
-    status,
-    headers: { ...CORS, "Content-Type": "application/json" },
-  });
-}
