@@ -8232,9 +8232,9 @@ function isoDateStr(d) {
 function ForecastCell({ value, money = true, bold, tone, highlight }) {
   const empty = !value;
   return (
-    <td className="px-2 py-1.5 sw-mono whitespace-nowrap"
+    <td className="px-2 py-2 sw-mono whitespace-nowrap"
       style={{
-        fontSize: 12, textAlign: "center",
+        fontSize: 13.5, textAlign: "center",
         fontWeight: bold ? 700 : 500,
         color: empty ? "var(--ink-faint)" : (tone || "var(--ink)"),
         borderLeft: "1px solid var(--border)",
@@ -8264,29 +8264,22 @@ function fcProductCol(pillar) {
   return null;
 }
 
-function FcRow({ label, v, sov, units, prods, bold, tone, depth = 0, onToggle, isOpen, onFocus, focused }) {
+function FcRow({ label, v, sov, units, prods, bold, tone, depth = 0, onFocus, focused }) {
   return (
     <tr style={{
       borderTop: "1px solid var(--border)",
       background: focused ? "var(--primary-soft)" : "transparent",
     }}>
-      <td className="px-3 py-1.5 whitespace-nowrap" style={{ paddingLeft: 12 + depth * 20 }}>
-        <span className="flex items-center gap-1.5">
-          {onToggle ? (
-            <button onClick={onToggle} className="sw-focus shrink-0" title={isOpen ? "Collapse" : "Expand"}>
-              <ChevronDown size={12} style={{ color: "var(--ink-faint)", transform: isOpen ? "rotate(0)" : "rotate(-90deg)", transition: "transform .15s" }} />
-            </button>
-          ) : depth ? <span style={{ width: 12 }} /> : null}
-          {onFocus ? (
-            <button onClick={onFocus} className="sw-focus text-left"
-              title={focused ? "Clear this filter" : `Filter everything below to ${label}`}
-              style={{ fontSize: 12, fontWeight: bold ? 700 : 600, color: focused ? "var(--primary)" : (tone || "var(--ink-soft)"), textDecoration: focused ? "underline" : "none" }}>
-              {label}
-            </button>
-          ) : (
-            <span style={{ fontSize: 12, fontWeight: bold ? 700 : 600, color: tone || "var(--ink-soft)" }}>{label}</span>
-          )}
-        </span>
+      <td className="px-3 py-2 whitespace-nowrap" style={{ paddingLeft: 12 + depth * 20 }}>
+        {onFocus ? (
+          <button onClick={onFocus} className="sw-focus text-left"
+            title={focused ? "Clear this filter" : `Filter everything below to ${label}`}
+            style={{ fontSize: 13.5, fontWeight: bold ? 700 : 600, color: focused ? "var(--primary)" : (tone || "var(--ink-soft)"), textDecoration: focused ? "underline" : "none" }}>
+            {label}
+          </button>
+        ) : (
+          <span style={{ fontSize: 13.5, fontWeight: bold ? 700 : 600, color: tone || "var(--ink-soft)" }}>{label}</span>
+        )}
       </td>
       {v == null
         ? <td className="px-2 py-1.5" style={{ borderLeft: "1px solid var(--border)", background: "var(--primary-soft)" }} />
@@ -8310,7 +8303,6 @@ function ForecastView({ netsuite, profile, staff }) {
   const [teamFilter, setTeamFilter] = useState("All");
   const [agentFilter, setAgentFilter] = useState("All");
   const [pillarFilter, setPillarFilter] = useState(null);   // product group filter
-  const [fcOpen, setFcOpen] = useState({});                 // expanded rows
   const [adding, setAdding] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToastLocal] = useState("");
@@ -8655,6 +8647,19 @@ function ForecastView({ netsuite, profile, staff }) {
           What we expect to land · cross-referenced against NetSuite
         </span>
         <div className="ml-auto flex items-center gap-2">
+          {/* Summary vs the full list. Lives up here now the filter bar
+              below has gone — the table's own headers do the filtering. */}
+          <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 34 }}>
+            {[["summary", "Summary"], ["detail", "All forecasts"]].map(([k, lbl]) => (
+              <button key={k} onClick={() => setView(k)}
+                className="sw-focus px-3 text-xs whitespace-nowrap"
+                style={view === k
+                  ? { background: "var(--primary)", color: "#fff", fontWeight: 600, height: "100%" }
+                  : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
+                {lbl}
+              </button>
+            ))}
+          </div>
           <select className="sw-input sw-focus" style={{ width: 190 }} value={week} onChange={(e) => setWeek(e.target.value)}>
             {weekOptions.map((w) => <option key={w} value={w}>{weekLabel(w)}</option>)}
           </select>
@@ -8748,35 +8753,6 @@ function ForecastView({ netsuite, profile, staff }) {
         </div>
       )}
 
-      {/* View + filters */}
-      <div className="flex items-center gap-2 mb-3 flex-wrap">
-        {[["summary", "Summary"], ["detail", "All forecasts"]].map(([k, lbl]) => (
-          <button key={k} onClick={() => setView(k)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold"
-            style={view === k ? { background: "var(--primary)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>
-            {lbl}
-          </button>
-        ))}
-        <span className="mx-1" style={{ width: 1, height: 20, background: "var(--border)" }} />
-        <button onClick={() => setTeamFilter("All")} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold"
-          style={teamFilter === "All" ? { background: "var(--ink)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>All teams</button>
-        {SELLING_TEAMS.map((t) => (
-          <button key={t} onClick={() => setTeamFilter(t)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold"
-            style={teamFilter === t ? { background: "var(--ink)", color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>{t}</button>
-        ))}
-        <select className="sw-input sw-focus" style={{ width: 180 }} value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)}>
-          <option value="All">All agents</option>
-          {agentOptions.map((a) => <option key={a} value={a}>{a}</option>)}
-        </select>
-        {/* The treemap used to set this; with the charts gone it needs its
-            own control rather than being permanently unreachable. */}
-        <select className="sw-input sw-focus" style={{ width: 160 }}
-          value={pillarFilter || "All"}
-          onChange={(e) => setPillarFilter(e.target.value === "All" ? null : e.target.value)}>
-          <option value="All">All products</option>
-          {PILLAR_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
-          <option value="Other">Other</option>
-        </select>
-      </div>
 
       {/* SUMMARY */}
       {view === "summary" && (
@@ -8786,47 +8762,58 @@ function ForecastView({ netsuite, profile, staff }) {
         <div className="sw-cols mb-4" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 220px", gap: "0.75rem", alignItems: "start" }}>
         <div>
 
-          {/* Expandable breakdown — all teams first, then each team */}
+          {/* Breakdown. Column headings do the filtering; the rows expand
+              in place, so the old filter bar above is gone. */}
           <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
             <div className="overflow-x-auto">
               <table className="w-full" style={{ borderCollapse: "collapse" }}>
                 <thead>
                   <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
-                    <th className="px-3 py-2 text-left text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Metric</th>
-                    <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "var(--ink-soft)", background: "var(--primary-soft)" }}>GP</th>
-                    <th className="px-2 py-2 text-center text-xs font-semibold" style={{ color: "var(--ink-soft)" }}>SOV</th>
-                    <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "var(--ink-faint)" }}>Units</th>
-                    {FC_PRODUCT_COLS.map((c) => (
-                      <th key={c.key} className="px-2 py-2 text-center text-xs font-bold" style={{ color: c.accent }}>{c.label}</th>
-                    ))}
+                    <th className="px-3 py-2 text-left text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }} rowSpan={2}>Metric</th>
+                    <th className="px-2 py-1.5 text-center text-xs font-bold" colSpan={2}
+                      style={{ color: "var(--primary)", background: "var(--primary-soft)", borderLeft: "1px solid var(--border)" }}>
+                      Office total
+                    </th>
+                    <th className="px-2 py-2 text-center text-sm font-bold" style={{ color: "var(--ink-faint)" }} rowSpan={2}>Units</th>
+                    {/* Clicking a product heading filters the whole page */}
+                    {FC_PRODUCT_COLS.map((c) => {
+                      const on = pillarFilter === c.key;
+                      return (
+                        <th key={c.key} className="px-2 py-2 text-center" rowSpan={2}
+                          style={{ background: on ? "var(--primary-soft)" : "transparent" }}>
+                          <button onClick={() => setPillarFilter(on ? null : c.key)}
+                            className="sw-focus text-sm font-bold"
+                            title={on ? "Clear this filter" : `Show only ${c.label}`}
+                            style={{ color: c.accent, textDecoration: on ? "underline" : "none" }}>
+                            {c.label}
+                          </button>
+                        </th>
+                      );
+                    })}
+                  </tr>
+                  <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
+                    <th className="px-2 py-1.5 text-center text-xs font-bold"
+                      style={{ color: "var(--green)", background: "var(--primary-soft)", borderLeft: "1px solid var(--border)" }}>GP</th>
+                    <th className="px-2 py-1.5 text-center text-xs font-bold"
+                      style={{ color: "var(--ink-soft)", background: "var(--primary-soft)" }}>SOV</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {/* All teams */}
+                  {/* All teams — GP and SOV on one line now, rather than a
+                      GP row with an empty SOV and vice versa. */}
                   <tr style={{ background: "var(--ink)" }}>
                     <td colSpan={4 + FC_PRODUCT_COLS.length} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "#fff" }}>All teams</td>
                   </tr>
-                  {/* Net of the lead-gen overlap — this is what lands. The
-                      team rows below add up to more; the DC line reconciles. */}
-                  <FcRow label="GP" v={summary.grand} sov={null} bold tone="var(--green)" />
-                  <FcRow label="Total SOV" v={null} sov={breakdown.all.sov} units={breakdown.all.units} prods={breakdown.all.prods} bold tone="var(--primary)"
-                    isOpen={!!fcOpen.all_sov} onToggle={() => setFcOpen((o) => ({ ...o, all_sov: !o.all_sov }))} />
-                  {fcOpen.all_sov && PILLAR_GROUPS.map((g) => {
-                    const k = `all_${g.key || g}`;
+                  <FcRow label="Office total" v={summary.grand} sov={breakdown.all.sov}
+                    units={breakdown.all.units} prods={breakdown.all.prods} bold tone="var(--primary)" />
+
+                  {PILLAR_GROUPS.map((g) => {
                     const node = breakdown.all.groups[g];
                     if (!node || (!node.gp && !node.sov)) return null;
-                    const subs = Object.keys(node.subs).sort();
                     return (
-                      <React.Fragment key={g}>
-                        <FcRow label={g} v={node.gp} sov={node.sov} units={node.units} prods={node.prods} depth={1}
-                          isOpen={!!fcOpen[k]} onToggle={subs.length ? () => setFcOpen((o) => ({ ...o, [k]: !o[k] })) : undefined}
-                          focused={pillarFilter === g}
-                          onFocus={() => setPillarFilter(pillarFilter === g ? null : g)} />
-                        {fcOpen[k] && subs.map((s) => (
-                          <FcRow key={s} label={s} v={node.subs[s].gp} sov={node.subs[s].sov}
-                            units={node.subs[s].units} prods={node.subs[s].prods} depth={2} tone="var(--ink-faint)" />
-                        ))}
-                      </React.Fragment>
+                      <FcRow key={g} label={g} v={node.gp} sov={node.sov} units={node.units} prods={node.prods} depth={1}
+                        focused={pillarFilter === g}
+                        onFocus={() => setPillarFilter(pillarFilter === g ? null : g)} />
                     );
                   })}
 
@@ -8836,52 +8823,34 @@ function ForecastView({ netsuite, profile, staff }) {
                       <td colSpan={4 + FC_PRODUCT_COLS.length} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "var(--primary)" }}>By team</td>
                     </tr>
                   )}
-                  {breakdown.teams.map((t) => {
-                    const tk = `team_${t.team}`;
-                    return (
-                      <React.Fragment key={t.team}>
-                        <FcRow label={t.team} v={t.gp} sov={t.sov} units={t.units} prods={t.prods} bold
-                          isOpen={!!fcOpen[tk]} onToggle={() => setFcOpen((o) => ({ ...o, [tk]: !o[tk] }))}
-                          focused={teamFilter === t.team}
-                          onFocus={() => setTeamFilter(teamFilter === t.team ? "All" : t.team)} />
-                        {fcOpen[tk] && PILLAR_GROUPS.map((g) => {
-                          const k = `${tk}_${g}`;
-                          const node = t.groups[g];
-                          if (!node || (!node.gp && !node.sov)) return null;
-                          const subs = Object.keys(node.subs).sort();
-                          return (
-                            <React.Fragment key={g}>
-                              <FcRow label={g} v={node.gp} sov={node.sov} units={node.units} prods={node.prods} depth={1}
-                                isOpen={!!fcOpen[k]} onToggle={subs.length ? () => setFcOpen((o) => ({ ...o, [k]: !o[k] })) : undefined}
-                                focused={pillarFilter === g}
-                                onFocus={() => setPillarFilter(pillarFilter === g ? null : g)} />
-                              {fcOpen[k] && subs.map((s) => (
-                                <FcRow key={s} label={s} v={node.subs[s].gp} sov={node.subs[s].sov}
-                                  units={node.subs[s].units} prods={node.subs[s].prods} depth={2} tone="var(--ink-faint)" />
-                              ))}
-                            </React.Fragment>
-                          );
-                        })}
-                      </React.Fragment>
-                    );
-                  })}
+                  {breakdown.teams.map((t) => (
+                    <React.Fragment key={t.team}>
+                      <FcRow label={t.team} v={t.gp} sov={t.sov} units={t.units} prods={t.prods} bold
+                        focused={teamFilter === t.team}
+                        onFocus={() => setTeamFilter(teamFilter === t.team ? "All" : t.team)} />
+                      {teamFilter === t.team && PILLAR_GROUPS.map((g) => {
+                        const node = t.groups[g];
+                        if (!node || (!node.gp && !node.sov)) return null;
+                        return (
+                          <FcRow key={g} label={g} v={node.gp} sov={node.sov} units={node.units} prods={node.prods} depth={1}
+                            tone="var(--ink-faint)"
+                            focused={pillarFilter === g}
+                            onFocus={() => setPillarFilter(pillarFilter === g ? null : g)} />
+                        );
+                      })}
+                    </React.Fragment>
+                  ))}
 
-                  {/* Double count and the figure that actually lands */}
+                  {/* What the overlap costs. The teams above add to more
+                      than the office total; this reconciles them. */}
                   <tr style={{ borderTop: "2px solid var(--border)", background: "var(--red-soft)" }}>
                     <td className="px-3 py-1.5 text-xs font-semibold" style={{ color: "var(--red)" }}>
                       DC <span style={{ fontWeight: 400 }}>(teams claim {fmtGBP(summary.gpSum)})</span>
                     </td>
                     <ForecastCell value={summary.dc} bold tone="var(--red)" highlight />
-                    <ForecastCell value={0} />
-                    <ForecastCell value={0} money={false} />
-                    <ForecastCell value={0} money={false} />
-                  </tr>
-                  <tr style={{ background: "var(--ink)" }}>
-                    <td className="px-3 py-2 text-sm font-bold" style={{ color: "#fff" }}>Net GP after DC</td>
-                    <td className="px-2 py-2 sw-mono font-bold text-center" style={{ fontSize: 13, color: "#fff", background: "#3B1370" }}>{fmtGBP(summary.grand)}</td>
-                    <td className="px-2 py-2 sw-mono font-bold text-center" style={{ fontSize: 12, color: "#fff" }}>{fmtGBP(breakdown.all.sov)}</td>
-                    <td className="px-2 py-2 sw-mono text-center" style={{ fontSize: 12, color: "rgba(255,255,255,0.75)" }}>{breakdown.all.units.toLocaleString("en-GB")}</td>
-                    <td className="px-2 py-2 sw-mono text-center" style={{ fontSize: 12, color: "rgba(255,255,255,0.75)" }}>{breakdown.all.lines}</td>
+                    <td className="px-2 py-1.5" />
+                    <td className="px-2 py-1.5" />
+                    {FC_PRODUCT_COLS.map((c) => <td key={c.key} className="px-2 py-1.5" />)}
                   </tr>
                 </tbody>
               </table>
@@ -9739,7 +9708,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   const [placementView, setPlacementView] = useState("to_be_placed");
   const [dirtyOnly, setDirtyOnly] = useState(false);
   const [agedOnly, setAgedOnly] = useState(false);
-  // Ranked column can switch to a throughput matrix
+  // Ranked column can switch to an activity matrix
   const [rankView, setRankView] = useState("ranked");        // ranked | throughput
   const [flowMode, setFlowMode] = useState("week");          // week (per day) | weeks (per week)
   const [flowFy, setFlowFy] = useState(() => String(fyYearOf()));
@@ -10035,7 +10004,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
     };
   }), []);
 
-  /* Throughput: what each admin agent RECEIVED versus what they PLACED.
+  /* Activity: what each admin agent RECEIVED versus what they PLACED.
      Received is dated off the NetSuite order date; placed is dated off the
      sheet's "Order placed" column. That column syncs as free text rather
      than a parsed date, so it's parsed defensively here and anything that
@@ -10423,7 +10392,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
           rest. Inline grid on purpose — critical layout, no Tailwind JIT. */}
       <div className="sw-cols" style={{
         display: "grid",
-        // Throughput needs room for a 7-day / 13-week matrix, so the column
+        // Activity needs room for the day / week matrix, so the column
         // widens for it and drops back to a quarter for the ranked list.
         gridTemplateColumns: rankView === "throughput"
           ? "minmax(420px, 1.7fr) minmax(0, 2.3fr)"
@@ -10442,7 +10411,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
             </div>
 
             <div className="flex items-center rounded-lg overflow-hidden mb-3" style={{ border: "1px solid var(--border)", height: 28 }}>
-              {[["ranked", "Ranked"], ["throughput", "Throughput"]].map(([k, lbl]) => (
+              {[["ranked", "Ranked"], ["throughput", "Activity"]].map(([k, lbl]) => (
                 <button key={k} onClick={() => setRankView(k)}
                   className="sw-focus px-2.5 text-xs whitespace-nowrap" style={{ flex: 1, ...(rankView === k
                     ? { background: "var(--primary)", color: "#fff", fontWeight: 600, height: "100%" }
