@@ -2757,15 +2757,99 @@ function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove }) 
   const [editErr, setEditErr] = useState("");
   const [removing, setRemoving] = useState(false);
   const [removeReason, setRemoveReason] = useState("");
+  // Full-record amendment — every field on the row, not just SOV/GP
+  const [editingAll, setEditingAll] = useState(false);
+  const [form, setForm] = useState({});
+  const [allErr, setAllErr] = useState("");
 
   useEffect(() => {
     setEditing(false);
+    setEditingAll(false);
     setRemoving(false);
     setRemoveReason("");
+    setAllErr("");
     if (order) { setSov(String(order.contract_value ?? "")); setGp(String(order.sales_agent_gp ?? "")); setEditErr(""); }
   }, [order?.id]);
 
   if (!order) return null;
+
+  /* Every field an amendment is allowed to touch. Deliberately excludes the
+     derived GP splits (closer_share, gp_office, team figures) — those are
+     recomputed from GP + the two percentages so they can never drift out of
+     step with each other. Also excludes id / lbcr_ref / removed_at. */
+  const EDIT_FIELDS = [
+    { k: "company_name", label: "Company", w: 2 },
+    { k: "opp_id", label: "Opp ID" },
+    { k: "document_number", label: "NetSuite Doc No." },
+    { k: "order_status", label: "Order status" },
+    { k: "contract_value", label: "SOV (£)", num: true },
+    { k: "sales_agent_gp", label: "GP (£)", num: true },
+    { k: "closer_name", label: "Closer" },
+    { k: "closer_team", label: "Closer team" },
+    { k: "closer_pct", label: "Closer %", num: true },
+    { k: "lead_gen_name", label: "Lead gen" },
+    { k: "lead_gen_team", label: "Lead gen team" },
+    { k: "lead_gen_pct", label: "Lead gen %", num: true },
+    { k: "product_group_2", label: "Product group" },
+    { k: "item_name_grouped", label: "Items" },
+    { k: "cug", label: "CUG" },
+    { k: "quantity", label: "Quantity", num: true },
+    { k: "partner", label: "Partner" },
+    { k: "partner_role", label: "Partner role" },
+    { k: "admin_agent", label: "Admin agent" },
+    { k: "allocated_to_name", label: "Allocated to" },
+    { k: "delivery_status", label: "Delivery status" },
+    { k: "schedule_5", label: "Schedule 5" },
+    { k: "campaign_source", label: "Campaign source" },
+    { k: "dirty_order", label: "Dirty order", options: ["No", "Yes"] },
+    { k: "submission_date", label: "Submission date", date: true },
+    { k: "drive_link", label: "Drive link", w: 2 },
+    { k: "description", label: "Description", w: 2, textarea: true },
+  ];
+
+  const openEditAll = () => {
+    const f = {};
+    EDIT_FIELDS.forEach(({ k, date }) => {
+      const v = order[k];
+      f[k] = v == null ? "" : date ? String(v).slice(0, 10) : String(v);
+    });
+    setForm(f);
+    setAllErr("");
+    setEditingAll(true);
+  };
+
+  const saveAll = async () => {
+    setAllErr("");
+    for (const fld of EDIT_FIELDS) {
+      const v = String(form[fld.k] ?? "").trim();
+      if (fld.num && v !== "" && !/^-?\d*\.?\d+$/.test(v)) {
+        setAllErr(`${fld.label} must be a number.`); return;
+      }
+    }
+    const cPct = form.closer_pct === "" ? 0 : num(form.closer_pct);
+    const lPct = form.lead_gen_pct === "" ? 0 : num(form.lead_gen_pct);
+    const hasLeadGen = !!String(form.lead_gen_name || "").trim();
+    if (cPct + (hasLeadGen ? lPct : 0) === 0) { setAllErr("Splits can't both be zero."); return; }
+
+    const patch = {};
+    EDIT_FIELDS.forEach(({ k, num: isNum, date }) => {
+      const raw = String(form[k] ?? "").trim();
+      if (isNum) patch[k] = raw === "" ? null : num(raw);
+      else if (date) patch[k] = raw === "" ? null : new Date(raw + "T00:00:00").toISOString();
+      else patch[k] = raw === "" ? null : raw;
+    });
+    // Splits are always derived, never typed — same rule the import uses.
+    Object.assign(patch, recomputeGP({
+      gp: patch.sales_agent_gp,
+      closerPct: cPct,
+      leadGenPct: lPct,
+      sameTeam: hasLeadGen && patch.closer_team === patch.lead_gen_team,
+      hasLeadGen,
+    }));
+    patch.last_updated = new Date().toISOString();
+    await onSave(order.id, patch);
+    setEditingAll(false);
+  };
 
   const saveEdits = async () => {
     setEditErr("");
@@ -2811,16 +2895,74 @@ function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove }) 
   return (
     <div className="fixed inset-0 z-40 flex justify-end" role="dialog" aria-modal="true">
       <div className="absolute inset-0" style={{ background: "rgba(29,26,46,0.35)" }} onClick={onClose} />
-      <div className="sw-slide-in relative w-full max-w-md h-full overflow-y-auto p-6" style={{ background: "var(--surface)", borderLeft: "1px solid var(--border)" }}>
+      <div className={`sw-slide-in relative w-full h-full overflow-y-auto p-6 ${editingAll ? "max-w-2xl" : "max-w-md"}`} style={{ background: "var(--surface)", borderLeft: "1px solid var(--border)" }}>
         <button onClick={onClose} className="sw-focus absolute top-5 right-5 p-1.5 rounded-lg" style={{ color: "var(--ink-soft)" }}><X size={18} /></button>
         <div className="mb-1"><IdChip>{order.opp_id}</IdChip></div>
         <h2 className="sw-display text-xl font-bold mt-2 mb-1">{order.company_name}</h2>
-        <div className="mb-4">
+        <div className="mb-4 flex items-center gap-2 flex-wrap">
           <StatusPill
             status={ns && ns.order_status ? ns.order_status : order.order_status}
             ngp={!!ns && ns.count_gp === false}
           />
+          {canEdit && !editingAll && (
+            <button onClick={openEditAll} className="sw-focus text-xs font-semibold px-2.5 py-1 rounded-lg"
+              style={{ color: "var(--primary)", background: "var(--primary-soft)" }}>
+              Edit
+            </button>
+          )}
         </div>
+
+        {/* Full amendment. Everything on the record in one form — the GP
+            splits are recomputed on save rather than typed, so they can't
+            drift from GP and the percentages. */}
+        {canEdit && editingAll && (
+          <div className="rounded-xl mb-5 p-4" style={{ background: "var(--surface-alt)", border: "1px solid var(--primary)" }}>
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--primary)" }}>Amend order</span>
+              <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{order.lbcr_ref || ""}</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.6rem" }}>
+              {EDIT_FIELDS.map((fld) => (
+                <div key={fld.k} style={{ gridColumn: fld.w === 2 ? "span 2" : "span 1", minWidth: 0 }}>
+                  <label className="sw-label">{fld.label}</label>
+                  {fld.options ? (
+                    <select className="sw-input sw-focus" style={{ height: 32, fontSize: 12 }}
+                      value={form[fld.k] ?? ""} onChange={(e) => setForm((p) => ({ ...p, [fld.k]: e.target.value }))}>
+                      <option value="">—</option>
+                      {fld.options.map((o) => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  ) : fld.textarea ? (
+                    <textarea className="sw-input sw-focus" rows={3} style={{ fontSize: 12 }}
+                      value={form[fld.k] ?? ""} onChange={(e) => setForm((p) => ({ ...p, [fld.k]: e.target.value }))} />
+                  ) : (
+                    <input className="sw-input sw-focus" type={fld.date ? "date" : "text"} style={{ height: 32, fontSize: 12 }}
+                      value={form[fld.k] ?? ""} onChange={(e) => setForm((p) => ({ ...p, [fld.k]: e.target.value }))} />
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="text-xs mt-3" style={{ color: "var(--ink-soft)" }}>
+              Splits recalculate on save: Closer {num(form.closer_pct)}% = {fmtGBP(num(form.sales_agent_gp) * num(form.closer_pct) / 100)}
+              {String(form.lead_gen_name || "").trim()
+                ? ` · Lead Gen ${num(form.lead_gen_pct)}% = ${fmtGBP(num(form.sales_agent_gp) * num(form.lead_gen_pct) / 100)}`
+                : ""}
+            </div>
+            {allErr && <div className="sw-err mt-2">{allErr}</div>}
+            <div className="flex gap-2 mt-3">
+              <button onClick={saveAll} disabled={saving}
+                className="sw-focus flex-1 py-2 rounded-lg text-sm font-semibold text-white flex items-center justify-center gap-1.5"
+                style={{ background: "var(--primary)", opacity: saving ? 0.7 : 1 }}>
+                {saving ? <Loader2 size={13} className="animate-spin" /> : null} Save amendment
+              </button>
+              <button onClick={() => setEditingAll(false)} className="sw-focus px-4 py-2 rounded-lg text-sm font-semibold"
+                style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>Cancel</button>
+            </div>
+            <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
+              The Lilac Box auto-update can still overwrite these fields until the migration is finished.
+            </p>
+          </div>
+        )}
 
         {/* Deal value + GP — editable by office / 2ic / closer */}
         <div className="rounded-xl mb-5 p-4" style={{ background: "var(--surface-alt)" }}>
@@ -9545,7 +9687,9 @@ function TopsView({ netsuite, staff }) {
   }, [people, sortBy]);
 
   const toggleCol = (k) => setCols((c) => ({ ...c, [k]: !c[k] }));
-  const MEDALS = ["#B8860B", "#8A8A8A", "#A0642A"];
+  // Tinted rank chips read as quieter than solid gold/silver/bronze fills
+  const MEDAL_INK = ["#7A5C00", "#5A5A5A", "#7A4A1F"];
+  const MEDAL_BG = ["rgba(184,134,11,0.16)", "rgba(138,138,138,0.16)", "rgba(160,100,42,0.16)"];
   const showTable = split === "both" || split === "table";
   const showCards = split === "both" || split === "cards";
 
@@ -9697,41 +9841,53 @@ function TopsView({ netsuite, staff }) {
             gap: "0.75rem", alignItems: "start",
           }}>
             {boards.filter((b) => cols[b.key]).map((b) => (
-              <div key={b.key} className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-                <div className="px-3 py-2.5" style={{ borderBottom: "1px solid var(--border)", background: "var(--surface-alt)" }}>
+              <div key={b.key} className="sw-lift overflow-hidden"
+                style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 14 }}>
+                {/* Accent spine ties the card to its product without a
+                    heavy coloured header block */}
+                <div style={{ position: "relative", padding: "11px 14px 10px", borderBottom: "1px solid var(--border)" }}>
+                  <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: b.accent }} />
                   <div className="flex items-baseline justify-between gap-2">
-                    <span className="sw-display truncate" style={{ fontSize: 13.5, fontWeight: 600, color: b.accent }}>
-                      {b.parent ? "↳ " : ""}{b.label}
+                    <span className="sw-display truncate" style={{ fontSize: 13, fontWeight: 600, color: b.accent, letterSpacing: "-0.01em" }}>
+                      {b.parent ? <span style={{ opacity: 0.55 }}>↳ </span> : null}{b.label}
                     </span>
-                    <span className="sw-mono text-xs shrink-0" style={{ color: "var(--ink-soft)" }}>{fmtGBP(b.total)}</span>
+                    <span className="sw-mono shrink-0" style={{ fontSize: 14, fontWeight: 600 }}>{fmtGBP(b.total)}</span>
                   </div>
-                  <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                  <div style={{ fontSize: 10.5, color: "var(--ink-faint)", letterSpacing: "0.04em", textTransform: "uppercase", marginTop: 2 }}>
                     SOV{b.sellers ? ` · ${b.sellers} selling` : ""}
                   </div>
                 </div>
+
                 {b.rows.length === 0 ? (
-                  <div className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>Nothing this period.</div>
-                ) : b.rows.map((r, i) => {
-                  const max = b.rows[0].value || 1;
-                  return (
-                    <div key={r.name} className="px-3 py-2" style={{ borderTop: i === 0 ? "none" : "1px solid var(--border)" }}>
-                      <div className="flex items-center gap-2">
-                        <span className="sw-display shrink-0" style={{
-                          width: 18, height: 18, borderRadius: 99, display: "flex", alignItems: "center", justifyContent: "center",
-                          fontSize: 10.5, fontWeight: 700, color: "#fff", background: MEDALS[i],
-                        }}>{i + 1}</span>
-                        <div style={{ minWidth: 0, flex: 1 }}>
-                          <div className="truncate" style={{ fontSize: 12.5, fontWeight: 600 }}>{r.name}</div>
-                          <div className="text-xs truncate" style={{ color: "var(--ink-faint)" }}>{r.team}</div>
+                  <div className="text-xs text-center py-7" style={{ color: "var(--ink-faint)" }}>Nothing this period.</div>
+                ) : (
+                  /* No dividers between places — the bars already separate
+                     them, and the rank fades down the podium */
+                  <div style={{ padding: "10px 14px 12px", display: "flex", flexDirection: "column", gap: 11 }}>
+                    {b.rows.map((r, i) => {
+                      const max = b.rows[0].value || 1;
+                      return (
+                        <div key={r.name}>
+                          <div className="flex items-center" style={{ gap: 9 }}>
+                            <span className="shrink-0" style={{
+                              width: 19, height: 19, borderRadius: 99, display: "flex", alignItems: "center", justifyContent: "center",
+                              fontSize: 10, fontWeight: 600, color: MEDAL_INK[i], background: MEDAL_BG[i],
+                            }}>{i + 1}</span>
+                            <div style={{ minWidth: 0, flex: 1 }}>
+                              <div className="truncate" style={{ fontSize: 12.5, fontWeight: 500 }}>{r.name}</div>
+                              <div className="truncate" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>{r.team}</div>
+                            </div>
+                            <span className="sw-mono shrink-0" style={{ fontSize: 12.5, fontWeight: 600 }}>{fmtGBP(r.value)}</span>
+                          </div>
+                          <div className="rounded-full" style={{ height: 3, background: "var(--surface-alt)", marginTop: 6, overflow: "hidden" }}>
+                            <div className="rounded-full sw-bar-anim"
+                              style={{ width: `${Math.max(4, (r.value / max) * 100)}%`, height: "100%", background: b.accent, opacity: [1, 0.72, 0.5][i] }} />
+                          </div>
                         </div>
-                        <span className="sw-mono shrink-0" style={{ fontSize: 12.5, fontWeight: 700 }}>{fmtGBP(r.value)}</span>
-                      </div>
-                      <div className="rounded-full mt-1.5" style={{ height: 4, background: "var(--surface-alt)" }}>
-                        <div className="rounded-full sw-bar-anim" style={{ width: `${Math.max(4, (r.value / max) * 100)}%`, height: "100%", background: b.accent }} />
-                      </div>
-                    </div>
-                  );
-                })}
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -10790,11 +10946,19 @@ export default function App() {
   //   office (manager) — anything
   //   2ic              — anything in their team, whoever closed it
   //   agent            — only deals they closed themselves
+  /* Who may amend a Lilac Box:
+       office            — anything
+       sd / sd_2ic       — anything (Sales Delivery handle order amendments)
+       2ic               — anything closed by their own team
+       the closer        — their own orders
+     Matched on closer_id where it exists, falling back to the name, because
+     older rows predate closer_id being stamped on submission. */
   const canEditOrder = useCallback((o) => {
     if (!o || !profile) return false;
-    if (profile.role === "office") return true;
+    if (profile.role === "office" || profile.role === "sd" || profile.role === "sd_2ic") return true;
     if (profile.role === "2ic" && profile.team && (o.closer_team === profile.team || o.lead_gen_team === profile.team)) return true;
     if (o.closer_id && session?.user && o.closer_id === session.user.id) return true;
+    if (profile.full_name && o.closer_name && nameKey(o.closer_name) === nameKey(profile.full_name)) return true;
     return false;
   }, [profile, session]);
 
@@ -10906,7 +11070,7 @@ export default function App() {
         mobileOpen={menuOpen} setMobileOpen={setMenuOpen} />
 
       <div style={{ minWidth: 0 }}>
-      <main className={`sw-main p-6 mx-auto ${["breakdown", "daybyday", "forecast", "landscapes", "dashboard", "distribution", "admin", "statuses", "delivery"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
+      <main className={`sw-main p-6 mx-auto ${["breakdown", "daybyday", "forecast", "landscapes", "dashboard", "distribution", "admin", "statuses", "delivery", "tops"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
         {submitted && (
           <div className="sw-rise rounded-2xl p-4 mb-5 flex items-center justify-between gap-4" style={{ background: "var(--green-soft)", border: "1px solid var(--green)" }}>
             <div className="flex items-center gap-3">
