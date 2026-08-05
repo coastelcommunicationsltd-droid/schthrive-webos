@@ -5463,11 +5463,17 @@ function StatusSettingsView({ rows, onSave, newCount }) {
 /* ---------------------------------------------------------------------- */
 
 function CoachScenarioRow({ s, onSave, onDelete }) {
-  const [f, setF] = useState({ label: s.label || "", blurb: s.blurb || "", persona: s.persona || "", active: s.active !== false });
+  const [f, setF] = useState({
+    label: s.label || "", blurb: s.blurb || "", persona: s.persona || "",
+    call_role: s.call_role || "closer", difficulty: s.difficulty || "normal",
+    active: s.active !== false,
+  });
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const dirty = f.label !== s.label || f.blurb !== (s.blurb || "") || f.persona !== s.persona || f.active !== (s.active !== false);
+  const dirty = f.label !== s.label || f.blurb !== (s.blurb || "") || f.persona !== s.persona
+    || f.call_role !== (s.call_role || "closer") || f.difficulty !== (s.difficulty || "normal")
+    || f.active !== (s.active !== false);
 
   return (
     <div style={{ borderTop: "1px solid var(--border)" }}>
@@ -5499,11 +5505,36 @@ function CoachScenarioRow({ s, onSave, onDelete }) {
             <div><label className="sw-label">One-line description</label>
               <input className="sw-input sw-focus" value={f.blurb} onChange={(e) => setF((p) => ({ ...p, blurb: e.target.value }))} /></div>
           </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }} className="mt-2">
+            <div>
+              <label className="sw-label">Which stage set it uses</label>
+              <select className="sw-input sw-focus" value={f.call_role} onChange={(e) => setF((p) => ({ ...p, call_role: e.target.value }))}>
+                <option value="closer">Closer stages</option>
+                <option value="lead_gen">Lead gen stages</option>
+              </select>
+              <div className="text-xs mt-0.5" style={{ color: "var(--ink-faint)" }}>
+                Ignored if this scenario has stages of its own.
+              </div>
+            </div>
+            <div>
+              <label className="sw-label">Default difficulty</label>
+              <select className="sw-input sw-focus" value={f.difficulty} onChange={(e) => setF((p) => ({ ...p, difficulty: e.target.value }))}>
+                <option value="easy">Receptive</option>
+                <option value="normal">Normal</option>
+                <option value="hard">Tough</option>
+              </select>
+              <div className="text-xs mt-0.5" style={{ color: "var(--ink-faint)" }}>
+                The agent can still override this before a call.
+              </div>
+            </div>
+          </div>
+
           <label className="sw-label" style={{ marginTop: 8 }}>The character the AI plays</label>
-          <textarea className="sw-input sw-focus" rows={6} value={f.persona} onChange={(e) => setF((p) => ({ ...p, persona: e.target.value }))} />
+          <textarea className="sw-input sw-focus" rows={8} value={f.persona} onChange={(e) => setF((p) => ({ ...p, persona: e.target.value }))} />
           <p className="text-xs mt-1" style={{ color: "var(--ink-faint)" }}>
-            Write it as instructions to the customer, in second person — "You are a business owner who...".
-            The more specific the personality and the more it resists, the more useful the practice.
+            Write it in second person — "You are a business owner who...". Give them a real business, a
+            specific irritation, and something they will only reveal if asked properly. A persona with
+            nothing to hide gives the agent nothing to find.
           </p>
         </div>
       )}
@@ -6770,6 +6801,13 @@ function SalesCoachView() {
     () => (scenarios || []).find((s) => s.key === scenario) || null,
     [scenarios, scenario]
   );
+
+  // A scenario carries a default difficulty — adopt it when one is picked,
+  // but only outside a live call so it can't shift mid-conversation.
+  useEffect(() => {
+    if (status !== "idle") return;
+    if (activeScenario?.difficulty) setDifficulty(activeScenario.difficulty);
+  }, [activeScenario, status]);
 
   const loadHistory = useCallback(async () => {
     const { data } = await supabase
