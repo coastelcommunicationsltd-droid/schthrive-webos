@@ -8791,7 +8791,7 @@ function ForecastView({ netsuite, profile, staff }) {
         <>
         {/* Headline figures on the left, the matrix to their right —
             read the totals first, then how they break down. */}
-        <div className="sw-cols mb-4" style={{ display: "grid", gridTemplateColumns: "220px minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }}>
+        <div className="sw-cols mb-4" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 4fr)", gap: "0.75rem", alignItems: "start" }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "0.6rem" }}>
             <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
               <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast GP</div>
@@ -8802,6 +8802,32 @@ function ForecastView({ netsuite, profile, staff }) {
                   ? `${fmtGBP(summary.gpSum)} claimed − ${fmtGBP(Math.abs(summary.dc))} DC`
                   : `${accuracy.lines} lines`}
               </div>
+            </div>
+            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast lines</div>
+              <div className="sw-display font-bold text-xl">{accuracy.lines}</div>
+              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{fmtGBP(accuracy.forecastSov)} SOV</div>
+            </div>
+            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Statted this week</div>
+              <div className="sw-display font-bold text-xl" style={{ color: "var(--green)" }}>{fmtGBP(accuracy.stattedGp)}</div>
+              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{accuracy.stattedCount} NetSuite orders</div>
+            </div>
+            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast vs actual</div>
+              <div className="sw-display font-bold text-xl" style={{ color: accuracy.gpVariance >= 0 ? "var(--green)" : "var(--red)" }}>
+                {accuracy.gpVariance >= 0 ? "+" : ""}{fmtGBP(accuracy.gpVariance)}
+              </div>
+              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>statted minus forecast</div>
+            </div>
+            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecasts landed</div>
+              <div className="sw-display font-bold text-xl" style={{ color: accuracy.hitRate >= 70 ? "var(--green)" : accuracy.hitRate >= 40 ? "var(--amber)" : "var(--red)" }}>
+                {accuracy.landed}/{accuracy.lines}
+              </div>
+              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{accuracy.hitRate.toFixed(0)}% seen in NetSuite</div>
+            </div>
+          </div>
 
         <div>
 
@@ -8912,32 +8938,6 @@ function ForecastView({ netsuite, profile, staff }) {
             </div>
           </div>
         </div>
-            </div>
-            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast lines</div>
-              <div className="sw-display font-bold text-xl">{accuracy.lines}</div>
-              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{fmtGBP(accuracy.forecastSov)} SOV</div>
-            </div>
-            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Statted this week</div>
-              <div className="sw-display font-bold text-xl" style={{ color: "var(--green)" }}>{fmtGBP(accuracy.stattedGp)}</div>
-              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{accuracy.stattedCount} NetSuite orders</div>
-            </div>
-            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast vs actual</div>
-              <div className="sw-display font-bold text-xl" style={{ color: accuracy.gpVariance >= 0 ? "var(--green)" : "var(--red)" }}>
-                {accuracy.gpVariance >= 0 ? "+" : ""}{fmtGBP(accuracy.gpVariance)}
-              </div>
-              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>statted minus forecast</div>
-            </div>
-            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecasts landed</div>
-              <div className="sw-display font-bold text-xl" style={{ color: accuracy.hitRate >= 70 ? "var(--green)" : accuracy.hitRate >= 40 ? "var(--amber)" : "var(--red)" }}>
-                {accuracy.landed}/{accuracy.lines}
-              </div>
-              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{accuracy.hitRate.toFixed(0)}% seen in NetSuite</div>
-            </div>
-          </div>
         </div>
 
           <p className="text-xs mb-3" style={{ color: "var(--ink-faint)" }}>
@@ -10050,11 +10050,10 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   }), []);
 
   /* Activity: what each admin agent RECEIVED versus what they PLACED.
-     Received is dated off the NetSuite order date; placed is dated off the
-     sheet's "Order placed" column. That column syncs as free text rather
-     than a parsed date, so it's parsed defensively here and anything that
-     doesn't yield a real date is counted as unusable rather than silently
-     dropped — otherwise placed would just read zero with no explanation. */
+     Received is dated off the NetSuite order date; placed off order_placed.
+     The database now parses that text into order_placed_at via a trigger,
+     so that column is used where present and the text is only parsed here
+     as a fallback for rows synced before the migration. */
   const flow = useMemo(() => {
     const parseDate = (v) => {
       if (!v) return null;
@@ -10117,12 +10116,12 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
       const r = touch(u.admin_agent || null);
       const rk = colKeyFor(parseDate(u.order_date));
       if (rk) { r.recv[rk] = (r.recv[rk] || 0) + 1; r.recvTotal += 1; }
-      const pd = parseDate(u.order_placed);
+      const pd = u.order_placed_at ? parseDate(u.order_placed_at) : parseDate(u.order_placed);
       if (pd) {
         placedDated += 1;
         const pk = colKeyFor(pd);
         if (pk) { r.placed[pk] = (r.placed[pk] || 0) + 1; r.placedTotal += 1; }
-      } else if (u.order_placed) {
+      } else if (u.order_placed && !/^(yes|no|y|n|true|false)$/i.test(String(u.order_placed).trim())) {
         placedUnparsed += 1;
       }
     });
