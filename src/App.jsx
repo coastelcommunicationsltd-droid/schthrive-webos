@@ -5621,6 +5621,7 @@ function CoachSettingsView({ scenarios, settings, stages, onSaveScenario, onAddS
                             onSaveStage, onAddStage, onDeleteStage }) {
   const [rubric, setRubric] = useState(settings.rubric || "");
   const [method, setMethod] = useState(settings.what_good_looks_like || "");
+  const [feedback, setFeedback] = useState(settings.feedback_guidance || "");
   const [savingCfg, setSavingCfg] = useState(false);
   const [savedCfg, setSavedCfg] = useState(false);
   const [newLabel, setNewLabel] = useState("");
@@ -5628,9 +5629,11 @@ function CoachSettingsView({ scenarios, settings, stages, onSaveScenario, onAddS
   useEffect(() => {
     setRubric(settings.rubric || "");
     setMethod(settings.what_good_looks_like || "");
+    setFeedback(settings.feedback_guidance || "");
   }, [settings]);
 
-  const cfgDirty = rubric !== (settings.rubric || "") || method !== (settings.what_good_looks_like || "");
+  const cfgDirty = rubric !== (settings.rubric || "") || method !== (settings.what_good_looks_like || "")
+    || feedback !== (settings.feedback_guidance || "");
 
   return (
     <div>
@@ -5663,7 +5666,7 @@ function CoachSettingsView({ scenarios, settings, stages, onSaveScenario, onAddS
           <div className="flex items-center gap-2">
             {savedCfg && <CheckCircle2 size={15} style={{ color: "var(--green)" }} />}
             <button disabled={!cfgDirty || savingCfg}
-              onClick={async () => { setSavingCfg(true); await onSaveSettings({ rubric, what_good_looks_like: method }); setSavingCfg(false); setSavedCfg(true); setTimeout(() => setSavedCfg(false), 1600); }}
+              onClick={async () => { setSavingCfg(true); await onSaveSettings({ rubric, what_good_looks_like: method, feedback_guidance: feedback }); setSavingCfg(false); setSavedCfg(true); setTimeout(() => setSavedCfg(false), 1600); }}
               className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg"
               style={{ background: cfgDirty ? "var(--primary)" : "var(--surface-alt)", color: cfgDirty ? "#fff" : "var(--ink-faint)" }}>
               {savingCfg ? "Saving..." : "Save"}
@@ -5682,6 +5685,15 @@ function CoachSettingsView({ scenarios, settings, stages, onSaveScenario, onAddS
           Keep the six keywords — the app colours the badges from them — but change what earns each one.
         </p>
         <textarea className="sw-input sw-focus" rows={10} value={rubric} onChange={(e) => setRubric(e.target.value)}
+          style={{ fontSize: 12, lineHeight: 1.5 }} />
+
+        <div className="sw-display font-bold text-sm mt-4 mb-2" style={{ color: "var(--ink-soft)" }}>END-OF-CALL FEEDBACK</div>
+        <p className="text-xs mb-2" style={{ color: "var(--ink-faint)" }}>
+          Shapes the "How to improve this call" advice specifically — its tone, what it should always mention,
+          what to leave alone. Use this when the review is technically right but not saying the thing you'd say.
+        </p>
+        <textarea className="sw-input sw-focus" rows={8} value={feedback} onChange={(e) => setFeedback(e.target.value)}
+          placeholder={"e.g. Always name the exact question they should have asked instead.\nDon't comment on filler words or nerves.\nIf they didn't ask the mobile question, say so every time.\nKeep it to three points — the most important one first."}
           style={{ fontSize: 12, lineHeight: 1.5 }} />
       </div>
 
@@ -6518,6 +6530,17 @@ const SCORE_STYLE = {
 };
 const SCORE_POINTS = { brilliant: 3, excellent: 2, good: 1, inaccuracy: -1, mistake: -2, blunder: -4 };
 
+// Plain-English meaning of each grade, shown as a legend on the call review
+// so the badges aren't just colours.
+const SCORE_LEGEND = {
+  brilliant:  "Changed the call — rare",
+  excellent:  "Strong technique, well executed",
+  good:       "Competent and appropriate — the norm",
+  inaccuracy: "Small misstep, easily recovered",
+  mistake:    "Poor technique with a real cost",
+  blunder:    "Serious error that could lose the deal",
+};
+
 function ScoreBadge({ score }) {
   const s = SCORE_STYLE[score] || SCORE_STYLE.good;
   return (
@@ -6549,7 +6572,7 @@ function SalesCoachView() {
   const [openSession, setOpenSession] = useState(null);
   const [rolling, setRolling] = useState(false);   // rollback in progress
   const [scenarios, setScenarios] = useState([]);
-  const [coachCfg, setCoachCfg] = useState({ rubric: "", what_good_looks_like: "" });
+  const [coachCfg, setCoachCfg] = useState({ rubric: "", what_good_looks_like: "", feedback_guidance: "" });
 
   // Scenarios and the grading rubric are managed in Settings, not in code.
   useEffect(() => {
@@ -6633,6 +6656,7 @@ function SalesCoachView() {
         persona: activeScenario?.persona || null,
         rubric: coachCfg.rubric || null,
         method: coachCfg.what_good_looks_like || null,
+        feedbackGuidance: coachCfg.feedback_guidance || null,
         stageIndex: stageIdxRef.current,
         difficulty,
       }),
@@ -6982,7 +7006,28 @@ function SalesCoachView() {
       {status === "idle" && (
         <>
           <div className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--ink-soft)" }}>Choose a scenario</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "0.6rem" }} className="mb-4">
+          {/* Difficulty leads the row as a narrower card — it's a setting
+              rather than a choice of what to practise, so it shouldn't
+              compete with the scenarios for width. */}
+          <div style={{ display: "grid", gridTemplateColumns: "150px repeat(auto-fit, minmax(190px, 1fr))", gap: "0.6rem" }} className="mb-4">
+            <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
+              title={difficulty === "easy" ? "Open to the conversation and happy to answer."
+                : difficulty === "hard" ? "Sceptical and short at first — you'll have to earn it."
+                : "A normal busy business owner. Guarded, but civil and reasonable."}>
+              <div className="text-xs font-medium uppercase mb-2" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Customer</div>
+              <div className="flex flex-col rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+                {[["easy", "Receptive"], ["normal", "Normal"], ["hard", "Tough"]].map(([k, lbl]) => (
+                  <button key={k} onClick={() => setDifficulty(k)}
+                    className="sw-focus px-2 py-1.5 text-xs"
+                    style={difficulty === k
+                      ? { background: "var(--primary)", color: "#fff", fontWeight: 600 }
+                      : { background: "transparent", color: "var(--ink-faint)" }}>
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {(scenarios.length ? scenarios : COACH_SCENARIOS).map((s) => (
               <button key={s.key} onClick={() => setScenario(s.key)}
                 className="sw-focus rounded-xl p-3 text-left"
@@ -6993,29 +7038,6 @@ function SalesCoachView() {
                 <div className="text-xs mt-0.5" style={{ color: scenario === s.key ? "rgba(255,255,255,0.8)" : "var(--ink-faint)" }}>{s.blurb}</div>
               </button>
             ))}
-          </div>
-          {/* How hard the customer is. What kind of call it is now comes
-              from the scenario's own persona and stage set. */}
-          <div style={{ maxWidth: 420 }} className="mb-4">
-            <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              <div className="text-xs font-medium uppercase mb-2" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Customer</div>
-              <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-                {[["easy", "Receptive"], ["normal", "Normal"], ["hard", "Tough"]].map(([k, lbl]) => (
-                  <button key={k} onClick={() => setDifficulty(k)}
-                    className="sw-focus flex-1 px-3 py-2 text-xs"
-                    style={difficulty === k
-                      ? { background: "var(--primary)", color: "#fff", fontWeight: 600 }
-                      : { background: "transparent", color: "var(--ink-faint)" }}>
-                    {lbl}
-                  </button>
-                ))}
-              </div>
-              <div className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
-                {difficulty === "easy" ? "Open to the conversation and happy to answer."
-                  : difficulty === "hard" ? "Sceptical and short at first — you'll have to earn it."
-                  : "A normal busy business owner. Guarded, but civil and reasonable."}
-              </div>
-            </div>
           </div>
 
           <button onClick={startCall} className="sw-focus px-5 py-3 rounded-full font-semibold text-sm flex items-center gap-2"
@@ -7201,18 +7223,23 @@ function SalesCoachView() {
 
       {/* End of call review */}
       {summary && (
-        <div className="rounded-2xl p-5" style={{ background: "var(--surface)", border: "2px solid var(--primary)" }}>
-          <div className="flex items-center gap-3 mb-3">
+        <div>
+          <div className="flex items-center gap-3 mb-3 flex-wrap">
+            <button onClick={() => leaveCall()}
+              className="sw-focus flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold"
+              style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>
+              <ArrowLeft size={14} /> Back to scenarios
+            </button>
             <div className="sw-display font-bold text-3xl rounded-xl px-4 py-1"
               style={{ background: "var(--primary)", color: "#fff" }}>{summary.grade || "—"}</div>
-            <div>
+            <div className="flex-1 min-w-0">
               <div className="sw-display font-bold text-base">Call review</div>
               <div className="text-sm" style={{ color: "var(--ink-soft)" }}>{summary.headline}</div>
             </div>
           </div>
 
           {scored.length > 0 && (
-            <div className="flex items-center gap-1.5 flex-wrap mb-4">
+            <div className="flex items-center gap-1.5 flex-wrap mb-3">
               {Object.keys(SCORE_STYLE).filter((k) => tally[k]).map((k) => (
                 <span key={k} className="text-xs font-semibold px-2 py-1 rounded-full"
                   style={{ background: SCORE_STYLE[k].bg, color: SCORE_STYLE[k].fg }}>
@@ -7222,32 +7249,117 @@ function SalesCoachView() {
             </div>
           )}
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "0.75rem" }}>
-            <div className="rounded-xl p-3" style={{ background: "var(--green-soft)" }}>
-              <div className="text-xs font-bold uppercase mb-2" style={{ color: "var(--green)" }}>What worked</div>
-              {(summary.strengths || []).map((s, i) => (
-                <div key={i} className="text-sm mb-1.5" style={{ color: "var(--ink)" }}>• {s}</div>
-              ))}
+          {/* Transcript on the left to read back through, advice and the
+              scoring legend on the right to read it against. */}
+          <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }}>
+
+            <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="text-xs font-bold uppercase mb-2" style={{ color: "var(--ink-soft)" }}>Transcript</div>
+              <div style={{ maxHeight: "60vh", overflowY: "auto" }}>
+                {turns.map((t, i) => (
+                  <div key={i} className="flex items-start gap-2 mb-2.5">
+                    <span className="text-xs font-bold shrink-0 px-1.5 py-0.5 rounded"
+                      style={t.role === "agent"
+                        ? { background: "var(--primary-soft)", color: "var(--primary)" }
+                        : { background: "var(--surface-alt)", color: "var(--ink-soft)" }}>
+                      {t.role === "agent" ? "YOU" : "THEM"}
+                    </span>
+                    <div className="flex-1">
+                      <div className="text-sm">{t.text}</div>
+                      {t.score && (
+                        <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                          <ScoreBadge score={t.score} />
+                          {t.note && <span className="text-xs" style={{ color: "var(--ink-soft)" }}>{t.note}</span>}
+                          {(t.bonuses || []).map((b) => (
+                            <span key={b.key} className="text-xs font-semibold px-1.5 py-0.5 rounded"
+                              style={{ background: "var(--green-soft)", color: "var(--green)" }}>★ {b.label}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div className="rounded-xl p-3" style={{ background: "var(--amber-soft)" }}>
-              <div className="text-xs font-bold uppercase mb-2" style={{ color: "var(--amber)" }}>Work on this</div>
-              {(summary.improvements || []).map((s, i) => (
-                <div key={i} className="text-sm mb-1.5" style={{ color: "var(--ink)" }}>• {s}</div>
-              ))}
+
+            <div className="flex flex-col gap-3">
+              <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "2px solid var(--primary)" }}>
+                <div className="text-xs font-bold uppercase mb-2" style={{ color: "var(--ink-soft)" }}>How to improve this call</div>
+
+                <div className="rounded-xl p-3 mb-2" style={{ background: "var(--green-soft)" }}>
+                  <div className="text-xs font-bold uppercase mb-1.5" style={{ color: "var(--green)" }}>What worked</div>
+                  {(summary.strengths || []).length === 0
+                    ? <div className="text-xs" style={{ color: "var(--ink-faint)" }}>Nothing flagged.</div>
+                    : (summary.strengths || []).map((s, i) => (
+                        <div key={i} className="text-sm mb-1.5">• {s}</div>
+                      ))}
+                </div>
+
+                <div className="rounded-xl p-3" style={{ background: "var(--amber-soft)" }}>
+                  <div className="text-xs font-bold uppercase mb-1.5" style={{ color: "var(--amber)" }}>Work on this</div>
+                  {(summary.improvements || []).length === 0
+                    ? <div className="text-xs" style={{ color: "var(--ink-faint)" }}>Nothing flagged.</div>
+                    : (summary.improvements || []).map((s, i) => (
+                        <div key={i} className="text-sm mb-1.5">• {s}</div>
+                      ))}
+                </div>
+
+                {summary.moment && (
+                  <div className="rounded-xl p-3 mt-2" style={{ background: "var(--surface-alt)" }}>
+                    <div className="text-xs font-bold uppercase mb-1" style={{ color: "var(--ink-soft)" }}>Turning point</div>
+                    <div className="text-sm">{summary.moment}</div>
+                  </div>
+                )}
+
+                {summary.next_focus && (
+                  <div className="rounded-xl p-3 mt-2" style={{ background: "var(--primary-soft)" }}>
+                    <div className="text-xs font-bold uppercase mb-1" style={{ color: "var(--primary)" }}>Practise next</div>
+                    <div className="text-sm">{summary.next_focus}</div>
+                  </div>
+                )}
+
+                {Array.isArray(summary.stage_feedback) && summary.stage_feedback.length > 0 && (
+                  <div className="mt-2">
+                    <div className="text-xs font-bold uppercase mb-1.5" style={{ color: "var(--ink-soft)" }}>Stage by stage</div>
+                    {summary.stage_feedback.map((s, i) => (
+                      <div key={i} className="rounded-lg px-2.5 py-2 mb-1" style={{ background: "var(--surface-alt)" }}>
+                        <div className="text-xs font-semibold">{s.stage}</div>
+                        <div className="text-xs" style={{ color: "var(--ink-soft)" }}>{s.comment}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* What the badges on each turn actually mean */}
+              <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+                <div className="text-xs font-bold uppercase mb-2" style={{ color: "var(--ink-soft)" }}>Scoring</div>
+                <div className="flex flex-col gap-1.5">
+                  {Object.keys(SCORE_STYLE).map((k) => (
+                    <div key={k} className="flex items-center gap-2">
+                      <ScoreBadge score={k} />
+                      <span className="sw-mono text-xs shrink-0" style={{ color: (SCORE_POINTS[k] ?? 0) >= 0 ? "var(--green)" : "var(--red)", width: 26 }}>
+                        {(SCORE_POINTS[k] ?? 0) > 0 ? "+" : ""}{SCORE_POINTS[k] ?? 0}
+                      </span>
+                      <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{SCORE_LEGEND[k] || ""}</span>
+                    </div>
+                  ))}
+                  <div className="flex items-center gap-2 mt-1" style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
+                    <span className="text-xs font-semibold px-1.5 py-0.5 rounded"
+                      style={{ background: "var(--green-soft)", color: "var(--green)" }}>★</span>
+                    <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                      A move worth making — configured in Coach Setup
+                    </span>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
-
-          {summary.moment && (
-            <div className="rounded-xl p-3 mt-3" style={{ background: "var(--surface-alt)" }}>
-              <div className="text-xs font-bold uppercase mb-1" style={{ color: "var(--ink-soft)" }}>Turning point</div>
-              <div className="text-sm">{summary.moment}</div>
-            </div>
-          )}
         </div>
       )}
 
-      {/* Previous practice calls — list on the right, detail on the left,
-          ranked by points so the best ones are worth revisiting. */}
+      {/* Previous practice calls — list on the left to pick from, detail on
+          the right. Ranked by points so the best are worth revisiting. */}
       {history.length > 0 && status === "idle" && (
         <div className="mt-6">
           <div className="flex items-center gap-2 mb-3">
@@ -7256,7 +7368,39 @@ function SalesCoachView() {
             <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{history.length} kept · ranked by points</span>
           </div>
 
-          <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px", gap: "0.75rem", alignItems: "start" }}>
+          <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "320px minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }}>
+
+            {/* LIST — ranked by points */}
+            <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)", maxHeight: "70vh", overflowY: "auto" }}>
+              {rankedHistory.map((h, i) => {
+                const sel = openSession === h.id;
+                const scen = (scenarios.length ? scenarios : COACH_SCENARIOS).find((s) => s.key === h.scenario);
+                return (
+                  <button key={h.id} onClick={() => setOpenSession(sel ? null : h.id)}
+                    className="sw-focus w-full text-left px-3 py-2.5"
+                    style={{ background: sel ? "var(--primary-soft)" : "transparent", borderTop: i === 0 ? "none" : "1px solid var(--border)" }}>
+                    <div className="flex items-center gap-2">
+                      <span className="sw-mono text-xs shrink-0" style={{ color: "var(--ink-faint)", width: 16 }}>{i + 1}</span>
+                      {h.interrupted && <span title="Left before finishing" style={{ fontSize: 11 }}>⏸</span>}
+                      <span className="text-xs truncate flex-1" style={{ color: sel ? "var(--primary)" : "var(--ink)", fontWeight: sel ? 600 : 500 }}>
+                        {scen?.label || h.scenario}
+                      </span>
+                      <span className="sw-mono text-xs font-bold shrink-0 px-1.5 py-0.5 rounded"
+                        style={{
+                          background: (h.points ?? 0) >= 0 ? "var(--green-soft)" : "var(--red-soft)",
+                          color: (h.points ?? 0) >= 0 ? "var(--green)" : "var(--red)",
+                        }}>
+                        {(h.points ?? 0) > 0 ? "+" : ""}{h.points ?? 0}
+                      </span>
+                    </div>
+                    <div className="text-xs truncate mt-0.5" style={{ color: "var(--ink-faint)", fontSize: 10.5 }}>
+                      {fmtDate(h.created_at)} · {h.turn_count} turns
+                      {h.user_name ? ` · ${h.user_name}` : ""}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
 
             {/* DETAIL */}
             <div>
@@ -7366,41 +7510,9 @@ function SalesCoachView() {
                 </div>
               ) : (
                 <div className="rounded-xl p-10 text-center" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-                  <div className="text-sm" style={{ color: "var(--ink-faint)" }}>Pick a call on the right to see how it went.</div>
+                  <div className="text-sm" style={{ color: "var(--ink-faint)" }}>Pick a call on the left to see how it went.</div>
                 </div>
               )}
-            </div>
-
-            {/* LIST — ranked by points */}
-            <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)", maxHeight: "70vh", overflowY: "auto" }}>
-              {rankedHistory.map((h, i) => {
-                const sel = openSession === h.id;
-                const scen = (scenarios.length ? scenarios : COACH_SCENARIOS).find((s) => s.key === h.scenario);
-                return (
-                  <button key={h.id} onClick={() => setOpenSession(sel ? null : h.id)}
-                    className="sw-focus w-full text-left px-3 py-2.5"
-                    style={{ background: sel ? "var(--primary-soft)" : "transparent", borderTop: i === 0 ? "none" : "1px solid var(--border)" }}>
-                    <div className="flex items-center gap-2">
-                      <span className="sw-mono text-xs shrink-0" style={{ color: "var(--ink-faint)", width: 16 }}>{i + 1}</span>
-                      {h.interrupted && <span title="Left before finishing" style={{ fontSize: 11 }}>⏸</span>}
-                      <span className="text-xs truncate flex-1" style={{ color: sel ? "var(--primary)" : "var(--ink)", fontWeight: sel ? 600 : 500 }}>
-                        {scen?.label || h.scenario}
-                      </span>
-                      <span className="sw-mono text-xs font-bold shrink-0 px-1.5 py-0.5 rounded"
-                        style={{
-                          background: (h.points ?? 0) >= 0 ? "var(--green-soft)" : "var(--red-soft)",
-                          color: (h.points ?? 0) >= 0 ? "var(--green)" : "var(--red)",
-                        }}>
-                        {(h.points ?? 0) > 0 ? "+" : ""}{h.points ?? 0}
-                      </span>
-                    </div>
-                    <div className="text-xs truncate mt-0.5" style={{ color: "var(--ink-faint)", fontSize: 10.5 }}>
-                      {fmtDate(h.created_at)} · {h.turn_count} turns
-                      {h.user_name ? ` · ${h.user_name}` : ""}
-                    </div>
-                  </button>
-                );
-              })}
             </div>
           </div>
         </div>
