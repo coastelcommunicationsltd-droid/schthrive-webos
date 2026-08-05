@@ -6161,6 +6161,9 @@ function DeveloperView() {
   const [rows, setRows] = useState({});
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
+  const [openKey, setOpenKey] = useState(null);      // which table is expanded
+  const [sample, setSample] = useState({});          // key -> { rows, cols, loading, error }
+  const [limit, setLimit] = useState(200);
 
   const load = useCallback(async () => {
     setLoading(true); setErr("");
@@ -6188,6 +6191,83 @@ function DeveloperView() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  /* Raw rows for whichever table is expanded. Capped, and ordered newest
+     first where the table has something to order by — pulling an unbounded
+     table into the browser is how you hang the tab. */
+  const loadSample = useCallback(async (s, n) => {
+    setSample((p) => ({ ...p, [s.key]: { ...(p[s.key] || {}), loading: true, error: "" } }));
+    try {
+      let q = supabase.from(s.table).select("*").limit(n);
+      if (s.freshField) q = q.order(s.freshField, { ascending: false });
+      else if (s.dateField) q = q.order(s.dateField, { ascending: false });
+      const { data, error } = await q;
+      if (error) throw error;
+      const list = data || [];
+      // Column order from the widest row, so sparse rows don't hide fields
+      const seen = [];
+      list.forEach((r) => Object.keys(r).forEach((k) => { if (!seen.includes(k)) seen.push(k); }));
+      setSample((p) => ({ ...p, [s.key]: { rows: list, cols: seen, loading: false, error: "" } }));
+    } catch (e) {
+      setSample((p) => ({ ...p, [s.key]: { rows: [], cols: [], loading: false, error: String(e?.message || e) } }));
+    }
+  }, []);
+
+  const toggleOpen = useCallback((s) => {
+    setOpenKey((cur) => {
+      const next = cur === s.key ? null : s.key;
+      if (next && !sample[s.key]) loadSample(s, limit);
+      return next;
+    });
+  }, [sample, loadSample, limit]);
+
+  /* CSV export. Values are quoted and internal quotes doubled, which is the
+     bit people usually miss — a company name with a comma in it otherwise
+     shifts every column after it. */
+  const exportCsv = useCallback(async (s) => {
+    setSample((p) => ({ ...p, [s.key]: { ...(p[s.key] || {}), exporting: true } }));
+    try {
+      // Export everything, not just what's on screen, paging past the 1000 cap
+      const PAGE = 1000;
+      let all = [];
+      for (let from = 0; ; from += PAGE) {
+        let q = supabase.from(s.table).select("*").range(from, from + PAGE - 1);
+        if (s.freshField) q = q.order(s.freshField, { ascending: false });
+        else if (s.dateField) q = q.order(s.dateField, { ascending: false });
+        const { data, error } = await q;
+        if (error) throw error;
+        all = all.concat(data || []);
+        if (!data || data.length < PAGE) break;
+        if (all.length >= 50000) break;   // sanity cap
+      }
+
+      const cols = [];
+      all.forEach((r) => Object.keys(r).forEach((k) => { if (!cols.includes(k)) cols.push(k); }));
+      const cell = (v) => {
+        if (v == null) return "";
+        const str = typeof v === "object" ? JSON.stringify(v) : String(v);
+        return `"${str.replace(/"/g, '""')}"`;
+      };
+      const csv = [cols.join(","), ...all.map((r) => cols.map((c) => cell(r[c])).join(","))].join("\n");
+
+      const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${s.table}_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setSample((p) => ({ ...p, [s.key]: { ...(p[s.key] || {}), exporting: false } }));
+    } catch (e) {
+      setSample((p) => ({ ...p, [s.key]: { ...(p[s.key] || {}), exporting: false, error: String(e?.message || e) } }));
+    }
+  }, []);
+
+
+
+
 
   // How stale is stale? Anything synced hourly should be under two hours.
   const ageOf = (iso) => {
@@ -6289,11 +6369,20 @@ function DeveloperView() {
               {DATA_SOURCES.map((s) => {
                 const r = rows[s.key];
                 const mins = r?.ok ? ageOf(r.newest) : null;
+                const isOpen = openKey === s.key;
+                const sm = sample[s.key] || {};
                 return (
-                  <tr key={s.key} style={{ borderTop: "1px solid var(--border)" }}>
+                  <React.Fragment key={s.key}>
+                  <tr style={{ borderTop: "1px solid var(--border)", background: isOpen ? "var(--surface-alt)" : "transparent", cursor: "pointer" }}
+                    onClick={() => toggleOpen(s)}>
                     <td className="px-3 py-2.5">
-                      <div style={{ fontSize: 13, fontWeight: 600 }}>{s.label}</div>
-                      <div className="sw-mono" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>{s.table}</div>
+                      <div className="flex items-center gap-1.5">
+                        <ChevronDown size={12} style={{ color: "var(--ink-faint)", flexShrink: 0, transform: isOpen ? "rotate(0)" : "rotate(-90deg)", transition: "transform .15s" }} />
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 600 }}>{s.label}</div>
+                          <div className="sw-mono" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>{s.table}</div>
+                        </div>
+                      </div>
                     </td>
                     <td className="px-3 py-2.5" style={{ maxWidth: 300 }}>
                       <div className="text-xs" style={{ color: "var(--ink-soft)" }}>{s.source}</div>
@@ -6310,6 +6399,80 @@ function DeveloperView() {
                         : <span className="sw-mono" style={{ color: ageTone(mins, s.cadence), fontWeight: 600 }}>{ageLabel(mins)}</span>}
                     </td>
                   </tr>
+
+                  {isOpen && (
+                    <tr style={{ background: "var(--surface-alt)" }}>
+                      <td colSpan={5} className="px-3 pb-3" style={{ borderTop: "none" }}>
+                        <div className="flex items-center gap-2 mb-2 flex-wrap">
+                          <span className="text-xs font-semibold uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>
+                            Raw rows
+                          </span>
+                          <select className="sw-input sw-focus" style={{ width: 108, height: 26, fontSize: 11.5 }}
+                            value={limit}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => { const n = parseInt(e.target.value, 10); setLimit(n); loadSample(s, n); }}>
+                            {[50, 200, 500, 1000].map((n) => <option key={n} value={n}>Show {n}</option>)}
+                          </select>
+                          <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                            {sm.loading ? "loading…" : `${(sm.rows || []).length} shown of ${(r?.count ?? 0).toLocaleString()}`}
+                          </span>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); exportCsv(s); }}
+                            disabled={sm.exporting}
+                            className="sw-focus ml-auto text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5"
+                            style={{ background: "var(--primary)", color: "#fff" }}>
+                            <FileText size={12} /> {sm.exporting ? "Exporting…" : "Export as CSV"}
+                          </button>
+                        </div>
+
+                        {sm.error && (
+                          <div className="rounded-lg p-2 mb-2 text-xs" style={{ background: "var(--red-soft)", color: "var(--ink)" }}>{sm.error}</div>
+                        )}
+
+                        <div className="rounded-lg" style={{ background: "var(--surface)", border: "1px solid var(--border)", maxHeight: 420, overflow: "auto" }}>
+                          {sm.loading ? (
+                            <div className="text-xs text-center py-8" style={{ color: "var(--ink-faint)" }}>Loading rows…</div>
+                          ) : (sm.rows || []).length === 0 ? (
+                            <div className="text-xs text-center py-8" style={{ color: "var(--ink-faint)" }}>No rows.</div>
+                          ) : (
+                            <table className="text-xs" style={{ borderCollapse: "collapse", whiteSpace: "nowrap" }}>
+                              <thead>
+                                <tr style={{ background: "var(--surface-alt)", position: "sticky", top: 0 }}>
+                                  {(sm.cols || []).map((c) => (
+                                    <th key={c} className="px-2 py-1.5 text-left sw-mono"
+                                      style={{ fontSize: 10.5, color: "var(--ink-soft)", borderBottom: "1px solid var(--border)", fontWeight: 600 }}>
+                                      {c}
+                                    </th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(sm.rows || []).map((row, ri) => (
+                                  <tr key={ri} style={{ borderTop: "1px solid var(--border)" }}>
+                                    {(sm.cols || []).map((c) => {
+                                      const v = row[c];
+                                      const str = v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+                                      return (
+                                        <td key={c} className="px-2 py-1 sw-mono"
+                                          style={{ fontSize: 10.5, color: str === "" ? "var(--ink-faint)" : "var(--ink-soft)", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis" }}
+                                          title={str}>
+                                          {str === "" ? "—" : str.length > 60 ? str.slice(0, 60) + "…" : str}
+                                        </td>
+                                      );
+                                    })}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </div>
+                        <div className="text-xs mt-1.5" style={{ color: "var(--ink-faint)" }}>
+                          The export sends the whole table, not just the rows on screen.
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
                 );
               })}
             </tbody>
@@ -8083,18 +8246,47 @@ function ForecastCell({ value, money = true, bold, tone, highlight }) {
 }
 
 /* One line of the forecast breakdown. Clickable when it has children. */
-function FcRow({ label, v, sov, units, lines, bold, tone, depth = 0, onToggle, isOpen }) {
+/* Forecast product columns. Broadband, Security and BT Net all roll into
+   Connectivity — the row breakdown still shows the detail, but three
+   columns is as much as the table can carry and stay readable. */
+const FC_PRODUCT_COLS = [
+  { key: "Cloud", label: "Cloud", accent: "var(--primary)" },
+  { key: "Mobile", label: "Mobile", accent: "var(--gold)" },
+  { key: "Connectivity", label: "Connectivity", accent: "var(--blue)" },
+];
+
+/* Which forecast pillar counts toward which column. */
+function fcProductCol(pillar) {
+  const p = String(pillar || "");
+  if (/cloud|dv4|voice/i.test(p)) return "Cloud";
+  if (/mobile|sim|airtime/i.test(p)) return "Mobile";
+  if (/broadband|security|bt\s*net|btnet|connect|data|wifi|wi-fi/i.test(p)) return "Connectivity";
+  return null;
+}
+
+function FcRow({ label, v, sov, units, prods, bold, tone, depth = 0, onToggle, isOpen, onFocus, focused }) {
   return (
-    <tr style={{ borderTop: "1px solid var(--border)" }}>
+    <tr style={{
+      borderTop: "1px solid var(--border)",
+      background: focused ? "var(--primary-soft)" : "transparent",
+    }}>
       <td className="px-3 py-1.5 whitespace-nowrap" style={{ paddingLeft: 12 + depth * 20 }}>
-        {onToggle ? (
-          <button onClick={onToggle} className="sw-focus flex items-center gap-1.5 text-left">
-            <ChevronDown size={12} style={{ color: "var(--ink-faint)", transform: isOpen ? "rotate(0)" : "rotate(-90deg)", transition: "transform .15s" }} />
+        <span className="flex items-center gap-1.5">
+          {onToggle ? (
+            <button onClick={onToggle} className="sw-focus shrink-0" title={isOpen ? "Collapse" : "Expand"}>
+              <ChevronDown size={12} style={{ color: "var(--ink-faint)", transform: isOpen ? "rotate(0)" : "rotate(-90deg)", transition: "transform .15s" }} />
+            </button>
+          ) : depth ? <span style={{ width: 12 }} /> : null}
+          {onFocus ? (
+            <button onClick={onFocus} className="sw-focus text-left"
+              title={focused ? "Clear this filter" : `Filter everything below to ${label}`}
+              style={{ fontSize: 12, fontWeight: bold ? 700 : 600, color: focused ? "var(--primary)" : (tone || "var(--ink-soft)"), textDecoration: focused ? "underline" : "none" }}>
+              {label}
+            </button>
+          ) : (
             <span style={{ fontSize: 12, fontWeight: bold ? 700 : 600, color: tone || "var(--ink-soft)" }}>{label}</span>
-          </button>
-        ) : (
-          <span style={{ fontSize: 12, fontWeight: bold ? 700 : 600, color: tone || "var(--ink-soft)", paddingLeft: depth ? 18 : 0 }}>{label}</span>
-        )}
+          )}
+        </span>
       </td>
       {v == null
         ? <td className="px-2 py-1.5" style={{ borderLeft: "1px solid var(--border)", background: "var(--primary-soft)" }} />
@@ -8103,7 +8295,9 @@ function FcRow({ label, v, sov, units, lines, bold, tone, depth = 0, onToggle, i
         ? <td className="px-2 py-1.5" style={{ borderLeft: "1px solid var(--border)" }} />
         : <ForecastCell value={sov} tone={tone} />}
       <ForecastCell value={units || 0} money={false} tone={tone} />
-      <ForecastCell value={lines || 0} money={false} tone={tone} />
+      {FC_PRODUCT_COLS.map((c) => (
+        <ForecastCell key={c.key} value={(prods && prods[c.key]) || 0} tone={tone} />
+      ))}
     </tr>
   );
 }
@@ -8137,6 +8331,7 @@ function ForecastView({ netsuite, profile, staff }) {
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
+
 
   // Weeks that actually have forecasts, newest first, plus this week
   const weekOptions = useMemo(() => {
@@ -8247,9 +8442,10 @@ function ForecastView({ netsuite, profile, staff }) {
   // ---- Hierarchical breakdown: all teams, then each team -------------
   // Same shape as Day by Day: totals first, opened up on demand.
   const breakdown = useMemo(() => {
-    const node = () => ({ gp: 0, sov: 0, units: 0, lines: 0, subs: {} });
+    const blankProds = () => ({ Cloud: 0, Mobile: 0, Connectivity: 0 });
+    const node = () => ({ gp: 0, sov: 0, units: 0, lines: 0, prods: blankProds(), subs: {} });
     const shell = () => {
-      const o = { gp: 0, sov: 0, units: 0, lines: 0, groups: {} };
+      const o = { gp: 0, sov: 0, units: 0, lines: 0, prods: blankProds(), groups: {} };
       PILLAR_GROUPS.forEach((g) => { o.groups[g] = node(); });
       o.groups.Other = node();
       return o;
@@ -8266,14 +8462,20 @@ function ForecastView({ netsuite, profile, staff }) {
       const g = groupForPillar(r.pillar);
       const pillar = String(r.pillar || "Other").trim() || "Other";
 
+      // Which of the three product columns this line's SOV lands in
+      const pcol = fcProductCol(r.pillar);
+
       const bump = (o, gpv) => {
         o.gp += gpv; o.sov += sov; o.units += units; o.lines += 1;
+        if (pcol) o.prods[pcol] = (o.prods[pcol] || 0) + sov;
         if (!o.groups[g]) o.groups[g] = node();
         const gn = o.groups[g];
         gn.gp += gpv; gn.sov += sov; gn.units += units; gn.lines += 1;
-        if (!gn.subs[pillar]) gn.subs[pillar] = { gp: 0, sov: 0, units: 0, lines: 0 };
+        if (pcol) gn.prods[pcol] = (gn.prods[pcol] || 0) + sov;
+        if (!gn.subs[pillar]) gn.subs[pillar] = { gp: 0, sov: 0, units: 0, lines: 0, prods: blankProds() };
         const sn = gn.subs[pillar];
         sn.gp += gpv; sn.sov += sov; sn.units += units; sn.lines += 1;
+        if (pcol) sn.prods[pcol] = (sn.prods[pcol] || 0) + sov;
       };
 
       // The closer's team carries the SOV and units for the deal
@@ -8533,42 +8735,6 @@ function ForecastView({ netsuite, profile, staff }) {
       )}
 
       {/* Headline accuracy */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "0.75rem" }} className="mb-4">
-        <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast GP</div>
-          {/* Net of the lead-gen double count — this is what actually lands */}
-          <div className="sw-display font-bold text-xl">{fmtGBP(summary.grand)}</div>
-          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
-            {summary.dc < 0
-              ? `${fmtGBP(summary.gpSum)} claimed − ${fmtGBP(Math.abs(summary.dc))} DC`
-              : `${accuracy.lines} lines`}
-          </div>
-        </div>
-        <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast lines</div>
-          <div className="sw-display font-bold text-xl">{accuracy.lines}</div>
-          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{fmtGBP(accuracy.forecastSov)} SOV</div>
-        </div>
-        <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Statted this week</div>
-          <div className="sw-display font-bold text-xl" style={{ color: "var(--green)" }}>{fmtGBP(accuracy.stattedGp)}</div>
-          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{accuracy.stattedCount} NetSuite orders</div>
-        </div>
-        <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast vs actual</div>
-          <div className="sw-display font-bold text-xl" style={{ color: accuracy.gpVariance >= 0 ? "var(--green)" : "var(--red)" }}>
-            {accuracy.gpVariance >= 0 ? "+" : ""}{fmtGBP(accuracy.gpVariance)}
-          </div>
-          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>statted minus forecast</div>
-        </div>
-        <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecasts landed</div>
-          <div className="sw-display font-bold text-xl" style={{ color: accuracy.hitRate >= 70 ? "var(--green)" : accuracy.hitRate >= 40 ? "var(--amber)" : "var(--red)" }}>
-            {accuracy.landed}/{accuracy.lines}
-          </div>
-          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{accuracy.hitRate.toFixed(0)}% seen in NetSuite</div>
-        </div>
-      </div>
 
       {/* Won on paper, nothing behind it in NetSuite */}
       {accuracy.claimedWonUnmatched > 0 && (
@@ -8615,7 +8781,10 @@ function ForecastView({ netsuite, profile, staff }) {
       {/* SUMMARY */}
       {view === "summary" && (
         <>
-        <div className="mb-4">
+        {/* Table leads, KPI cards run down the right beside it — they're
+            context for the table rather than a separate banner above it. */}
+        <div className="sw-cols mb-4" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 220px", gap: "0.75rem", alignItems: "start" }}>
+        <div>
 
           {/* Expandable breakdown — all teams first, then each team */}
           <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
@@ -8627,18 +8796,20 @@ function ForecastView({ netsuite, profile, staff }) {
                     <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "var(--ink-soft)", background: "var(--primary-soft)" }}>GP</th>
                     <th className="px-2 py-2 text-center text-xs font-semibold" style={{ color: "var(--ink-soft)" }}>SOV</th>
                     <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "var(--ink-faint)" }}>Units</th>
-                    <th className="px-2 py-2 text-center text-xs font-bold" style={{ color: "var(--ink-faint)" }}>Lines</th>
+                    {FC_PRODUCT_COLS.map((c) => (
+                      <th key={c.key} className="px-2 py-2 text-center text-xs font-bold" style={{ color: c.accent }}>{c.label}</th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
                   {/* All teams */}
                   <tr style={{ background: "var(--ink)" }}>
-                    <td colSpan={5} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "#fff" }}>All teams</td>
+                    <td colSpan={4 + FC_PRODUCT_COLS.length} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "#fff" }}>All teams</td>
                   </tr>
                   {/* Net of the lead-gen overlap — this is what lands. The
                       team rows below add up to more; the DC line reconciles. */}
                   <FcRow label="GP" v={summary.grand} sov={null} bold tone="var(--green)" />
-                  <FcRow label="Total SOV" v={null} sov={breakdown.all.sov} units={breakdown.all.units} lines={breakdown.all.lines} bold tone="var(--primary)"
+                  <FcRow label="Total SOV" v={null} sov={breakdown.all.sov} units={breakdown.all.units} prods={breakdown.all.prods} bold tone="var(--primary)"
                     isOpen={!!fcOpen.all_sov} onToggle={() => setFcOpen((o) => ({ ...o, all_sov: !o.all_sov }))} />
                   {fcOpen.all_sov && PILLAR_GROUPS.map((g) => {
                     const k = `all_${g.key || g}`;
@@ -8647,11 +8818,13 @@ function ForecastView({ netsuite, profile, staff }) {
                     const subs = Object.keys(node.subs).sort();
                     return (
                       <React.Fragment key={g}>
-                        <FcRow label={g} v={node.gp} sov={node.sov} units={node.units} lines={node.lines} depth={1}
-                          isOpen={!!fcOpen[k]} onToggle={subs.length ? () => setFcOpen((o) => ({ ...o, [k]: !o[k] })) : undefined} />
+                        <FcRow label={g} v={node.gp} sov={node.sov} units={node.units} prods={node.prods} depth={1}
+                          isOpen={!!fcOpen[k]} onToggle={subs.length ? () => setFcOpen((o) => ({ ...o, [k]: !o[k] })) : undefined}
+                          focused={pillarFilter === g}
+                          onFocus={() => setPillarFilter(pillarFilter === g ? null : g)} />
                         {fcOpen[k] && subs.map((s) => (
                           <FcRow key={s} label={s} v={node.subs[s].gp} sov={node.subs[s].sov}
-                            units={node.subs[s].units} lines={node.subs[s].lines} depth={2} tone="var(--ink-faint)" />
+                            units={node.subs[s].units} prods={node.subs[s].prods} depth={2} tone="var(--ink-faint)" />
                         ))}
                       </React.Fragment>
                     );
@@ -8660,15 +8833,17 @@ function ForecastView({ netsuite, profile, staff }) {
                   {/* Per team */}
                   {breakdown.teams.length > 0 && (
                     <tr style={{ background: "var(--surface-alt)", borderTop: "2px solid var(--border)" }}>
-                      <td colSpan={5} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "var(--primary)" }}>By team</td>
+                      <td colSpan={4 + FC_PRODUCT_COLS.length} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "var(--primary)" }}>By team</td>
                     </tr>
                   )}
                   {breakdown.teams.map((t) => {
                     const tk = `team_${t.team}`;
                     return (
                       <React.Fragment key={t.team}>
-                        <FcRow label={t.team} v={t.gp} sov={t.sov} units={t.units} lines={t.lines} bold
-                          isOpen={!!fcOpen[tk]} onToggle={() => setFcOpen((o) => ({ ...o, [tk]: !o[tk] }))} />
+                        <FcRow label={t.team} v={t.gp} sov={t.sov} units={t.units} prods={t.prods} bold
+                          isOpen={!!fcOpen[tk]} onToggle={() => setFcOpen((o) => ({ ...o, [tk]: !o[tk] }))}
+                          focused={teamFilter === t.team}
+                          onFocus={() => setTeamFilter(teamFilter === t.team ? "All" : t.team)} />
                         {fcOpen[tk] && PILLAR_GROUPS.map((g) => {
                           const k = `${tk}_${g}`;
                           const node = t.groups[g];
@@ -8676,11 +8851,13 @@ function ForecastView({ netsuite, profile, staff }) {
                           const subs = Object.keys(node.subs).sort();
                           return (
                             <React.Fragment key={g}>
-                              <FcRow label={g} v={node.gp} sov={node.sov} units={node.units} lines={node.lines} depth={1}
-                                isOpen={!!fcOpen[k]} onToggle={subs.length ? () => setFcOpen((o) => ({ ...o, [k]: !o[k] })) : undefined} />
+                              <FcRow label={g} v={node.gp} sov={node.sov} units={node.units} prods={node.prods} depth={1}
+                                isOpen={!!fcOpen[k]} onToggle={subs.length ? () => setFcOpen((o) => ({ ...o, [k]: !o[k] })) : undefined}
+                                focused={pillarFilter === g}
+                                onFocus={() => setPillarFilter(pillarFilter === g ? null : g)} />
                               {fcOpen[k] && subs.map((s) => (
                                 <FcRow key={s} label={s} v={node.subs[s].gp} sov={node.subs[s].sov}
-                                  units={node.subs[s].units} lines={node.subs[s].lines} depth={2} tone="var(--ink-faint)" />
+                                  units={node.subs[s].units} prods={node.subs[s].prods} depth={2} tone="var(--ink-faint)" />
                               ))}
                             </React.Fragment>
                           );
@@ -8710,15 +8887,83 @@ function ForecastView({ netsuite, profile, staff }) {
               </table>
             </div>
           </div>
+        </div>
 
+          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "0.6rem" }}>
+            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast GP</div>
+              {/* Net of the lead-gen double count — this is what actually lands */}
+              <div className="sw-display font-bold text-xl">{fmtGBP(summary.grand)}</div>
+              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                {summary.dc < 0
+                  ? `${fmtGBP(summary.gpSum)} claimed − ${fmtGBP(Math.abs(summary.dc))} DC`
+                  : `${accuracy.lines} lines`}
+              </div>
+            </div>
+            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast lines</div>
+              <div className="sw-display font-bold text-xl">{accuracy.lines}</div>
+              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{fmtGBP(accuracy.forecastSov)} SOV</div>
+            </div>
+            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Statted this week</div>
+              <div className="sw-display font-bold text-xl" style={{ color: "var(--green)" }}>{fmtGBP(accuracy.stattedGp)}</div>
+              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{accuracy.stattedCount} NetSuite orders</div>
+            </div>
+            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast vs actual</div>
+              <div className="sw-display font-bold text-xl" style={{ color: accuracy.gpVariance >= 0 ? "var(--green)" : "var(--red)" }}>
+                {accuracy.gpVariance >= 0 ? "+" : ""}{fmtGBP(accuracy.gpVariance)}
+              </div>
+              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>statted minus forecast</div>
+            </div>
+            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecasts landed</div>
+              <div className="sw-display font-bold text-xl" style={{ color: accuracy.hitRate >= 70 ? "var(--green)" : accuracy.hitRate >= 40 ? "var(--amber)" : "var(--red)" }}>
+                {accuracy.landed}/{accuracy.lines}
+              </div>
+              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{accuracy.hitRate.toFixed(0)}% seen in NetSuite</div>
+            </div>
+          </div>
         </div>
 
           <p className="text-xs mb-3" style={{ color: "var(--ink-faint)" }}>
             Click a team or pillar to open it up. GP splits 80% to the closer and 50% to the lead gen where
             there is one, with the 30% overlap coming off as DC — so the Grand Total is what actually lands.
           </p>
-          {/* Forecasted deals by team. Three columns so the three selling
-              teams sit side by side; anything extra wraps underneath. */}
+          {/* Forecasted deals by team — the orders feeding the table above.
+              Click any team or product row up there to narrow these. */}
+          <div className="flex items-baseline gap-2 mb-2 flex-wrap">
+            <span className="text-xs font-semibold uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>
+              Deals feeding this
+            </span>
+            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+              {weekRows.length} deal{weekRows.length === 1 ? "" : "s"}
+            </span>
+            {(teamFilter !== "All" || agentFilter !== "All" || pillarFilter) && (
+              <>
+                {teamFilter !== "All" && (
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{ background: "var(--primary-soft)", color: "var(--primary)" }}>
+                    {teamFilter}
+                  </span>
+                )}
+                {agentFilter !== "All" && (
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{ background: "var(--primary-soft)", color: "var(--primary)" }}>
+                    {agentFilter}
+                  </span>
+                )}
+                {pillarFilter && (
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{ background: "var(--primary-soft)", color: "var(--primary)" }}>
+                    {pillarFilter}
+                  </span>
+                )}
+                <button onClick={() => { setTeamFilter("All"); setAgentFilter("All"); setPillarFilter(null); }}
+                  className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>
+                  Clear filters
+                </button>
+              </>
+            )}
+          </div>
           <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "0.75rem" }}>
             {teamDeals.map((t) => (
               <div key={t.team} className="rounded-xl overflow-hidden"
@@ -9117,6 +9362,7 @@ function LandscapesView({ profile, staff }) {
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
+
 
   const flash = (m) => { setNote(m); setTimeout(() => setNote(""), 3500); };
 
@@ -11486,10 +11732,18 @@ function DistributionView({ orders, netsuite, staff }) {
 /*  TOP BAR NAVIGATION                                                     */
 /* ---------------------------------------------------------------------- */
 
-function NavLink({ icon: Icon, label, active, badge, onClick, href }) {
+function NavLink({ icon: Icon, label, active, badge, onClick, href, tint }) {
+  /* `tint` gives a tab a faint coloured backing when it isn't the active
+     one, so Claimed and Sales Delivery read as one group and Forecasting
+     as another without needing separators. */
+  const TINTS = {
+    purple: { bg: "var(--primary-soft)", fg: "var(--primary)" },
+    green: { bg: "var(--green-soft)", fg: "var(--green)" },
+  };
+  const t = tint ? TINTS[tint] : null;
   const style = {
-    background: active ? "var(--primary)" : "transparent",
-    color: active ? "#fff" : "var(--ink-soft)",
+    background: active ? (t ? t.fg : "var(--primary)") : (t ? t.bg : "transparent"),
+    color: active ? "#fff" : (t ? t.fg : "var(--ink-soft)"),
     height: 34,
   };
   const cls = "sw-focus flex items-center gap-1.5 px-3 rounded-lg text-sm font-medium whitespace-nowrap";
@@ -11582,7 +11836,6 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
   const dashboards = [
     { label: "Tops", icon: Trophy, active: tab === "tops", onClick: go("tops") },
     { label: "Day by Day", icon: CalendarDays, active: tab === "daybyday", onClick: go("daybyday") },
-    { label: "Forecasting", icon: TrendingUp, active: tab === "forecast", onClick: go("forecast") },
     { label: "Sales Breakdown", icon: BarChart3, active: tab === "breakdown", onClick: go("breakdown") },
     { label: "Sales Distribution", icon: Users, active: tab === "distribution", onClick: go("distribution") },
     { label: "TV Mode", icon: Radio, href: "#tv", onClick: () => setTimeout(() => window.location.reload(), 0) },
@@ -11598,7 +11851,7 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
     { label: "Change Password", icon: KeyRound, onClick: () => { onChangePassword(); setMobileOpen(false); } },
   ];
 
-  const dashActive = ["tops", "daybyday", "forecast", "breakdown", "distribution"].includes(tab);
+  const dashActive = ["tops", "daybyday", "breakdown", "distribution"].includes(tab);
   const subActive = ["new", "landscapes", "quote"].includes(tab);
   const setActive = ["admin", "statuses"].includes(tab);
 
@@ -11615,10 +11868,11 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
 
         {/* Desktop nav */}
         <nav className="sw-hide-sm flex items-center gap-1">
-          <NavLink icon={ClipboardList} label="Claimed" active={tab === "dashboard"} onClick={go("dashboard")} />
+          <NavLink icon={ClipboardList} label="Claimed" active={tab === "dashboard"} onClick={go("dashboard")} tint="purple" />
           {canSeeDelivery && (
-            <NavLink icon={Inbox} label="Sales Delivery" active={tab === "delivery"} onClick={go("delivery")} />
+            <NavLink icon={Inbox} label="Sales Delivery" active={tab === "delivery"} onClick={go("delivery")} tint="purple" />
           )}
+          <NavLink icon={TrendingUp} label="Forecasting" active={tab === "forecast"} onClick={go("forecast")} tint="green" />
           <NavMenu icon={LayoutDashboard} label="Dashboards" childActive={dashActive} items={dashboards} />
           <NavMenu icon={Inbox} label="Submission Boxes" childActive={subActive} items={submissions} />
           <NavLink icon={Headphones} label="Sales Coach" active={tab === "coach"} onClick={go("coach")} />
@@ -11650,6 +11904,7 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
             { heading: null, items: [
               { label: "Claimed", icon: ClipboardList, active: tab === "dashboard", onClick: go("dashboard") },
               ...(canSeeDelivery ? [{ label: "Sales Delivery", icon: Inbox, active: tab === "delivery", onClick: go("delivery") }] : []),
+              { label: "Forecasting", icon: TrendingUp, active: tab === "forecast", onClick: go("forecast") },
             ] },
             { heading: "Dashboards", items: dashboards },
             { heading: "Submission Boxes", items: submissions },
