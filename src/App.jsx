@@ -9416,19 +9416,56 @@ function isNewNet(n, statusCfg) {
   return true;
 }
 
+/* Product tree for the Tops board. Leaf keys match bucketOfNs below.
+   Cloud carries DV4B as its own line; Connectivity carries Broadband,
+   BT Net and Security (plus Data Networks, which sits with them on the
+   NetSuite sheet). Roll-ups sum their children, so a parent column and
+   its child columns always reconcile. */
+const TOPS_TREE = [
+  { key: "cloud", label: "Cloud", accent: "#5E2CA8", children: [
+    { key: "cloud_voice", label: "Cloud Voice", accent: "#7C4DBE" },
+    { key: "dv4b", label: "DV4B", accent: "#9B6FD6" },
+  ] },
+  { key: "connectivity", label: "Connectivity", accent: "#205EA6", children: [
+    { key: "broadband", label: "Broadband", accent: "#3D7CC9" },
+    { key: "btnet", label: "BT Net", accent: "#5A97DC" },
+    { key: "security", label: "Security", accent: "#77B0EA" },
+    { key: "data", label: "Data Networks", accent: "#95C5F5" },
+  ] },
+  { key: "mobile", label: "Mobile", accent: "#8659CE", children: [] },
+];
+const TOPS_LEAVES = { cloud: ["cloud_voice", "dv4b"], connectivity: ["broadband", "btnet", "security", "data"], mobile: ["mobile"] };
+/* Flat list in display order: each parent followed by its children. */
+const TOPS_COLUMNS = TOPS_TREE.flatMap((g) => [
+  { key: g.key, label: g.label, accent: g.accent, parent: null },
+  ...g.children.map((c) => ({ key: c.key, label: c.label, accent: c.accent, parent: g.key })),
+]);
+/* Which leaf bucket a NetSuite row belongs to. Order matters — DV4 is
+   tested before Cloud so DV4B doesn't get swallowed by the cloud rule. */
+function bucketOfNs(r) {
+  const s = [r.prod_for_gs, r.product_group_2, r.item_name_grouped].join(" ").toLowerCase();
+  if (/dv4/.test(s)) return "dv4b";
+  if (/mobile|\bsim\b|airtime|handset/.test(s)) return "mobile";
+  if (/cloud|voice/.test(s)) return "cloud_voice";
+  if (/bt ?net|btnet/.test(s)) return "btnet";
+  if (/broadband|fttp|fttc|sogea|adsl/.test(s)) return "broadband";
+  if (/security|badr/.test(s)) return "security";
+  if (/data|ethernet/.test(s)) return "data";
+  return "other";
+}
+
 function TopsView({ netsuite, staff }) {
   const aliases = useAliases();
   const statusCfg = useStatusCfg();
-  const [fy, setFy] = useState(() => String(fyYearOf()));
-  // Any week can be looked at, so WTD is driven by a date rather than "now"
-  const [weekOf, setWeekOf] = useState(() => {
-    const d = weekStart();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  });
-  const [monthIdx, setMonthIdx] = useState(() => {
-    const now = new Date();
-    return String((now.getMonth() - 3 + 12) % 12);
-  });
+
+  // Period defaults to MTD and stays there until it's actually changed —
+  // the board is a "how are we doing this month" screen first.
+  const [period, setPeriod] = useState("mtd");
+  const [split, setSplit] = useState("both");        // both | table | cards
+  // Which product columns the everyone-table shows. Parents on, children
+  // off, so the default is readable and can be drilled into.
+  const [cols, setCols] = useState(() => ({ cloud: true, connectivity: true, mobile: true }));
+  const [sortBy, setSortBy] = useState("sov");
 
   const teamByName = useMemo(() => {
     const m = {};
@@ -9445,58 +9482,80 @@ function TopsView({ netsuite, staff }) {
     return teamByName[nameKey(canon(n))] || teamByName[nameKey(n)] || fb || "—";
   }, [teamByName, canon]);
 
-  // Every row that qualifies for the board, once — the three panels then
-  // just slice it by date.
-  const pool = useMemo(
-    () => (netsuite || []).filter((n) => isNewNet(n, statusCfg)),
-    [netsuite, statusCfg]
-  );
-
-  // The three windows. Each is a plain [from, to) pair so a week in the
-  // past behaves the same as the live month.
-  const windows = useMemo(() => {
-    const y = parseInt(fy, 10);
-    const mi = parseInt(monthIdx, 10);
-    const wFrom = weekStart(new Date(weekOf + "T12:00:00"));
-    const wTo = new Date(wFrom.getFullYear(), wFrom.getMonth(), wFrom.getDate() + 7);
-    const mFrom = fyMonthDate(y, mi);
-    const mTo = new Date(mFrom.getFullYear(), mFrom.getMonth() + 1, 1);
-    return [
-      { key: "wtd", label: "Week", sub: `w/c ${fmtDate(wFrom)}`, from: wFrom, to: wTo },
-      { key: "mtd", label: "Month", sub: `${FY_MONTHS[mi]} ${fyLabel(y)}`, from: mFrom, to: mTo },
-      { key: "ytd", label: "Year", sub: fyLabel(y), from: new Date(y, 3, 1), to: new Date(y + 1, 3, 1) },
-    ];
-  }, [fy, monthIdx, weekOf]);
-
-  // Each person gets their OWN share of a deal — closer GP to the closer,
-  // referrer GP to the lead gen — which is the same rule the pay plans and
-  // the Claimed ranked list use. Crediting whole-deal GP to both would
-  // double-count the office.
-  const boards = useMemo(() => windows.map((w) => {
-    const f = w.from.getTime(), t = w.to.getTime();
+  /* One pass over the New Net rows builds everything: per-person GP, SOV
+     and SOV per product leaf. Both halves of the page read off this, so
+     the cards and the table can never disagree. */
+  const people = useMemo(() => {
+    const inP = periodTest(period);
     const by = {};
-    const add = (name, gp, sov, team) => {
-      if (!name) return;
+    const touch = (name, team) => {
       const c = canon(name);
       const k = nameKey(c);
-      if (!k) return;
-      if (!by[k]) by[k] = { name: c, team: teamOf(name, team), gp: 0, sov: 0, deals: 0 };
-      by[k].gp += num(gp);
-      by[k].sov += num(sov);
-      by[k].deals += 1;
+      if (!k) return null;
+      if (!by[k]) by[k] = { name: c, team: teamOf(name, team), gp: 0, sov: 0, deals: 0, prod: {} };
+      return by[k];
     };
-    pool.forEach((n) => {
-      const v = new Date(n.order_date + "T00:00:00").getTime();
-      if (v < f || v >= t) return;
+    (netsuite || []).forEach((n) => {
+      if (!isNewNet(n, statusCfg)) return;
+      if (!inP(n.order_date ? n.order_date + "T00:00:00" : null)) return;
       const sov = n.count_sov === false ? 0 : num(n.contract_value);
-      add(n.closer_name, n.closer_gp, sov, n.closer_team);
-      if (n.referrer_name) add(n.referrer_name, n.referrer_gp, 0, n.referrer_team);
+      const leaf = bucketOfNs(n);
+      // The closer carries the deal's SOV; the lead gen is credited GP
+      // only, so office SOV isn't counted twice across the two of them.
+      const c = touch(n.closer_name, n.closer_team);
+      if (c) {
+        c.gp += num(n.closer_gp);
+        c.sov += sov;
+        c.deals += 1;
+        c.prod[leaf] = (c.prod[leaf] || 0) + sov;
+      }
+      if (n.referrer_name) {
+        const r = touch(n.referrer_name, n.referrer_team);
+        if (r) { r.gp += num(n.referrer_gp); r.deals += 1; }
+      }
     });
-    const rows = Object.values(by).filter((r) => r.gp > 0).sort((a, b) => b.gp - a.gp);
-    return { ...w, rows: rows.slice(0, 3), total: rows.reduce((s, r) => s + r.gp, 0), people: rows.length };
-  }), [windows, pool, canon, teamOf]);
+    // Roll children up into their parents once, at the end.
+    Object.values(by).forEach((p) => {
+      Object.entries(TOPS_LEAVES).forEach(([parent, leaves]) => {
+        p.prod[parent] = leaves.reduce((s, k) => s + (p.prod[k] || 0), 0);
+      });
+    });
+    return Object.values(by).filter((p) => p.gp > 0 || p.sov > 0);
+  }, [netsuite, statusCfg, period, canon, teamOf]);
 
+  const grand = useMemo(() => ({
+    gp: people.reduce((s, p) => s + p.gp, 0),
+    sov: people.reduce((s, p) => s + p.sov, 0),
+  }), [people]);
+
+  // Top 3 per product, ranked on SOV — one card per column that's on.
+  const boards = useMemo(() => TOPS_COLUMNS.map((c) => {
+    const rows = people
+      .map((p) => ({ name: p.name, team: p.team, value: p.prod[c.key] || 0 }))
+      .filter((r) => r.value > 0)
+      .sort((a, b) => b.value - a.value);
+    return { ...c, rows: rows.slice(0, 3), total: rows.reduce((s, r) => s + r.value, 0), sellers: rows.length };
+  }), [people]);
+
+  const activeCols = useMemo(() => TOPS_COLUMNS.filter((c) => cols[c.key]), [cols]);
+
+  const tableRows = useMemo(() => {
+    const v = (p) => (sortBy === "gp" ? p.gp : sortBy === "sov" ? p.sov : (p.prod[sortBy] || 0));
+    return [...people].sort((a, b) => v(b) - v(a));
+  }, [people, sortBy]);
+
+  const toggleCol = (k) => setCols((c) => ({ ...c, [k]: !c[k] }));
   const MEDALS = ["#B8860B", "#8A8A8A", "#A0642A"];
+  const showTable = split === "both" || split === "table";
+  const showCards = split === "both" || split === "cards";
+
+  const SortHead = ({ k, label, align = "right", accent }) => (
+    <th className="px-2 py-2 text-xs font-semibold uppercase tracking-wide"
+      style={{ textAlign: align, color: sortBy === k ? (accent || "var(--primary)") : "var(--ink-soft)", cursor: "pointer", whiteSpace: "nowrap" }}
+      onClick={() => setSortBy(k)} title={`Sort by ${label}`}>
+      {label}{sortBy === k ? " ▾" : ""}
+    </th>
+  );
 
   return (
     <div>
@@ -9504,91 +9563,192 @@ function TopsView({ netsuite, staff }) {
         <Trophy size={18} style={{ color: "var(--primary)" }} />
         <h2 className="sw-display text-lg font-bold">Tops</h2>
         <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
-          Top 3 agents · NetSuite New Net, {fyLabel(NEW_NET_FIRST_FY)} onwards
+          NetSuite New Net, {fyLabel(NEW_NET_FIRST_FY)} onwards · products ranked on SOV
         </span>
       </div>
 
+      {/* Period + what's on screen. Period sits first because it governs
+          both halves; it stays on MTD until deliberately changed. */}
       <div className="rounded-xl mb-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="flex items-center gap-2 px-3 py-2.5 flex-wrap">
-          <span className="text-xs font-semibold uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Financial year</span>
-          <select className="sw-input sw-focus" style={{ width: 112, height: 32, fontSize: 12.5 }}
-            value={fy} onChange={(e) => setFy(e.target.value)}>
-            {fyList().map((y) => <option key={y} value={y}>{fyLabel(y)}</option>)}
-          </select>
-          <span className="text-xs font-semibold uppercase ml-2" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Month</span>
-          <select className="sw-input sw-focus" style={{ width: 112, height: 32, fontSize: 12.5 }}
-            value={monthIdx} onChange={(e) => setMonthIdx(e.target.value)}>
-            {FY_MONTHS.map((lbl, i) => (
-              <option key={i} value={i}>{lbl} {String(i <= 8 ? fy : Number(fy) + 1).slice(2)}</option>
+          <PeriodSelect value={period} onChange={setPeriod} width={112} />
+          <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{periodLabelFor(period)}</span>
+
+          <div className="flex items-center rounded-lg overflow-hidden ml-auto" style={{ border: "1px solid var(--border)", height: 32 }}>
+            {[["both", "Both"], ["table", "Everyone"], ["cards", "Top 3"]].map(([k, lbl]) => (
+              <button key={k} onClick={() => setSplit(k)}
+                className="sw-focus px-3 text-xs whitespace-nowrap"
+                style={split === k
+                  ? { background: "var(--primary)", color: "#fff", fontWeight: 600, height: "100%" }
+                  : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
+                {lbl}
+              </button>
             ))}
-          </select>
-          <span className="text-xs font-semibold uppercase ml-2" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Week of</span>
-          <input type="date" className="sw-input sw-focus" style={{ width: 150, height: 32, fontSize: 12.5 }}
-            value={weekOf} onChange={(e) => e.target.value && setWeekOf(e.target.value)}
-            title="Any date in the week — the board runs Monday to Sunday" />
-          <button onClick={() => {
-              const d = weekStart();
-              setWeekOf(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
-              setFy(String(fyYearOf()));
-              setMonthIdx(String((new Date().getMonth() - 3 + 12) % 12));
-            }}
-            className="sw-focus px-3 rounded-lg text-xs" style={{ height: 32, border: "1px solid var(--border)", color: "var(--ink-soft)" }}>
-            This week
-          </button>
+          </div>
         </div>
       </div>
 
-      {/* Three boards side by side. Inline grid on purpose — critical
-          layout, no Tailwind JIT dependence. */}
-      <div className="sw-cols-2" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "0.75rem", alignItems: "start" }}>
-        {boards.map((b) => (
-          <div key={b.key} className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-            <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--border)", background: "var(--surface-alt)" }}>
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="sw-display" style={{ fontSize: 15, fontWeight: 600 }}>{b.label}</span>
-                <span className="sw-mono text-xs" style={{ color: "var(--ink-soft)" }}>{fmtGBP(b.total)}</span>
+      {/* Half the page each when both are on. Inline grid on purpose —
+          critical layout, no Tailwind JIT dependence. */}
+      <div className="sw-cols" style={{
+        display: "grid",
+        gridTemplateColumns: split === "both" ? "minmax(0, 1fr) minmax(0, 1fr)" : "minmax(0, 1fr)",
+        gap: "0.75rem", alignItems: "start",
+      }}>
+
+        {/* ---- Everyone, with the columns you pick ---- */}
+        {showTable && (
+        <div>
+          {/* Column picker sits directly above the table it controls */}
+          <div className="rounded-xl mb-2" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="px-3 py-2.5">
+              <div className="text-xs font-semibold uppercase mb-2" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>
+                Columns
               </div>
-              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
-                {b.sub}{b.people ? ` · ${b.people} selling` : ""}
+              <div className="flex items-center gap-x-3 gap-y-1.5 flex-wrap">
+                {TOPS_TREE.map((g) => (
+                  <div key={g.key} className="flex items-center gap-2.5 rounded-lg px-2 py-1"
+                    style={{ border: "1px solid var(--border)" }}>
+                    <label className="flex items-center gap-1.5" style={{ cursor: "pointer" }}>
+                      <input type="checkbox" checked={!!cols[g.key]} onChange={() => toggleCol(g.key)} />
+                      <span style={{ fontSize: 12, fontWeight: 600, color: g.accent }}>{g.label}</span>
+                    </label>
+                    {g.children.map((c) => (
+                      <label key={c.key} className="flex items-center gap-1" style={{ cursor: "pointer" }}>
+                        <input type="checkbox" checked={!!cols[c.key]} onChange={() => toggleCol(c.key)} />
+                        <span style={{ fontSize: 11.5, color: "var(--ink-soft)" }}>{c.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                ))}
+                <button onClick={() => setCols({ cloud: true, connectivity: true, mobile: true })}
+                  className="sw-focus text-xs" style={{ color: "var(--primary)" }}>Reset</button>
               </div>
             </div>
+          </div>
 
-            {b.rows.length === 0 ? (
-              <div className="text-xs text-center py-10" style={{ color: "var(--ink-faint)" }}>
-                Nothing on the New Net list for this period.
-              </div>
-            ) : b.rows.map((r, i) => {
-              const max = b.rows[0].gp || 1;
-              return (
-                <div key={r.name} className="px-4 py-3" style={{ borderTop: i === 0 ? "none" : "1px solid var(--border)" }}>
-                  <div className="flex items-center gap-2.5">
-                    <span className="sw-display shrink-0" style={{
-                      width: 22, height: 22, borderRadius: 99, display: "flex", alignItems: "center", justifyContent: "center",
-                      fontSize: 11.5, fontWeight: 700, color: "#fff", background: MEDALS[i],
-                    }}>{i + 1}</span>
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div className="truncate" style={{ fontSize: 13.5, fontWeight: 600 }}>{r.name}</div>
-                      <div className="text-xs truncate" style={{ color: "var(--ink-faint)" }}>{r.team}</div>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <div className="sw-mono" style={{ fontSize: 15, fontWeight: 700, color: "var(--green)" }}>{fmtGBP(r.gp)}</div>
-                      <div className="sw-mono text-xs" style={{ color: "var(--ink-faint)" }}>{fmtGBP(r.sov)} SOV</div>
-                    </div>
+          <ListTotalsStrip gp={grand.gp} sov={grand.sov} count={people.length} label={periodLabelFor(period)} />
+
+          <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div style={{ overflowX: "auto" }}>
+              <table className="w-full text-sm sw-orders">
+                <thead>
+                  <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
+                    <th className="text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>Agent</th>
+                    <SortHead k="gp" label="GP" />
+                    <SortHead k="sov" label="SOV" />
+                    {activeCols.map((c) => <SortHead key={c.key} k={c.key} label={c.label} accent={c.accent} />)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {tableRows.map((p, i) => (
+                    <tr key={p.name} style={{ borderTop: "1px solid var(--border)" }}>
+                      <td className="px-3 py-2">
+                        <div className="flex items-baseline gap-2" style={{ minWidth: 0 }}>
+                          <span className="sw-mono shrink-0" style={{ fontSize: 11, color: "var(--ink-faint)", width: 16 }}>{i + 1}</span>
+                          <div style={{ minWidth: 0 }}>
+                            <div className="truncate" style={{ fontSize: 13, fontWeight: 600 }}>{p.name}</div>
+                            <div className="text-xs truncate" style={{ color: "var(--ink-faint)" }}>{p.team}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-2 py-2 sw-mono text-xs text-right" style={{ color: "var(--green)", fontWeight: 600 }}>{fmtGBP(p.gp)}</td>
+                      <td className="px-2 py-2 sw-mono text-xs text-right" style={{ fontWeight: 600 }}>{fmtGBP(p.sov)}</td>
+                      {activeCols.map((c) => (
+                        <td key={c.key} className="px-2 py-2 sw-mono text-xs text-right"
+                          style={{ color: (p.prod[c.key] || 0) > 0 ? "var(--ink-soft)" : "var(--ink-faint)" }}>
+                          {(p.prod[c.key] || 0) > 0 ? fmtGBP(p.prod[c.key]) : "—"}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                  {tableRows.length === 0 && (
+                    <tr><td colSpan={3 + activeCols.length} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                      Nothing on the New Net list for this period.
+                    </td></tr>
+                  )}
+                </tbody>
+                {tableRows.length > 0 && (
+                  <tfoot>
+                    <tr style={{ borderTop: "2px solid var(--border)", background: "var(--surface-alt)" }}>
+                      <td className="px-3 py-2 text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)", letterSpacing: "0.04em" }}>Total</td>
+                      <td className="px-2 py-2 sw-mono text-xs text-right" style={{ color: "var(--green)", fontWeight: 700 }}>{fmtGBP(grand.gp)}</td>
+                      <td className="px-2 py-2 sw-mono text-xs text-right" style={{ fontWeight: 700 }}>{fmtGBP(grand.sov)}</td>
+                      {activeCols.map((c) => (
+                        <td key={c.key} className="px-2 py-2 sw-mono text-xs text-right" style={{ fontWeight: 700, color: c.accent }}>
+                          {fmtGBP(people.reduce((s, p) => s + (p.prod[c.key] || 0), 0))}
+                        </td>
+                      ))}
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          </div>
+        </div>
+        )}
+
+        {/* ---- Top 3 per product ---- */}
+        {showCards && (
+        <div>
+          <div className="sw-cols-2" style={{
+            display: "grid",
+            gridTemplateColumns: split === "cards" ? "repeat(auto-fit, minmax(240px, 1fr))" : "repeat(auto-fit, minmax(210px, 1fr))",
+            gap: "0.75rem", alignItems: "start",
+          }}>
+            {boards.filter((b) => cols[b.key]).map((b) => (
+              <div key={b.key} className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+                <div className="px-3 py-2.5" style={{ borderBottom: "1px solid var(--border)", background: "var(--surface-alt)" }}>
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="sw-display truncate" style={{ fontSize: 13.5, fontWeight: 600, color: b.accent }}>
+                      {b.parent ? "↳ " : ""}{b.label}
+                    </span>
+                    <span className="sw-mono text-xs shrink-0" style={{ color: "var(--ink-soft)" }}>{fmtGBP(b.total)}</span>
                   </div>
-                  <div className="rounded-full mt-2" style={{ height: 5, background: "var(--surface-alt)" }}>
-                    <div className="rounded-full sw-bar-anim" style={{ width: `${Math.max(4, (r.gp / max) * 100)}%`, height: "100%", background: MEDALS[i] }} />
+                  <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                    SOV{b.sellers ? ` · ${b.sellers} selling` : ""}
                   </div>
                 </div>
-              );
-            })}
+                {b.rows.length === 0 ? (
+                  <div className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>Nothing this period.</div>
+                ) : b.rows.map((r, i) => {
+                  const max = b.rows[0].value || 1;
+                  return (
+                    <div key={r.name} className="px-3 py-2" style={{ borderTop: i === 0 ? "none" : "1px solid var(--border)" }}>
+                      <div className="flex items-center gap-2">
+                        <span className="sw-display shrink-0" style={{
+                          width: 18, height: 18, borderRadius: 99, display: "flex", alignItems: "center", justifyContent: "center",
+                          fontSize: 10.5, fontWeight: 700, color: "#fff", background: MEDALS[i],
+                        }}>{i + 1}</span>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div className="truncate" style={{ fontSize: 12.5, fontWeight: 600 }}>{r.name}</div>
+                          <div className="text-xs truncate" style={{ color: "var(--ink-faint)" }}>{r.team}</div>
+                        </div>
+                        <span className="sw-mono shrink-0" style={{ fontSize: 12.5, fontWeight: 700 }}>{fmtGBP(r.value)}</span>
+                      </div>
+                      <div className="rounded-full mt-1.5" style={{ height: 4, background: "var(--surface-alt)" }}>
+                        <div className="rounded-full sw-bar-anim" style={{ width: `${Math.max(4, (r.value / max) * 100)}%`, height: "100%", background: b.accent }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
           </div>
-        ))}
+          {boards.filter((b) => cols[b.key]).length === 0 && (
+            <div className="rounded-xl text-xs text-center py-10" style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-faint)" }}>
+              Tick a product above to see its top 3.
+            </div>
+          )}
+        </div>
+        )}
       </div>
 
       <p className="text-xs mt-3 px-1" style={{ color: "var(--ink-faint)" }}>
-        Scored on NetSuite New Net only — Lilac claims don't count here. Each person is credited their own
-        share of a deal (closer GP to the closer, referrer GP to the lead gen), so nobody is counted twice.
-        Anything flagged NGP, or classed as a resign or renewal, is excluded. The week runs Monday to Sunday.
+        Product boards rank on SOV; the table carries GP and SOV as well, and any column heading sorts it.
+        Cloud is Cloud Voice plus DV4B; Connectivity is Broadband, BT Net, Security and Data Networks — parents
+        always equal the sum of their children. SOV is credited to the closer so the office isn't counted twice,
+        while GP is split between closer and lead gen. Scored on NetSuite New Net only, never Lilac claims.
       </p>
     </div>
   );
