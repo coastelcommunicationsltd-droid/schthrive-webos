@@ -169,13 +169,33 @@ RULES YOU MUST FOLLOW
 
 function stageBlock(stage: any, index: number, total: number) {
   if (!stage) return "No stage structure — run a natural conversation.";
+  const line = (label: string, v: unknown) => (v ? `\n  ${label}: ${v}` : "");
   return `
 CURRENT STAGE: ${stage.label} (${index + 1} of ${total})
   The agent is trying to: ${stage.goal || "—"}
-  Let the call move on when: ${stage.advance_when || "the agent has achieved the goal above"}
-  Objections that fit here: ${stage.objections || "any that arise naturally"}
-  This is going badly if: ${stage.fail_when || "—"}
-  Aim for at most ${stage.max_turns || 6} exchanges here before things move on.`;
+  Let the call move on when: ${stage.advance_when || "the agent has achieved the goal above"}${
+    line("Where you are and what you're thinking", stage.customer_context)
+  }${
+    line("What you'll give up if they ask well", stage.reveals)
+  }${
+    line("Objections that fit here", stage.objections)
+  }${
+    line("How your mood should shift", stage.mood_shift)
+  }${
+    line("You must NEVER", stage.never_do)
+  }${
+    line("This is going badly if", stage.fail_when)
+  }${
+    line("A strong agent turn here sounds like", stage.good_example)
+  }${
+    line("A weak agent turn here sounds like", stage.poor_example)
+  }
+  Aim for at most ${stage.max_turns || 6} exchanges here before things move on.
+
+  Use "what you'll give up" as the material the agent is digging for — hand it
+  over when they earn it with a good question, not before, and not unprompted.
+  Use the strong/weak examples to calibrate grading for THIS stage; they set
+  the top and bottom of the scale here.`;
 }
 
 function bonusBlock(bonuses: any[]) {

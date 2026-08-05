@@ -5512,37 +5512,61 @@ function CoachScenarioRow({ s, onSave, onDelete }) {
 }
 
 /* One call stage. Managers edit these, so what the coach expects at each
-   point is visible and changeable rather than buried in a prompt. */
+   point is visible and changeable rather than buried in a prompt.
+   Grouped into three: what the agent is doing, what the customer does
+   back, and how the turn should be judged. */
 function StageRow({ s, onSave, onDelete }) {
   const [f, setF] = useState({
     label: s.label || "", goal: s.goal || "", advance_when: s.advance_when || "",
     objections: s.objections || "", fail_when: s.fail_when || "",
+    coaching_note: s.coaching_note || "",
+    customer_context: s.customer_context || "", reveals: s.reveals || "",
+    good_example: s.good_example || "", poor_example: s.poor_example || "",
+    mood_shift: s.mood_shift || "", never_do: s.never_do || "",
     max_turns: s.max_turns ?? 6, active: s.active !== false,
   });
   const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState("agent");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const dirty = Object.keys(f).some((k) => String(f[k]) !== String(s[k] ?? (k === "active" ? true : k === "max_turns" ? 6 : "")));
 
-  const Field = ({ label, k, rows = 2, hint }) => (
-    <div className="mb-2">
+  // How much of this stage has actually been filled in — an empty stage
+  // still runs, it just gives the model less to work with.
+  const detailFields = ["goal", "advance_when", "objections", "fail_when",
+    "customer_context", "reveals", "good_example", "poor_example", "mood_shift", "never_do"];
+  const filled = detailFields.filter((k) => String(f[k] || "").trim()).length;
+
+  const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }));
+
+  const Field = ({ label, k, rows = 2, hint, placeholder }) => (
+    <div className="mb-2.5">
       <label className="sw-label">{label}</label>
-      <textarea className="sw-input sw-focus" rows={rows} value={f[k]}
-        onChange={(e) => setF((p) => ({ ...p, [k]: e.target.value }))} />
+      <textarea className="sw-input sw-focus" rows={rows} value={f[k]} placeholder={placeholder}
+        onChange={set(k)} style={{ fontSize: 12, lineHeight: 1.45 }} />
       {hint && <div className="text-xs mt-0.5" style={{ color: "var(--ink-faint)" }}>{hint}</div>}
     </div>
   );
 
+  const TABS = [
+    { key: "agent", label: "Agent" },
+    { key: "customer", label: "Customer" },
+    { key: "grading", label: "Grading" },
+  ];
+
   return (
     <div className="rounded-xl mb-2" style={{ background: "var(--surface)", border: "1px solid var(--border)", opacity: f.active ? 1 : 0.6 }}>
       <div className="flex items-center gap-2 px-3 py-2">
-        <button onClick={() => setOpen((v) => !v)} className="sw-focus flex items-center gap-2 flex-1 text-left">
-          <ChevronDown size={13} style={{ color: "var(--ink-faint)", transform: open ? "rotate(0)" : "rotate(-90deg)", transition: "transform .15s" }} />
-          <input className="sw-input sw-focus" style={{ maxWidth: 220, height: 30, fontSize: 13, fontWeight: 600 }}
-            value={f.label} onClick={(e) => e.stopPropagation()}
-            onChange={(e) => setF((p) => ({ ...p, label: e.target.value }))} />
+        <button onClick={() => setOpen((v) => !v)} className="sw-focus flex items-center gap-2 flex-1 text-left min-w-0">
+          <ChevronDown size={13} style={{ color: "var(--ink-faint)", flexShrink: 0, transform: open ? "rotate(0)" : "rotate(-90deg)", transition: "transform .15s" }} />
+          <input className="sw-input sw-focus" style={{ maxWidth: 200, height: 30, fontSize: 13, fontWeight: 600 }}
+            value={f.label} onClick={(e) => e.stopPropagation()} onChange={set("label")} />
+          <span className="text-xs shrink-0" style={{ color: filled >= 6 ? "var(--green)" : filled >= 3 ? "var(--amber)" : "var(--ink-faint)" }}
+            title={`${filled} of ${detailFields.length} detail fields filled in`}>
+            {filled}/{detailFields.length}
+          </span>
         </button>
-        <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--ink-soft)" }} title="Include this stage in calls">
+        <label className="flex items-center gap-1.5 text-xs shrink-0" style={{ color: "var(--ink-soft)" }} title="Include this stage in calls">
           <input type="checkbox" checked={f.active} onChange={(e) => setF((p) => ({ ...p, active: e.target.checked }))} /> On
         </label>
         <button disabled={!dirty || saving}
@@ -5551,23 +5575,76 @@ function StageRow({ s, onSave, onDelete }) {
             await onSave(s.id, { ...f, max_turns: parseInt(f.max_turns, 10) || 6 });
             setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 1500);
           }}
-          className="sw-focus text-xs font-semibold px-2.5 py-1.5 rounded-lg"
+          className="sw-focus text-xs font-semibold px-2.5 py-1.5 rounded-lg shrink-0"
           style={{ background: dirty ? "var(--primary)" : "var(--surface-alt)", color: dirty ? "#fff" : "var(--ink-faint)" }}>
           {saving ? "..." : saved ? "✓" : "Save"}
         </button>
-        <button onClick={() => onDelete(s.id, f.label)} className="sw-focus text-xs px-1.5" style={{ color: "var(--red)" }} title="Delete stage">✕</button>
+        <button onClick={() => onDelete(s.id, f.label)} className="sw-focus text-xs px-1.5 shrink-0" style={{ color: "var(--red)" }} title="Delete stage">✕</button>
       </div>
 
       {open && (
-        <div className="px-3 pb-3" style={{ borderTop: "1px solid var(--border)", paddingTop: 10 }}>
-          <Field label="What the agent should achieve here" k="goal" />
-          <Field label="Move on when" k="advance_when" hint="The customer only advances the call when this is genuinely met." />
-          <Field label="Objections available at this stage" k="objections" hint="The customer picks from these when they'd come up naturally." />
-          <Field label="This is going badly if" k="fail_when" />
-          <div style={{ maxWidth: 180 }}>
-            <label className="sw-label">Soft turn limit</label>
-            <input className="sw-input sw-focus" value={f.max_turns}
-              onChange={(e) => setF((p) => ({ ...p, max_turns: e.target.value }))} />
+        <div style={{ borderTop: "1px solid var(--border)" }}>
+          <div className="flex items-center gap-1 px-3 pt-2">
+            {TABS.map((t) => (
+              <button key={t.key} onClick={() => setTab(t.key)}
+                className="sw-focus px-2.5 py-1 rounded-lg text-xs"
+                style={tab === t.key
+                  ? { background: "var(--primary-soft)", color: "var(--primary)", fontWeight: 600 }
+                  : { color: "var(--ink-faint)" }}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="px-3 pb-3 pt-2">
+            {tab === "agent" && (
+              <>
+                <Field label="What the agent should achieve here" k="goal" rows={2}
+                  placeholder="e.g. Understand what they currently have and when it renews." />
+                <Field label="Move on when" k="advance_when" rows={2}
+                  hint="The customer only advances the call when this is genuinely met."
+                  placeholder="e.g. They've learned the provider, the pain and a renewal date." />
+                <Field label="Coaching note shown during the call" k="coaching_note" rows={2}
+                  hint="A short prompt the agent sees while this stage is live."
+                  placeholder="e.g. Open questions. Let them talk. You're looking for a reason to continue." />
+                <div style={{ maxWidth: 180 }}>
+                  <label className="sw-label">Soft turn limit</label>
+                  <input className="sw-input sw-focus" value={f.max_turns} onChange={set("max_turns")} />
+                </div>
+              </>
+            )}
+
+            {tab === "customer" && (
+              <>
+                <Field label="What the customer knows and is thinking" k="customer_context" rows={3}
+                  hint="Their situation at this point in the call, in their words."
+                  placeholder="e.g. You've had the same provider six years. It mostly works but the broadband drops weekly and nobody calls back." />
+                <Field label="What they'll give up if asked well" k="reveals" rows={3}
+                  hint="Information the customer volunteers in response to good questions — this is what the agent is digging for."
+                  placeholder="e.g. Contract ends in March. 12 staff, 4 mobiles on a separate contract. The last outage cost a day's trading." />
+                <Field label="Objections available here" k="objections" rows={2}
+                  hint="Raised when they'd naturally come up — not all at once."
+                  placeholder="e.g. We're happy as we are. / Why do you need to know that?" />
+                <Field label="How their mood should shift" k="mood_shift" rows={2}
+                  hint="What warms them up, and what closes them down."
+                  placeholder="e.g. Warms up if they ask about the outages. Goes short if pitched to before being understood." />
+                <Field label="The customer must never" k="never_do" rows={2}
+                  placeholder="e.g. Volunteer the renewal date unprompted. Offer to buy without being asked." />
+              </>
+            )}
+
+            {tab === "grading" && (
+              <>
+                <Field label="This is going badly if" k="fail_when" rows={2}
+                  placeholder="e.g. The agent pitches before understanding anything, or asks only closed questions." />
+                <Field label="A strong turn here sounds like" k="good_example" rows={3}
+                  hint="Calibrates the top of the scale — the model marks against this."
+                  placeholder={"e.g. \"What made you look at this now, rather than at renewal?\""} />
+                <Field label="A weak turn here sounds like" k="poor_example" rows={3}
+                  hint="Calibrates the bottom. Be specific — vague examples make grading vague."
+                  placeholder={"e.g. \"So we do broadband, mobile, cloud voice and BT Net — any of those interest you?\""} />
+              </>
+            )}
           </div>
         </div>
       )}
@@ -6571,6 +6648,8 @@ function SalesCoachView() {
   const [history, setHistory] = useState([]);
   const [openSession, setOpenSession] = useState(null);
   const [rolling, setRolling] = useState(false);   // rollback in progress
+  const [listening, setListening] = useState(false);
+  const [micNote, setMicNote] = useState("");
   const [scenarios, setScenarios] = useState([]);
   const [coachCfg, setCoachCfg] = useState({ rubric: "", what_good_looks_like: "", feedback_guidance: "" });
 
@@ -6821,14 +6900,38 @@ function SalesCoachView() {
         if (toSend) submitTurn(toSend, raw !== toSend ? raw : null);
       }, 1400);
     };
+    r.onstart = () => { setListening(true); setMicNote(""); };
+    r.onspeechstart = () => setMicNote("hearing you");
+    r.onspeechend = () => setMicNote("");
     r.onerror = (ev) => {
-      if (ev.error === "not-allowed") setError("Microphone blocked — allow access in your browser and try again.");
-      else if (ev.error !== "no-speech" && ev.error !== "aborted") setError(`Microphone: ${ev.error}`);
+      // "no-speech" and "aborted" fire constantly in normal use and aren't
+      // worth surfacing; the rest are things the user can act on.
+      if (ev.error === "not-allowed" || ev.error === "service-not-allowed") {
+        setListening(false);
+        setError("Microphone blocked. Click the padlock in the address bar, allow the microphone, then reload.");
+      } else if (ev.error === "audio-capture") {
+        setListening(false);
+        setError("No microphone found. Check it's plugged in and not in use by another app.");
+      } else if (ev.error !== "no-speech" && ev.error !== "aborted") {
+        setMicNote(`mic: ${ev.error}`);
+      }
     };
-    r.onend = () => { if (recogRef.current === r) { try { r.start(); } catch (_) {} } };
+    // Chrome stops recognition roughly every minute; restart unless muted.
+    r.onend = () => {
+      if (recogRef.current === r) {
+        try { r.start(); } catch (_) { setListening(false); }
+      } else {
+        setListening(false);
+      }
+    };
 
     recogRef.current = r;
-    try { r.start(); } catch (_) {}
+    try {
+      r.start();
+    } catch (_) {
+      // start() throws if called while already running — harmless
+      setListening(true);
+    }
   }, [supported, submitTurn]);
 
   const stopListening = useCallback(() => {
@@ -6836,6 +6939,8 @@ function SalesCoachView() {
     recogRef.current = null;
     if (r) { try { r.onend = null; r.stop(); } catch (_) {} }
     setInterim("");
+    setListening(false);
+    setMicNote("");
   }, []);
 
   useEffect(() => () => stopListening(), [stopListening]);
@@ -7048,7 +7153,7 @@ function SalesCoachView() {
       )}
 
       {/* Live call */}
-      {(status === "live" || status === "thinking" || status === "ended") && (
+      {(status === "live" || status === "thinking" || (status === "ended" && !summary)) && (
         <>
           {/* Where the call has got to. The customer decides when you've
               earned the next stage, so this is progress, not a menu. */}
@@ -7211,10 +7316,19 @@ function SalesCoachView() {
                 onKeyDown={(e) => { if (e.key === "Enter" && typed.trim()) { submitTurn(typed); setTyped(""); } }} />
               <button onClick={() => { if (typed.trim()) { submitTurn(typed); setTyped(""); } }}
                 className="sw-focus px-4 py-2 rounded-lg text-sm font-semibold text-white" style={{ background: "var(--primary)" }}>Send</button>
-              {supported && (
-                recogRef.current
-                  ? <button onClick={stopListening} className="sw-focus px-3 py-2 rounded-lg text-sm font-semibold" style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>Mute</button>
-                  : <button onClick={startListening} className="sw-focus px-3 py-2 rounded-lg text-sm font-semibold" style={{ background: "var(--green)", color: "#fff" }}>Unmute</button>
+              {supported ? (
+                listening
+                  ? <button onClick={stopListening} className="sw-focus px-3 py-2 rounded-lg text-sm font-semibold flex items-center gap-1.5"
+                      style={{ background: "var(--green-soft)", border: "1px solid var(--green)", color: "var(--green)" }}>
+                      <span style={{ width: 7, height: 7, borderRadius: 99, background: "var(--green)", display: "inline-block" }} />
+                      {micNote || "Listening"} · Mute
+                    </button>
+                  : <button onClick={startListening} className="sw-focus px-3 py-2 rounded-lg text-sm font-semibold"
+                      style={{ background: "var(--green)", color: "#fff" }}>Start mic</button>
+              ) : (
+                <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                  Voice isn't supported in this browser — try Chrome or Edge
+                </span>
               )}
             </div>
           )}
