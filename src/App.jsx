@@ -9199,10 +9199,10 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
 
       /* Headline counts — this branch only renders on the Claimed view,
          so the old view === "unplaced" ternaries in here were dead code
-         and have gone. Cards cascade in and the counts ease up. */
-      {/* One card holding a 2x2 grid of the four figures, rather than four
-          cards strung across a row. Inline grid on purpose — critical
-          layout, no Tailwind JIT dependence. */}
+         and have gone. Cards cascade in and the counts ease up.
+         One card holding a 2x2 grid of the four figures, rather than four
+         cards strung across a row. Inline grid on purpose — critical
+         layout, no Tailwind JIT dependence. */
       <div className="sw-stagger rounded-xl mb-3 p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: "1px", background: "var(--border)" }}>
           {[
