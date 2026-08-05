@@ -8229,7 +8229,7 @@ function isoDateStr(d) {
   return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
 }
 
-function ForecastCell({ value, money = true, bold, tone, highlight }) {
+function ForecastCell({ value, money = true, bold, tone, highlight, noBorder }) {
   const empty = !value;
   return (
     <td className="px-2 py-2 sw-mono whitespace-nowrap"
@@ -8237,7 +8237,7 @@ function ForecastCell({ value, money = true, bold, tone, highlight }) {
         fontSize: 13.5, textAlign: "center",
         fontWeight: bold ? 700 : 500,
         color: empty ? "var(--ink-faint)" : (tone || "var(--ink)"),
-        borderLeft: "1px solid var(--border)",
+        borderLeft: noBorder ? "none" : "1px solid var(--border)",
         background: highlight ? "var(--primary-soft)" : undefined,
       }}>
       {money ? fmtGBP(value) : (value || 0).toLocaleString("en-GB")}
@@ -8246,25 +8246,27 @@ function ForecastCell({ value, money = true, bold, tone, highlight }) {
 }
 
 /* One line of the forecast breakdown. Clickable when it has children. */
-/* Forecast product columns. Broadband, Security and BT Net all roll into
-   Connectivity — the row breakdown still shows the detail, but three
-   columns is as much as the table can carry and stay readable. */
+/* Forecast product columns. Each carries SOV and units, and each can be
+   opened to show the pillar groups that make it up — so Connectivity can
+   be split into BT Net, Broadband and Security without the table always
+   being that wide. */
 const FC_PRODUCT_COLS = [
-  { key: "Cloud", label: "Cloud", accent: "var(--primary)" },
-  { key: "Mobile", label: "Mobile", accent: "var(--gold)" },
-  { key: "Connectivity", label: "Connectivity", accent: "var(--blue)" },
+  { key: "Cloud", label: "Cloud", accent: "var(--primary)", parts: ["Cloud", "DV4B"] },
+  { key: "Mobile", label: "Mobile", accent: "var(--gold)", parts: ["Mobile"] },
+  { key: "Connectivity", label: "Connectivity", accent: "var(--blue)", parts: ["BTNet", "Broadband", "Security"] },
 ];
 
-/* Which forecast pillar counts toward which column. */
+/* Which forecast pillar group counts toward which column. Driven by the
+   same PILLAR_TO_GROUP map the rest of the page uses, so a pillar can't
+   land in one place here and another there. */
+const FC_GROUP_TO_COL = {};
+FC_PRODUCT_COLS.forEach((c) => c.parts.forEach((g) => { FC_GROUP_TO_COL[g] = c.key; }));
+
 function fcProductCol(pillar) {
-  const p = String(pillar || "");
-  if (/cloud|dv4|voice/i.test(p)) return "Cloud";
-  if (/mobile|sim|airtime/i.test(p)) return "Mobile";
-  if (/broadband|security|bt\s*net|btnet|connect|data|wifi|wi-fi/i.test(p)) return "Connectivity";
-  return null;
+  return FC_GROUP_TO_COL[groupForPillar(pillar)] || null;
 }
 
-function FcRow({ label, v, sov, units, prods, bold, tone, depth = 0, onFocus, focused }) {
+function FcRow({ label, v, sov, prods, cols, bold, tone, depth = 0, onFocus, focused }) {
   return (
     <tr style={{
       borderTop: "1px solid var(--border)",
@@ -8287,10 +8289,15 @@ function FcRow({ label, v, sov, units, prods, bold, tone, depth = 0, onFocus, fo
       {sov == null
         ? <td className="px-2 py-1.5" style={{ borderLeft: "1px solid var(--border)" }} />
         : <ForecastCell value={sov} tone={tone} />}
-      <ForecastCell value={units || 0} money={false} tone={tone} />
-      {FC_PRODUCT_COLS.map((c) => (
-        <ForecastCell key={c.key} value={(prods && prods[c.key]) || 0} tone={tone} />
-      ))}
+      {cols.map((c) => {
+        const cell = (prods && prods[c.key]) || { sov: 0, units: 0 };
+        return (
+          <React.Fragment key={c.key}>
+            <ForecastCell value={cell.sov} tone={tone} />
+            <ForecastCell value={cell.units} money={false} tone="var(--ink-faint)" noBorder />
+          </React.Fragment>
+        );
+      })}
     </tr>
   );
 }
@@ -8303,6 +8310,7 @@ function ForecastView({ netsuite, profile, staff }) {
   const [teamFilter, setTeamFilter] = useState("All");
   const [agentFilter, setAgentFilter] = useState("All");
   const [pillarFilter, setPillarFilter] = useState(null);   // product group filter
+  const [openCols, setOpenCols] = useState({});             // product columns broken into parts
   const [adding, setAdding] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToastLocal] = useState("");
@@ -8346,6 +8354,20 @@ function ForecastView({ netsuite, profile, staff }) {
     if (pillarFilter && groupForPillar(r.pillar) !== pillarFilter) return false;
     return true;
   }), [rows, week, teamFilter, agentFilter, pillarFilter]);
+
+  /* The product columns as rendered: an open column is replaced by its
+     parts, so the table widens only when asked. */
+  const shownProductCols = useMemo(() => {
+    const out = [];
+    FC_PRODUCT_COLS.forEach((c) => {
+      if (openCols[c.key] && c.parts.length > 1) {
+        c.parts.forEach((g) => out.push({ key: g, label: g, accent: c.accent, part: true, parent: c.key }));
+      } else {
+        out.push({ key: c.key, label: c.label, accent: c.accent, part: false, parent: c.key, canOpen: c.parts.length > 1 });
+      }
+    });
+    return out;
+  }, [openCols]);
 
   /* Forecasted deals grouped by team, for the cards under the table. The
      table answers "how much" — this answers "off the back of what", which
@@ -8434,7 +8456,14 @@ function ForecastView({ netsuite, profile, staff }) {
   // ---- Hierarchical breakdown: all teams, then each team -------------
   // Same shape as Day by Day: totals first, opened up on demand.
   const breakdown = useMemo(() => {
-    const blankProds = () => ({ Cloud: 0, Mobile: 0, Connectivity: 0 });
+    // SOV and units for each column, plus each pillar group so a column
+    // can be opened into its parts without a second pass over the rows.
+    const blankProds = () => {
+      const o = {};
+      FC_PRODUCT_COLS.forEach((c) => { o[c.key] = { sov: 0, units: 0 }; });
+      PILLAR_GROUPS.forEach((g) => { o[g] = { sov: 0, units: 0 }; });
+      return o;
+    };
     const node = () => ({ gp: 0, sov: 0, units: 0, lines: 0, prods: blankProds(), subs: {} });
     const shell = () => {
       const o = { gp: 0, sov: 0, units: 0, lines: 0, prods: blankProds(), groups: {} };
@@ -8459,15 +8488,18 @@ function ForecastView({ netsuite, profile, staff }) {
 
       const bump = (o, gpv) => {
         o.gp += gpv; o.sov += sov; o.units += units; o.lines += 1;
-        if (pcol) o.prods[pcol] = (o.prods[pcol] || 0) + sov;
+        if (pcol) { o.prods[pcol].sov += sov; o.prods[pcol].units += units; }
+        if (o.prods[g]) { o.prods[g].sov += sov; o.prods[g].units += units; }
         if (!o.groups[g]) o.groups[g] = node();
         const gn = o.groups[g];
         gn.gp += gpv; gn.sov += sov; gn.units += units; gn.lines += 1;
-        if (pcol) gn.prods[pcol] = (gn.prods[pcol] || 0) + sov;
+        if (pcol) { gn.prods[pcol].sov += sov; gn.prods[pcol].units += units; }
+        if (gn.prods[g]) { gn.prods[g].sov += sov; gn.prods[g].units += units; }
         if (!gn.subs[pillar]) gn.subs[pillar] = { gp: 0, sov: 0, units: 0, lines: 0, prods: blankProds() };
         const sn = gn.subs[pillar];
         sn.gp += gpv; sn.sov += sov; sn.units += units; sn.lines += 1;
-        if (pcol) sn.prods[pcol] = (sn.prods[pcol] || 0) + sov;
+        if (pcol) { sn.prods[pcol].sov += sov; sn.prods[pcol].units += units; }
+        if (sn.prods[g]) { sn.prods[g].sov += sov; sn.prods[g].units += units; }
       };
 
       // The closer's team carries the SOV and units for the deal
@@ -8757,107 +8789,9 @@ function ForecastView({ netsuite, profile, staff }) {
       {/* SUMMARY */}
       {view === "summary" && (
         <>
-        {/* Table leads, KPI cards run down the right beside it — they're
-            context for the table rather than a separate banner above it. */}
-        <div className="sw-cols mb-4" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 220px", gap: "0.75rem", alignItems: "start" }}>
-        <div>
-
-          {/* Breakdown. Column headings do the filtering; the rows expand
-              in place, so the old filter bar above is gone. */}
-          <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-            <div className="overflow-x-auto">
-              <table className="w-full" style={{ borderCollapse: "collapse" }}>
-                <thead>
-                  <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
-                    <th className="px-3 py-2 text-left text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }} rowSpan={2}>Metric</th>
-                    <th className="px-2 py-1.5 text-center text-xs font-bold" colSpan={2}
-                      style={{ color: "var(--primary)", background: "var(--primary-soft)", borderLeft: "1px solid var(--border)" }}>
-                      Office total
-                    </th>
-                    <th className="px-2 py-2 text-center text-sm font-bold" style={{ color: "var(--ink-faint)" }} rowSpan={2}>Units</th>
-                    {/* Clicking a product heading filters the whole page */}
-                    {FC_PRODUCT_COLS.map((c) => {
-                      const on = pillarFilter === c.key;
-                      return (
-                        <th key={c.key} className="px-2 py-2 text-center" rowSpan={2}
-                          style={{ background: on ? "var(--primary-soft)" : "transparent" }}>
-                          <button onClick={() => setPillarFilter(on ? null : c.key)}
-                            className="sw-focus text-sm font-bold"
-                            title={on ? "Clear this filter" : `Show only ${c.label}`}
-                            style={{ color: c.accent, textDecoration: on ? "underline" : "none" }}>
-                            {c.label}
-                          </button>
-                        </th>
-                      );
-                    })}
-                  </tr>
-                  <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
-                    <th className="px-2 py-1.5 text-center text-xs font-bold"
-                      style={{ color: "var(--green)", background: "var(--primary-soft)", borderLeft: "1px solid var(--border)" }}>GP</th>
-                    <th className="px-2 py-1.5 text-center text-xs font-bold"
-                      style={{ color: "var(--ink-soft)", background: "var(--primary-soft)" }}>SOV</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {/* All teams — GP and SOV on one line now, rather than a
-                      GP row with an empty SOV and vice versa. */}
-                  <tr style={{ background: "var(--ink)" }}>
-                    <td colSpan={4 + FC_PRODUCT_COLS.length} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "#fff" }}>All teams</td>
-                  </tr>
-                  <FcRow label="Office total" v={summary.grand} sov={breakdown.all.sov}
-                    units={breakdown.all.units} prods={breakdown.all.prods} bold tone="var(--primary)" />
-
-                  {PILLAR_GROUPS.map((g) => {
-                    const node = breakdown.all.groups[g];
-                    if (!node || (!node.gp && !node.sov)) return null;
-                    return (
-                      <FcRow key={g} label={g} v={node.gp} sov={node.sov} units={node.units} prods={node.prods} depth={1}
-                        focused={pillarFilter === g}
-                        onFocus={() => setPillarFilter(pillarFilter === g ? null : g)} />
-                    );
-                  })}
-
-                  {/* Per team */}
-                  {breakdown.teams.length > 0 && (
-                    <tr style={{ background: "var(--surface-alt)", borderTop: "2px solid var(--border)" }}>
-                      <td colSpan={4 + FC_PRODUCT_COLS.length} className="px-3 py-1.5 text-xs font-bold uppercase" style={{ color: "var(--primary)" }}>By team</td>
-                    </tr>
-                  )}
-                  {breakdown.teams.map((t) => (
-                    <React.Fragment key={t.team}>
-                      <FcRow label={t.team} v={t.gp} sov={t.sov} units={t.units} prods={t.prods} bold
-                        focused={teamFilter === t.team}
-                        onFocus={() => setTeamFilter(teamFilter === t.team ? "All" : t.team)} />
-                      {teamFilter === t.team && PILLAR_GROUPS.map((g) => {
-                        const node = t.groups[g];
-                        if (!node || (!node.gp && !node.sov)) return null;
-                        return (
-                          <FcRow key={g} label={g} v={node.gp} sov={node.sov} units={node.units} prods={node.prods} depth={1}
-                            tone="var(--ink-faint)"
-                            focused={pillarFilter === g}
-                            onFocus={() => setPillarFilter(pillarFilter === g ? null : g)} />
-                        );
-                      })}
-                    </React.Fragment>
-                  ))}
-
-                  {/* What the overlap costs. The teams above add to more
-                      than the office total; this reconciles them. */}
-                  <tr style={{ borderTop: "2px solid var(--border)", background: "var(--red-soft)" }}>
-                    <td className="px-3 py-1.5 text-xs font-semibold" style={{ color: "var(--red)" }}>
-                      DC <span style={{ fontWeight: 400 }}>(teams claim {fmtGBP(summary.gpSum)})</span>
-                    </td>
-                    <ForecastCell value={summary.dc} bold tone="var(--red)" highlight />
-                    <td className="px-2 py-1.5" />
-                    <td className="px-2 py-1.5" />
-                    {FC_PRODUCT_COLS.map((c) => <td key={c.key} className="px-2 py-1.5" />)}
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-
+        {/* Headline figures on the left, the matrix to their right —
+            read the totals first, then how they break down. */}
+        <div className="sw-cols mb-4" style={{ display: "grid", gridTemplateColumns: "220px minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "0.6rem" }}>
             <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
               <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast GP</div>
@@ -8868,6 +8802,116 @@ function ForecastView({ netsuite, profile, staff }) {
                   ? `${fmtGBP(summary.gpSum)} claimed − ${fmtGBP(Math.abs(summary.dc))} DC`
                   : `${accuracy.lines} lines`}
               </div>
+
+        <div>
+
+          {/* Breakdown. Column headings do the filtering, and each product
+              can be opened into the pillars that make it up. */}
+          <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="overflow-x-auto">
+              <table className="w-full" style={{ borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
+                    <th className="px-3 py-2 text-left text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }} rowSpan={2}>Metric</th>
+                    <th className="px-2 py-1.5 text-center text-xs font-bold" colSpan={2}
+                      style={{ color: "var(--primary)", background: "var(--primary-soft)", borderLeft: "1px solid var(--border)" }}>
+                      Office total
+                    </th>
+                    {/* One grouped heading per product, each spanning its
+                        SOV and units pair. The + opens it into its parts. */}
+                    {shownProductCols.map((c) => {
+                      const on = pillarFilter === c.key;
+                      const parentOpen = openCols[c.parent];
+                      return (
+                        <th key={c.key} colSpan={2} className="px-2 py-1.5 text-center"
+                          style={{
+                            borderLeft: "2px solid var(--border)",
+                            background: on ? "var(--primary-soft)" : (c.part ? "var(--surface)" : "transparent"),
+                          }}>
+                          <span className="inline-flex items-center gap-1">
+                            <button onClick={() => setPillarFilter(on ? null : c.key)}
+                              className="sw-focus text-sm font-bold"
+                              title={on ? "Clear this filter" : `Show only ${c.label}`}
+                              style={{ color: c.accent, textDecoration: on ? "underline" : "none" }}>
+                              {c.label}
+                            </button>
+                            {(c.canOpen || parentOpen) && (
+                              <button
+                                onClick={() => setOpenCols((o) => ({ ...o, [c.parent]: !o[c.parent] }))}
+                                className="sw-focus"
+                                title={parentOpen ? "Close this back up" : "Break this down"}
+                                style={{
+                                  fontSize: 11, fontWeight: 700, lineHeight: 1,
+                                  width: 15, height: 15, borderRadius: 4,
+                                  border: "1px solid var(--border)", color: "var(--ink-faint)",
+                                  background: "var(--surface)",
+                                }}>
+                                {parentOpen ? "−" : "+"}
+                              </button>
+                            )}
+                          </span>
+                        </th>
+                      );
+                    })}
+                  </tr>
+                  <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
+                    <th className="px-2 py-1.5 text-center text-xs font-bold"
+                      style={{ color: "var(--green)", background: "var(--primary-soft)", borderLeft: "1px solid var(--border)" }}>GP</th>
+                    <th className="px-2 py-1.5 text-center text-xs font-bold"
+                      style={{ color: "var(--ink-soft)", background: "var(--primary-soft)" }}>SOV</th>
+                    {shownProductCols.map((c) => (
+                      <React.Fragment key={c.key}>
+                        <th className="px-2 py-1.5 text-center text-xs font-semibold"
+                          style={{ color: "var(--ink-faint)", borderLeft: "2px solid var(--border)" }}>SOV</th>
+                        <th className="px-2 py-1.5 text-center text-xs font-semibold"
+                          style={{ color: "var(--ink-faint)" }}>Units</th>
+                      </React.Fragment>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  <FcRow label="Office total" v={summary.grand} sov={breakdown.all.sov}
+                    prods={breakdown.all.prods} cols={shownProductCols} bold tone="var(--primary)" />
+
+                  {/* Per team */}
+                  {breakdown.teams.map((t) => (
+                    <React.Fragment key={t.team}>
+                      <FcRow label={t.team} v={t.gp} sov={t.sov} prods={t.prods} cols={shownProductCols} bold
+                        focused={teamFilter === t.team}
+                        onFocus={() => setTeamFilter(teamFilter === t.team ? "All" : t.team)} />
+                      {teamFilter === t.team && PILLAR_GROUPS.map((g) => {
+                        const node = t.groups[g];
+                        if (!node || (!node.gp && !node.sov)) return null;
+                        return (
+                          <FcRow key={g} label={g} v={node.gp} sov={node.sov} prods={node.prods} cols={shownProductCols}
+                            depth={1} tone="var(--ink-faint)"
+                            focused={pillarFilter === g}
+                            onFocus={() => setPillarFilter(pillarFilter === g ? null : g)} />
+                        );
+                      })}
+                    </React.Fragment>
+                  ))}
+
+                  {/* What the overlap costs. The teams above add to more
+                      than the office total; this reconciles them. */}
+                  <tr style={{ borderTop: "2px solid var(--border)", background: "var(--red-soft)" }}>
+                    <td className="px-3 py-2 text-xs font-semibold" style={{ color: "var(--red)" }}>
+                      DC <span style={{ fontWeight: 400 }}>(teams claim {fmtGBP(summary.gpSum)})</span>
+                    </td>
+                    <ForecastCell value={summary.dc} bold tone="var(--red)" highlight />
+                    <td className="px-2 py-2" />
+                    {shownProductCols.map((c) => (
+                      <React.Fragment key={c.key}>
+                        <td className="px-2 py-2" style={{ borderLeft: "2px solid var(--border)" }} />
+                        <td className="px-2 py-2" />
+                      </React.Fragment>
+                    ))}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
             </div>
             <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
               <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast lines</div>
@@ -8897,8 +8941,9 @@ function ForecastView({ netsuite, profile, staff }) {
         </div>
 
           <p className="text-xs mb-3" style={{ color: "var(--ink-faint)" }}>
-            Click a team or pillar to open it up. GP splits 80% to the closer and 50% to the lead gen where
-            there is one, with the 30% overlap coming off as DC — so the Grand Total is what actually lands.
+            Click a team to open it up, a product heading to filter, or <b>+</b> on a heading to split it into
+            its parts. GP splits 80% to the closer and 50% to the lead gen where there is one, with the 30%
+            overlap coming off as DC — so the office total is what actually lands.
           </p>
           {/* Forecasted deals by team — the orders feeding the table above.
               Click any team or product row up there to narrow these. */}
