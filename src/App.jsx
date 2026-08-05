@@ -453,8 +453,33 @@ function fyWeekOf(d) {
      fy:2024:m:3    July 2024 (month index 3 within that FY)
    parsePeriod turns any of them into { from, to } — `to` is exclusive and
    null means "up to now / no upper bound". */
+/* The last 18 calendar months, newest first — so a specific month is one
+   click rather than picking a financial year and then a month within it. */
+function recentMonths(count = 18) {
+  const out = [];
+  const now = new Date();
+  for (let i = 0; i < count; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    out.push({
+      key: `m:${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
+      label: d.toLocaleDateString("en-GB", { month: "long", year: "numeric" }),
+    });
+  }
+  return out;
+}
+
 function parsePeriod(key) {
   const s = String(key || "all");
+  // A specific calendar month
+  const cm = /^m:(\d{4})-(\d{2})$/.exec(s);
+  if (cm) {
+    const y = parseInt(cm[1], 10);
+    const mo = parseInt(cm[2], 10) - 1;
+    return {
+      from: new Date(y, mo, 1, 0, 0, 0, 0),
+      to: new Date(y, mo + 1, 1, 0, 0, 0, 0),
+    };
+  }
   const m = /^fy:(\d{4})(?::m:(\d{1,2}))?$/.exec(s);
   if (m) {
     const y = parseInt(m[1], 10);
@@ -470,6 +495,11 @@ function parsePeriod(key) {
 }
 function periodLabelFor(key) {
   const s = String(key || "all");
+  const cm = /^m:(\d{4})-(\d{2})$/.exec(s);
+  if (cm) {
+    return new Date(parseInt(cm[1], 10), parseInt(cm[2], 10) - 1, 1)
+      .toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+  }
   const m = /^fy:(\d{4})(?::m:(\d{1,2}))?$/.exec(s);
   if (m) {
     const y = parseInt(m[1], 10);
@@ -501,7 +531,8 @@ function periodTest(key) {
    financial year, then — once an FY is chosen — every month within it.
    The month select only appears for an FY, so the control stays small on
    the views that only ever want MTD/YTD. */
-function PeriodSelect({ value, onChange, width = 112, monthWidth = 104, style = {} }) {
+function PeriodSelect({ value, onChange, width = 148, monthWidth = 104, style = {} }) {
+  const months = useMemo(() => recentMonths(18), []);
   const m = /^fy:(\d{4})(?::m:(\d{1,2}))?$/.exec(String(value || ""));
   const fy = m ? m[1] : null;
   const mi = m && m[2] != null ? m[2] : "";
@@ -513,6 +544,9 @@ function PeriodSelect({ value, onChange, width = 112, monthWidth = 104, style = 
         onChange={(e) => onChange(e.target.value)}
         title={periodLabelFor(value)}>
         {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+        <optgroup label="Month">
+          {months.map((mm) => <option key={mm.key} value={mm.key}>{mm.label}</option>)}
+        </optgroup>
         <optgroup label="Financial year">
           {fyList().map((y) => <option key={y} value={`fy:${y}`}>{fyLabel(y)}</option>)}
         </optgroup>
@@ -2528,7 +2562,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
             ))}
           </div>
 
-          <PeriodSelect value={period} onChange={setPeriod} width={112} />
+          <PeriodSelect value={period} onChange={setPeriod} width={148} />
           {/* Spells out the resolved range — matters once a specific FY or
               FY month is picked, where "MTD" style wording says nothing. */}
           {String(period).startsWith("fy:") && (
@@ -6018,7 +6052,7 @@ function OtherVisualsView({ orders, netsuite, forecasts, staff }) {
             <option value="All">All teams</option>
             {teamOptions.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
-          <PeriodSelect value={period} onChange={setPeriod} width={110} />
+          <PeriodSelect value={period} onChange={setPeriod} width={148} />
         </div>
       </div>
 
@@ -9386,13 +9420,24 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   // One place to sum a product (or roll-up of products), either for a
   // single placement bucket or across all of them — the same reduce was
   // copy-pasted four times through the card grid below.
+  /* Product figures follow whichever placement state is selected, so
+     picking "Placed TW" reworks the product cards to show that week's
+     placements rather than leaving them on the whole-period totals. An
+     explicit bucketKey still wins, for the placement cards themselves. */
+  const bucketsInScope = useMemo(() => {
+    if (placementView === "all") return PLACEMENT_BUCKETS.map((b) => b.key);
+    if (placementView === "to_be_placed") return TO_BE_PLACED;
+    return [placementView];
+  }, [placementView]);
+
   const sumProducts = useCallback((keys, bucketKey = null) => {
-    const bucketKeys = bucketKey ? [bucketKey] : PLACEMENT_BUCKETS.map((b) => b.key);
+    const bucketKeys = bucketKey ? [bucketKey] : bucketsInScope;
     return bucketKeys.reduce((acc, bk) => keys.reduce((s, k) => {
-      const x = placement.buckets[bk].byProduct[k];
+      const x = placement.buckets[bk]?.byProduct[k];
+      if (!x) return s;
       return { count: s.count + x.count, sov: s.sov + x.sov };
     }, acc), { count: 0, sov: 0 });
-  }, [placement]);
+  }, [placement, bucketsInScope]);
 
   const productOptions = useMemo(() => {
     const present = new Set(unplacedRows.map((r) => sdProductOf(r.product)));
@@ -9778,7 +9823,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
       {/* Filters */}
       <div className="rounded-xl mb-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="sw-filter-row flex items-center gap-2 px-3 py-2.5 flex-wrap">
-          <PeriodSelect value={period} onChange={setPeriod} width={112} />
+          <PeriodSelect value={period} onChange={setPeriod} width={148} />
           <select className="sw-input sw-focus" style={{ width: 178, height: 32, fontSize: 12.5 }} value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)}>
             <option value="All">Everyone</option>
             <option value="__unallocated">Unallocated only</option>
@@ -10381,6 +10426,89 @@ function bucketOfNs(r) {
   return "other";
 }
 
+/* A top-3 board. The winner gets the full width and a bigger figure;
+   second and third sit beneath as a pair. Celebrating first place is the
+   point of the card — a flat list of three does not do that. */
+function PodiumCard({ board, big = false }) {
+  const [first, second, third] = board.rows;
+  const max = first ? first.value || 1 : 1;
+
+  const MEDAL = [
+    { ink: "#7A5C00", bg: "rgba(184,134,11,0.16)", ring: "rgba(184,134,11,0.45)" },
+    { ink: "#5A5A5A", bg: "rgba(138,138,138,0.16)", ring: "rgba(138,138,138,0.4)" },
+    { ink: "#7A4A1F", bg: "rgba(160,100,42,0.16)", ring: "rgba(160,100,42,0.4)" },
+  ];
+
+  const Runner = ({ r, i }) => (
+    <div className="rounded-lg" style={{ background: "var(--surface-alt)", padding: "8px 9px", minWidth: 0 }}>
+      <div className="flex items-center gap-1.5">
+        <span className="shrink-0" style={{
+          width: 16, height: 16, borderRadius: 99, display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 9.5, fontWeight: 700, color: MEDAL[i].ink, background: MEDAL[i].bg,
+        }}>{i + 1}</span>
+        <span className="truncate" style={{ fontSize: 11.5, fontWeight: 500, minWidth: 0 }}>{r.name}</span>
+      </div>
+      <div className="sw-mono" style={{ fontSize: 12.5, fontWeight: 600, marginTop: 3 }}>{fmtGBP(r.value)}</div>
+      <div className="rounded-full" style={{ height: 2.5, background: "var(--border)", marginTop: 5, overflow: "hidden" }}>
+        <div className="rounded-full sw-bar-anim"
+          style={{ width: `${Math.max(6, (r.value / max) * 100)}%`, height: "100%", background: board.accent, opacity: 0.6 }} />
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="sw-lift overflow-hidden"
+      style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 14 }}>
+      <div style={{ position: "relative", padding: "11px 14px 10px", borderBottom: "1px solid var(--border)" }}>
+        <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: board.accent }} />
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="sw-display truncate" style={{ fontSize: big ? 14 : 13, fontWeight: 600, color: board.accent, letterSpacing: "-0.01em" }}>
+            {board.parent ? <span style={{ opacity: 0.55 }}>↳ </span> : null}{board.label}
+          </span>
+          <span className="sw-mono shrink-0" style={{ fontSize: big ? 15 : 14, fontWeight: 600 }}>{fmtGBP(board.total)}</span>
+        </div>
+        <div style={{ fontSize: 10.5, color: "var(--ink-faint)", letterSpacing: "0.04em", textTransform: "uppercase", marginTop: 2 }}>
+          {board.key === "gp" ? "GP" : "SOV"}{board.sellers ? ` · ${board.sellers} selling` : ""}
+        </div>
+      </div>
+
+      {!first ? (
+        <div className="text-xs text-center py-7" style={{ color: "var(--ink-faint)" }}>Nothing this period.</div>
+      ) : (
+        <div style={{ padding: "12px 14px 14px" }}>
+          {/* Winner — full width, ringed, larger figure */}
+          <div className="rounded-xl" style={{
+            background: MEDAL[0].bg, border: `1px solid ${MEDAL[0].ring}`,
+            padding: big ? "12px 13px" : "10px 12px", marginBottom: 8,
+          }}>
+            <div className="flex items-center gap-2">
+              <Trophy size={big ? 16 : 14} style={{ color: MEDAL[0].ink, flexShrink: 0 }} />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div className="truncate" style={{ fontSize: big ? 14.5 : 13.5, fontWeight: 600 }}>{first.name}</div>
+                <div className="truncate" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>{first.team}</div>
+              </div>
+              <span className="sw-mono shrink-0" style={{ fontSize: big ? 19 : 16, fontWeight: 700, letterSpacing: "-0.02em" }}>
+                {fmtGBP(first.value)}
+              </span>
+            </div>
+            <div className="rounded-full" style={{ height: 3.5, background: "rgba(0,0,0,0.07)", marginTop: 8, overflow: "hidden" }}>
+              <div className="rounded-full sw-bar-anim" style={{ width: "100%", height: "100%", background: board.accent }} />
+            </div>
+          </div>
+
+          {/* Second and third, side by side */}
+          {(second || third) && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              {second ? <Runner r={second} i={1} /> : <div />}
+              {third ? <Runner r={third} i={2} /> : <div />}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TopsView({ netsuite, staff }) {
   const aliases = useAliases();
   const statusCfg = useStatusCfg();
@@ -10391,8 +10519,12 @@ function TopsView({ netsuite, staff }) {
   const [split, setSplit] = useState("both");        // both | table | cards
   // Which product columns the everyone-table shows. Parents on, children
   // off, so the default is readable and can be drilled into.
-  const [cols, setCols] = useState(() => ({ cloud: true, connectivity: true, mobile: true }));
+  const [cols, setCols] = useState(() => ({ gp: true, sov: true, cloud: true, connectivity: true, mobile: true }));
   const [sortBy, setSortBy] = useState("sov");
+  /* Column order is held separately from which are ticked, so hiding a
+     column and bringing it back doesn't lose where you put it. */
+  const [colOrder, setColOrder] = useState(() => ["gp", "sov", ...TOPS_COLUMNS.map((c) => c.key)]);
+  const [dragKey, setDragKey] = useState(null);
 
   const teamByName = useMemo(() => {
     const m = {};
@@ -10455,21 +10587,69 @@ function TopsView({ netsuite, staff }) {
     sov: people.reduce((s, p) => s + p.sov, 0),
   }), [people]);
 
-  // Top 3 per product, ranked on SOV — one card per column that's on.
-  const boards = useMemo(() => TOPS_COLUMNS.map((c) => {
+  /* Boards are deliberately independent of the table's column tickboxes —
+     the podium is the celebration half of the page and shouldn't empty out
+     because someone was tidying up the table next to it. GP and SOV always
+     lead, then whichever products have anything in them. */
+  const podium = useCallback((valueOf) => {
     const rows = people
-      .map((p) => ({ name: p.name, team: p.team, value: p.prod[c.key] || 0 }))
+      .map((p) => ({ name: p.name, team: p.team, value: valueOf(p) }))
       .filter((r) => r.value > 0)
       .sort((a, b) => b.value - a.value);
-    return { ...c, rows: rows.slice(0, 3), total: rows.reduce((s, r) => s + r.value, 0), sellers: rows.length };
-  }), [people]);
+    return { rows: rows.slice(0, 3), total: rows.reduce((s, r) => s + r.value, 0), sellers: rows.length };
+  }, [people]);
 
-  const activeCols = useMemo(() => TOPS_COLUMNS.filter((c) => cols[c.key]), [cols]);
+  const headlineBoards = useMemo(() => ([
+    { key: "gp",  label: "Top GP",  accent: "var(--green)",   ...podium((p) => p.gp) },
+    { key: "sov", label: "Top SOV", accent: "var(--primary)", ...podium((p) => p.sov) },
+  ]), [podium]);
+
+  const boards = useMemo(
+    () => TOPS_COLUMNS.map((c) => ({ ...c, ...podium((p) => p.prod[c.key] || 0) })),
+    [podium]
+  );
+
+  // GP and SOV behave like any other column now — orderable and hideable
+  const ALL_COLS = useMemo(() => ([
+    { key: "gp", label: "GP", accent: "var(--green)", value: (p) => p.gp },
+    { key: "sov", label: "SOV", accent: "var(--primary)", value: (p) => p.sov },
+    ...TOPS_COLUMNS.map((c) => ({ ...c, value: (p) => p.prod[c.key] || 0 })),
+  ]), []);
+
+  const activeCols = useMemo(() => {
+    const byKey = {};
+    ALL_COLS.forEach((c) => { byKey[c.key] = c; });
+    return colOrder.map((k) => byKey[k]).filter((c) => c && cols[c.key]);
+  }, [ALL_COLS, colOrder, cols]);
+
+  const moveCol = useCallback((key, dir) => {
+    setColOrder((order) => {
+      const i = order.indexOf(key);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= order.length) return order;
+      const next = [...order];
+      [next[i], next[j]] = [next[j], next[i]];
+      return next;
+    });
+  }, []);
+
+  const dropOn = useCallback((targetKey) => {
+    setColOrder((order) => {
+      if (!dragKey || dragKey === targetKey) return order;
+      const next = order.filter((k) => k !== dragKey);
+      const at = next.indexOf(targetKey);
+      if (at < 0) return order;
+      next.splice(at, 0, dragKey);
+      return next;
+    });
+    setDragKey(null);
+  }, [dragKey]);
 
   const tableRows = useMemo(() => {
     const v = (p) => (sortBy === "gp" ? p.gp : sortBy === "sov" ? p.sov : (p.prod[sortBy] || 0));
     return [...people].sort((a, b) => v(b) - v(a));
   }, [people, sortBy]);
+
 
   const toggleCol = (k) => setCols((c) => ({ ...c, [k]: !c[k] }));
   // Tinted rank chips read as quieter than solid gold/silver/bronze fills
@@ -10500,7 +10680,7 @@ function TopsView({ netsuite, staff }) {
           both halves; it stays on MTD until deliberately changed. */}
       <div className="rounded-xl mb-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="flex items-center gap-2 px-3 py-2.5 flex-wrap">
-          <PeriodSelect value={period} onChange={setPeriod} width={112} />
+          <PeriodSelect value={period} onChange={setPeriod} width={148} />
           <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{periodLabelFor(period)}</span>
 
           <div className="flex items-center rounded-lg overflow-hidden ml-auto" style={{ border: "1px solid var(--border)", height: 32 }}>
@@ -10528,13 +10708,65 @@ function TopsView({ netsuite, staff }) {
         {/* ---- Everyone, with the columns you pick ---- */}
         {showTable && (
         <div>
-          {/* Column picker sits directly above the table it controls */}
+          {/* Column picker sits directly above the table it controls.
+              Drag a chip to reorder, or use the arrows — the table follows.
+              This does not touch the top-3 boards. */}
           <div className="rounded-xl mb-2" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
             <div className="px-3 py-2.5">
-              <div className="text-xs font-semibold uppercase mb-2" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>
-                Columns
+              <div className="flex items-baseline justify-between mb-2">
+                <span className="text-xs font-semibold uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>
+                  Table columns
+                </span>
+                <button onClick={() => {
+                    setCols({ gp: true, sov: true, cloud: true, connectivity: true, mobile: true });
+                    setColOrder(["gp", "sov", ...TOPS_COLUMNS.map((c) => c.key)]);
+                  }}
+                  className="sw-focus text-xs" style={{ color: "var(--primary)" }}>Reset</button>
               </div>
-              <div className="flex items-center gap-x-3 gap-y-1.5 flex-wrap">
+
+              {/* Ticked columns, in table order — drag to rearrange */}
+              <div className="flex items-center gap-1.5 flex-wrap mb-2">
+                {activeCols.map((c, i) => (
+                  <span key={c.key}
+                    draggable
+                    onDragStart={() => setDragKey(c.key)}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => dropOn(c.key)}
+                    onDragEnd={() => setDragKey(null)}
+                    className="flex items-center gap-1 rounded-lg px-1.5 py-1"
+                    style={{
+                      border: `1px solid ${dragKey === c.key ? c.accent : "var(--border)"}`,
+                      background: dragKey === c.key ? "var(--surface-alt)" : "var(--surface)",
+                      cursor: "grab", opacity: dragKey === c.key ? 0.5 : 1,
+                    }}
+                    title="Drag to reorder">
+                    <span style={{ fontSize: 11, color: "var(--ink-faint)", cursor: "grab" }}>⠿</span>
+                    <span style={{ fontSize: 11.5, fontWeight: 600, color: c.accent }}>{c.label}</span>
+                    <button onClick={() => moveCol(c.key, -1)} disabled={i === 0}
+                      className="sw-focus" style={{ fontSize: 10, color: i === 0 ? "var(--border)" : "var(--ink-faint)", padding: "0 1px" }}
+                      title="Move left">◀</button>
+                    <button onClick={() => moveCol(c.key, 1)} disabled={i === activeCols.length - 1}
+                      className="sw-focus" style={{ fontSize: 10, color: i === activeCols.length - 1 ? "var(--border)" : "var(--ink-faint)", padding: "0 1px" }}
+                      title="Move right">▶</button>
+                    <button onClick={() => toggleCol(c.key)} className="sw-focus"
+                      style={{ fontSize: 11, color: "var(--ink-faint)", paddingLeft: 2 }} title="Hide this column">✕</button>
+                  </span>
+                ))}
+                {activeCols.length === 0 && (
+                  <span className="text-xs" style={{ color: "var(--ink-faint)" }}>No columns — tick some below.</span>
+                )}
+              </div>
+
+              {/* Everything available, including anything hidden */}
+              <div className="flex items-center gap-x-3 gap-y-1.5 flex-wrap" style={{ borderTop: "1px solid var(--border)", paddingTop: 8 }}>
+                <div className="flex items-center gap-2.5 rounded-lg px-2 py-1" style={{ border: "1px solid var(--border)" }}>
+                  {[["gp", "GP", "var(--green)"], ["sov", "SOV", "var(--primary)"]].map(([k, lbl, accent]) => (
+                    <label key={k} className="flex items-center gap-1.5" style={{ cursor: "pointer" }}>
+                      <input type="checkbox" checked={!!cols[k]} onChange={() => toggleCol(k)} />
+                      <span style={{ fontSize: 12, fontWeight: 600, color: accent }}>{lbl}</span>
+                    </label>
+                  ))}
+                </div>
                 {TOPS_TREE.map((g) => (
                   <div key={g.key} className="flex items-center gap-2.5 rounded-lg px-2 py-1"
                     style={{ border: "1px solid var(--border)" }}>
@@ -10550,8 +10782,6 @@ function TopsView({ netsuite, staff }) {
                     ))}
                   </div>
                 ))}
-                <button onClick={() => setCols({ cloud: true, connectivity: true, mobile: true })}
-                  className="sw-focus text-xs" style={{ color: "var(--primary)" }}>Reset</button>
               </div>
             </div>
           </div>
@@ -10564,35 +10794,64 @@ function TopsView({ netsuite, staff }) {
                 <thead>
                   <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
                     <th className="text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>Agent</th>
-                    <SortHead k="gp" label="GP" />
-                    <SortHead k="sov" label="SOV" />
                     {activeCols.map((c) => <SortHead key={c.key} k={c.key} label={c.label} accent={c.accent} />)}
                   </tr>
                 </thead>
                 <tbody>
-                  {tableRows.map((p, i) => (
-                    <tr key={p.name} style={{ borderTop: "1px solid var(--border)" }}>
-                      <td className="px-3 py-2">
-                        <div className="flex items-baseline gap-2" style={{ minWidth: 0 }}>
-                          <span className="sw-mono shrink-0" style={{ fontSize: 11, color: "var(--ink-faint)", width: 16 }}>{i + 1}</span>
-                          <div style={{ minWidth: 0 }}>
-                            <div className="truncate" style={{ fontSize: 13, fontWeight: 600 }}>{p.name}</div>
-                            <div className="text-xs truncate" style={{ color: "var(--ink-faint)" }}>{p.team}</div>
+                  {tableRows.map((p, i) => {
+                    // The podium only means something on the column being
+                    // sorted by, and only when that person actually has a
+                    // figure in it — a medal against zero looks silly.
+                    const sortVal = sortBy === "gp" ? p.gp : sortBy === "sov" ? p.sov : (p.prod[sortBy] || 0);
+                    const place = i < 3 && sortVal > 0 ? i : -1;
+                    const MEDAL = [
+                      { ink: "#7A5C00", bg: "rgba(184,134,11,0.16)", tint: "rgba(184,134,11,0.06)" },
+                      { ink: "#5A5A5A", bg: "rgba(138,138,138,0.16)", tint: "rgba(138,138,138,0.05)" },
+                      { ink: "#7A4A1F", bg: "rgba(160,100,42,0.16)", tint: "rgba(160,100,42,0.05)" },
+                    ];
+                    return (
+                      <tr key={p.name} style={{
+                        borderTop: "1px solid var(--border)",
+                        background: place >= 0 ? MEDAL[place].tint : "transparent",
+                      }}>
+                        <td className="px-3 py-2" style={place === 0 ? { boxShadow: "inset 2px 0 0 #B8860B" } : undefined}>
+                          <div className="flex items-center gap-2" style={{ minWidth: 0 }}>
+                            {place >= 0 ? (
+                              <span className="shrink-0" style={{
+                                width: 19, height: 19, borderRadius: 99, display: "flex", alignItems: "center", justifyContent: "center",
+                                fontSize: 10, fontWeight: 700, color: MEDAL[place].ink, background: MEDAL[place].bg,
+                              }}>{i + 1}</span>
+                            ) : (
+                              <span className="sw-mono shrink-0 text-center" style={{ fontSize: 11, color: "var(--ink-faint)", width: 19 }}>{i + 1}</span>
+                            )}
+                            <div style={{ minWidth: 0 }}>
+                              <div className="truncate flex items-center gap-1.5" style={{ fontSize: 13, fontWeight: place === 0 ? 700 : 600 }}>
+                                {p.name}
+                                {place === 0 && <Trophy size={11} style={{ color: MEDAL[0].ink, flexShrink: 0 }} />}
+                              </div>
+                              <div className="text-xs truncate" style={{ color: "var(--ink-faint)" }}>{p.team}</div>
+                            </div>
                           </div>
-                        </div>
-                      </td>
-                      <td className="px-2 py-2 sw-mono text-xs text-right" style={{ color: "var(--green)", fontWeight: 600 }}>{fmtGBP(p.gp)}</td>
-                      <td className="px-2 py-2 sw-mono text-xs text-right" style={{ fontWeight: 600 }}>{fmtGBP(p.sov)}</td>
-                      {activeCols.map((c) => (
-                        <td key={c.key} className="px-2 py-2 sw-mono text-xs text-right"
-                          style={{ color: (p.prod[c.key] || 0) > 0 ? "var(--ink-soft)" : "var(--ink-faint)" }}>
-                          {(p.prod[c.key] || 0) > 0 ? fmtGBP(p.prod[c.key]) : "—"}
                         </td>
-                      ))}
-                    </tr>
-                  ))}
+                        {activeCols.map((c) => {
+                          const v = c.value(p);
+                          const isSorted = sortBy === c.key;
+                          return (
+                            <td key={c.key} className="px-2 py-2 sw-mono text-xs text-right"
+                              style={{
+                                color: v > 0 ? (isSorted ? "var(--ink)" : "var(--ink-soft)") : "var(--ink-faint)",
+                                fontWeight: isSorted ? 700 : (c.key === "gp" || c.key === "sov" ? 600 : 400),
+                                background: isSorted ? "var(--surface-alt)" : "transparent",
+                              }}>
+                              {v > 0 ? fmtGBP(v) : "—"}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
                   {tableRows.length === 0 && (
-                    <tr><td colSpan={3 + activeCols.length} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                    <tr><td colSpan={1 + activeCols.length} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
                       Nothing on the New Net list for this period.
                     </td></tr>
                   )}
@@ -10601,11 +10860,9 @@ function TopsView({ netsuite, staff }) {
                   <tfoot>
                     <tr style={{ borderTop: "2px solid var(--border)", background: "var(--surface-alt)" }}>
                       <td className="px-3 py-2 text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)", letterSpacing: "0.04em" }}>Total</td>
-                      <td className="px-2 py-2 sw-mono text-xs text-right" style={{ color: "var(--green)", fontWeight: 700 }}>{fmtGBP(grand.gp)}</td>
-                      <td className="px-2 py-2 sw-mono text-xs text-right" style={{ fontWeight: 700 }}>{fmtGBP(grand.sov)}</td>
                       {activeCols.map((c) => (
                         <td key={c.key} className="px-2 py-2 sw-mono text-xs text-right" style={{ fontWeight: 700, color: c.accent }}>
-                          {fmtGBP(people.reduce((s, p) => s + (p.prod[c.key] || 0), 0))}
+                          {fmtGBP(people.reduce((s, p) => s + c.value(p), 0))}
                         </td>
                       ))}
                     </tr>
@@ -10617,68 +10874,33 @@ function TopsView({ netsuite, staff }) {
         </div>
         )}
 
-        {/* ---- Top 3 per product ---- */}
+        {/* ---- Top 3 boards ---- */}
         {showCards && (
         <div>
+          {/* GP and SOV always lead — they're the two figures everyone
+              actually cares about, and they don't depend on the table's
+              column tickboxes. */}
+          <div className="sw-cols-2" style={{
+            display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", alignItems: "start", marginBottom: "0.75rem",
+          }}>
+            {headlineBoards.map((b) => <PodiumCard key={b.key} board={b} big />)}
+          </div>
+
+          {/* Products beneath. Anything with sales shows; empty ones are
+              hidden rather than rendering a card saying nothing. */}
           <div className="sw-cols-2" style={{
             display: "grid",
-            gridTemplateColumns: split === "cards" ? "repeat(auto-fit, minmax(240px, 1fr))" : "repeat(auto-fit, minmax(210px, 1fr))",
+            gridTemplateColumns: split === "cards" ? "repeat(auto-fit, minmax(260px, 1fr))" : "repeat(auto-fit, minmax(230px, 1fr))",
             gap: "0.75rem", alignItems: "start",
           }}>
-            {boards.filter((b) => cols[b.key]).map((b) => (
-              <div key={b.key} className="sw-lift overflow-hidden"
-                style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 14 }}>
-                {/* Accent spine ties the card to its product without a
-                    heavy coloured header block */}
-                <div style={{ position: "relative", padding: "11px 14px 10px", borderBottom: "1px solid var(--border)" }}>
-                  <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: b.accent }} />
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="sw-display truncate" style={{ fontSize: 13, fontWeight: 600, color: b.accent, letterSpacing: "-0.01em" }}>
-                      {b.parent ? <span style={{ opacity: 0.55 }}>↳ </span> : null}{b.label}
-                    </span>
-                    <span className="sw-mono shrink-0" style={{ fontSize: 14, fontWeight: 600 }}>{fmtGBP(b.total)}</span>
-                  </div>
-                  <div style={{ fontSize: 10.5, color: "var(--ink-faint)", letterSpacing: "0.04em", textTransform: "uppercase", marginTop: 2 }}>
-                    SOV{b.sellers ? ` · ${b.sellers} selling` : ""}
-                  </div>
-                </div>
-
-                {b.rows.length === 0 ? (
-                  <div className="text-xs text-center py-7" style={{ color: "var(--ink-faint)" }}>Nothing this period.</div>
-                ) : (
-                  /* No dividers between places — the bars already separate
-                     them, and the rank fades down the podium */
-                  <div style={{ padding: "10px 14px 12px", display: "flex", flexDirection: "column", gap: 11 }}>
-                    {b.rows.map((r, i) => {
-                      const max = b.rows[0].value || 1;
-                      return (
-                        <div key={r.name}>
-                          <div className="flex items-center" style={{ gap: 9 }}>
-                            <span className="shrink-0" style={{
-                              width: 19, height: 19, borderRadius: 99, display: "flex", alignItems: "center", justifyContent: "center",
-                              fontSize: 10, fontWeight: 600, color: MEDAL_INK[i], background: MEDAL_BG[i],
-                            }}>{i + 1}</span>
-                            <div style={{ minWidth: 0, flex: 1 }}>
-                              <div className="truncate" style={{ fontSize: 12.5, fontWeight: 500 }}>{r.name}</div>
-                              <div className="truncate" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>{r.team}</div>
-                            </div>
-                            <span className="sw-mono shrink-0" style={{ fontSize: 12.5, fontWeight: 600 }}>{fmtGBP(r.value)}</span>
-                          </div>
-                          <div className="rounded-full" style={{ height: 3, background: "var(--surface-alt)", marginTop: 6, overflow: "hidden" }}>
-                            <div className="rounded-full sw-bar-anim"
-                              style={{ width: `${Math.max(4, (r.value / max) * 100)}%`, height: "100%", background: b.accent, opacity: [1, 0.72, 0.5][i] }} />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
+            {boards.filter((b) => b.rows.length > 0).map((b) => (
+              <PodiumCard key={b.key} board={b} />
             ))}
           </div>
-          {boards.filter((b) => cols[b.key]).length === 0 && (
+
+          {boards.filter((b) => b.rows.length > 0).length === 0 && headlineBoards.every((b) => b.rows.length === 0) && (
             <div className="rounded-xl text-xs text-center py-10" style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-faint)" }}>
-              Tick a product above to see its top 3.
+              Nothing on the New Net list for this period.
             </div>
           )}
         </div>
@@ -10803,7 +11025,7 @@ function DistributionView({ orders, netsuite, staff }) {
                 style={metric === k ? { background: "var(--primary)", color: "#fff" } : { background: "transparent", color: "var(--ink-soft)" }}>{lbl}</button>
             ))}
           </div>
-          <PeriodSelect value={period} onChange={setPeriod} width={108} />
+          <PeriodSelect value={period} onChange={setPeriod} width={148} />
           <select className="sw-input sw-focus" style={{ width: 160 }} value={productFilter} onChange={(e) => setProductFilter(e.target.value)}>
             <option value="All">All products</option>
             {productOptions.map((p) => <option key={p} value={p}>{p}</option>)}
