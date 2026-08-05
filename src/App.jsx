@@ -5966,150 +5966,6 @@ function CoachSettingsView({ scenarios, settings, stages, onSaveScenario, onAddS
 /*  OTHER VISUALS — charts that don't earn their place on a daily view     */
 /* ---------------------------------------------------------------------- */
 
-function OtherVisualsView({ orders, netsuite, forecasts, staff }) {
-  const [period, setPeriod] = useState("mtd");
-  const [team, setTeam] = useState("All");
-
-  const teamOptions = useMemo(() => {
-    const s = new Set();
-    (staff || []).forEach((x) => { if (x.team && x.sells !== false) s.add(x.team); });
-    SELLING_TEAMS.forEach((t) => s.add(t));
-    return Array.from(s).sort();
-  }, [staff]);
-
-  const inTeam = (ct, lt) => team === "All" || ct === team || lt === team;
-
-  const data = useMemo(() => {
-    const months = [];
-    const base = new Date();
-    for (let i = 5; i >= 0; i--) {
-      const d = new Date(base.getFullYear(), base.getMonth() - i, 1);
-      months.push({
-        key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
-        label: d.toLocaleDateString("en-GB", { month: "short" }),
-      });
-    }
-    const idx = {};
-    months.forEach((m, i) => { idx[m.key] = i; });
-    const monthOf = (dstr) => {
-      if (!dstr) return null;
-      const d = new Date(dstr);
-      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-    };
-
-    const claimed = new Array(6).fill(0);
-    const statted = new Array(6).fill(0);
-    const forecast = new Array(6).fill(0);
-
-    (orders || []).forEach((o) => {
-      if (o.removed_at || !inTeam(o.closer_team, o.lead_gen_team)) return;
-      const i = idx[monthOf(o.submission_date)];
-      if (i !== undefined) claimed[i] += num(o.gp_office != null ? o.gp_office : o.sales_agent_gp);
-    });
-    (netsuite || []).forEach((n) => {
-      if (!inTeam(n.closer_team, n.referrer_team)) return;
-      const i = idx[monthOf(n.order_date ? n.order_date + "T00:00:00" : null)];
-      if (i !== undefined && n.count_gp !== false) statted[i] += num(n.gp_office);
-    });
-    (forecasts || []).forEach((f) => {
-      if (!inTeam(f.agent_team, f.lead_gen_team)) return;
-      const i = idx[monthOf(f.forecast_date || f.forecast_week)];
-      if (i !== undefined) forecast[i] += num(f.gp);
-    });
-
-    // Top deals in the chosen period
-    const inP = periodTest(period);
-    const top = (orders || [])
-      .filter((o) => !o.removed_at && inTeam(o.closer_team, o.lead_gen_team))
-      .filter((o) => inP(o.submission_date))
-      .map((o) => ({
-        company: o.company_name,
-        agent: o.closer_name,
-        gp: num(o.gp_office != null ? o.gp_office : o.sales_agent_gp),
-        sov: num(o.contract_value),
-      }))
-      .sort((a, b) => b.gp - a.gp)
-      .slice(0, 10);
-
-    const fcTotal = forecast.reduce((s, v) => s + v, 0);
-    const stTotal = statted.reduce((s, v) => s + v, 0);
-
-    return {
-      months: months.map((m) => m.label),
-      claimed, statted, forecast, top,
-      accuracy: fcTotal ? (stTotal / fcTotal) * 100 : 0,
-    };
-  }, [orders, netsuite, forecasts, team, period]);
-
-  return (
-    <div>
-      <div className="flex items-center gap-3 mb-4 flex-wrap">
-        <BarChart3 size={18} style={{ color: "var(--primary)" }} />
-        <h2 className="sw-display text-lg" style={{ fontWeight: 600 }}>Other Visuals</h2>
-        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Trends and league tables, off the daily view</span>
-        <div className="ml-auto flex items-center gap-2">
-          <select className="sw-input sw-focus" style={{ width: 150 }} value={team} onChange={(e) => setTeam(e.target.value)}>
-            <option value="All">All teams</option>
-            {teamOptions.map((t) => <option key={t} value={t}>{t}</option>)}
-          </select>
-          <PeriodSelect value={period} onChange={setPeriod} width={148} />
-        </div>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: "0.75rem" }} className="mb-3">
-        <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="flex items-baseline justify-between mb-3">
-            <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Statted vs forecast</span>
-            <span className="text-xs" style={{ color: data.accuracy >= 90 ? "var(--green)" : data.accuracy >= 70 ? "var(--amber)" : "var(--red)" }}>
-              {data.accuracy.toFixed(0)}% delivered
-            </span>
-          </div>
-          <TargetBars groups={data.months.map((m, i) => ({ label: m, actual: data.statted[i], target: data.forecast[i] }))} />
-        </div>
-
-        <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="text-xs font-medium uppercase mb-3" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Claimed vs statted</div>
-          <LineChart series={[
-            { name: "Claimed", colour: "#4C1D8F", points: data.months.map((m, i) => ({ label: m, value: data.claimed[i] })) },
-            { name: "Statted", colour: "#1B7038", points: data.months.map((m, i) => ({ label: m, value: data.statted[i] })) },
-          ]} />
-        </div>
-      </div>
-
-      <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-        <div className="text-xs font-medium uppercase mb-3" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>
-          Top 10 deals · {periodLabelFor(period)}
-        </div>
-        {data.top.length === 0 ? (
-          <div className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>No deals in this period.</div>
-        ) : (
-          <div className="flex flex-col gap-1.5">
-            {data.top.map((d, i) => {
-              const max = data.top[0].gp || 1;
-              return (
-                <div key={i} className="flex items-center gap-3">
-                  <span className="sw-mono shrink-0" style={{ fontSize: 11, color: "var(--ink-faint)", width: 16 }}>{i + 1}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-baseline justify-between gap-2">
-                      <span className="text-xs font-medium truncate">{d.company}</span>
-                      <span className="sw-mono text-xs font-semibold shrink-0">{fmtGBP(d.gp)}</span>
-                    </div>
-                    <div className="rounded-full mt-1" style={{ height: 3, background: "var(--surface-alt)" }}>
-                      <div className="rounded-full" style={{ width: `${(d.gp / max) * 100}%`, height: "100%", background: "var(--primary)" }} />
-                    </div>
-                  </div>
-                  <span className="text-xs shrink-0 truncate" style={{ color: "var(--ink-faint)", width: 130 }}>{d.agent}</span>
-                  <span className="sw-mono text-xs shrink-0" style={{ color: "var(--ink-soft)", width: 86, textAlign: "right" }}>{fmtGBP(d.sov)}</span>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 /* ---------------------------------------------------------------------- */
 /*  SETTINGS — office-only, holds Statuses and Pay Plans                   */
 /* ---------------------------------------------------------------------- */
@@ -6492,8 +6348,7 @@ function DeveloperView() {
 
 function SettingsView({ statusRows, onSaveStatus, newCount,
                        coachScenarios, coachSettings, onSaveCoachScenario, onAddCoachScenario, onDeleteCoachScenario, onSaveCoachSettings,
-                       coachStages, onSaveStage, onAddStage, onDeleteStage,
-                       orders, netsuite, forecasts, staff }) {
+                       coachStages, onSaveStage, onAddStage, onDeleteStage }) {
   const [section, setSection] = useState("statuses");
   return (
     <div>
@@ -6501,7 +6356,6 @@ function SettingsView({ statusRows, onSaveStatus, newCount,
         {[
           { key: "statuses", label: "Order Statuses", icon: Palette, badge: newCount },
           { key: "coach", label: "Coach Setup", icon: Headphones, badge: 0 },
-          { key: "visuals", label: "Other Visuals", icon: BarChart3, badge: 0 },
           { key: "developer", label: "Developer", icon: ShieldAlert, badge: 0 },
         ].map((s) => (
           <button key={s.key} onClick={() => setSection(s.key)}
@@ -6522,9 +6376,6 @@ function SettingsView({ statusRows, onSaveStatus, newCount,
           onSaveStage={onSaveStage} onAddStage={onAddStage} onDeleteStage={onDeleteStage}
           onSaveScenario={onSaveCoachScenario} onAddScenario={onAddCoachScenario}
           onDeleteScenario={onDeleteCoachScenario} onSaveSettings={onSaveCoachSettings} />
-      )}
-      {section === "visuals" && (
-        <OtherVisualsView orders={orders} netsuite={netsuite} forecasts={forecasts} staff={staff} />
       )}
       {section === "developer" && <DeveloperView />}
     </div>
@@ -8791,9 +8642,9 @@ function ForecastView({ netsuite, profile, staff }) {
         <>
         {/* Headline figures on the left, the matrix to their right —
             read the totals first, then how they break down. */}
-        <div className="sw-cols mb-4" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 4fr)", gap: "0.75rem", alignItems: "start" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "0.6rem" }}>
-            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="sw-cols mb-4" style={{ display: "grid", gridTemplateColumns: "minmax(260px, 1fr) minmax(0, 3.4fr)", gap: "0.75rem", alignItems: "start" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "0.6rem" }}>
+            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)", gridColumn: "1 / -1" }}>
               <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast GP</div>
               {/* Net of the lead-gen double count — this is what actually lands */}
               <div className="sw-display font-bold text-xl">{fmtGBP(summary.grand)}</div>
@@ -12688,8 +12539,7 @@ export default function App() {
           coachScenarios={coachScenarios} coachSettings={coachSettings}
           onSaveCoachScenario={saveCoachScenario} onAddCoachScenario={addCoachScenario}
           onDeleteCoachScenario={deleteCoachScenario} onSaveCoachSettings={saveCoachSettings}
-          coachStages={coachStages} onSaveStage={saveCoachStage} onAddStage={addCoachStage} onDeleteStage={deleteCoachStage}
-          orders={orders} netsuite={netsuiteResolved} forecasts={forecasts} staff={staff} />}
+          coachStages={coachStages} onSaveStage={saveCoachStage} onAddStage={addCoachStage} onDeleteStage={deleteCoachStage} />}
       </main>
 
       {selected && <OrderDrawer order={selected} ns={selected.document_number ? netsuite.find((n) => String(n.document_number) === String(selected.document_number)) : null} onClose={() => setSelected(null)} canEdit={canEditOrder(selected)} onSave={saveOrder} saving={savingEdit} onRemove={removeOrder} />}
