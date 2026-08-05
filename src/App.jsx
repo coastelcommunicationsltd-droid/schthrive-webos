@@ -5694,6 +5694,102 @@ function StagesEditor({ stages, scenarios, onSave, onAdd, onDelete }) {
   );
 }
 
+/* How the coach works, drawn where it's edited. Managers change these
+   settings without necessarily knowing what they feed — this makes the
+   path from a settings box to the model's behaviour visible. */
+function CoachFlowDiagram() {
+  const [open, setOpen] = useState(false);
+
+  const Box = ({ x, y, w, h = 46, fill, stroke, title, sub, titleColour, subColour }) => (
+    <g>
+      <rect x={x} y={y} width={w} height={h} rx={7} fill={fill} stroke={stroke} strokeWidth="1" />
+      <text x={x + w / 2} y={sub ? y + 18 : y + h / 2} textAnchor="middle" dominantBaseline="central"
+        style={{ fontSize: 12, fontWeight: 600, fill: titleColour }}>{title}</text>
+      {sub && (
+        <text x={x + w / 2} y={y + 33} textAnchor="middle" dominantBaseline="central"
+          style={{ fontSize: 10.5, fill: subColour }}>{sub}</text>
+      )}
+    </g>
+  );
+
+  // Purple = what you configure, teal = what the system does,
+  // amber = the agent's side, grey = where it ends up.
+  const cfg = { fill: "var(--primary-soft)", stroke: "var(--primary)", titleColour: "var(--primary)", subColour: "var(--ink-soft)" };
+  const sys = { fill: "var(--surface-alt)", stroke: "var(--ink-faint)", titleColour: "var(--ink)", subColour: "var(--ink-soft)" };
+  const act = { fill: "var(--amber-soft)", stroke: "var(--amber)", titleColour: "var(--amber)", subColour: "var(--ink-soft)" };
+
+  return (
+    <div className="rounded-2xl mb-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+      <button onClick={() => setOpen((v) => !v)}
+        className="sw-focus w-full flex items-center gap-2 px-4 py-2.5 text-left">
+        <ChevronDown size={13} style={{ color: "var(--ink-faint)", transform: open ? "rotate(0)" : "rotate(-90deg)", transition: "transform .15s" }} />
+        <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>
+          How the coach uses these settings
+        </span>
+        <span className="text-xs ml-auto" style={{ color: "var(--ink-faint)" }}>
+          {open ? "Hide" : "Show"}
+        </span>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4">
+          <svg width="100%" viewBox="0 0 680 340" role="img" style={{ display: "block" }}>
+            <title>How Coach Setup settings drive a practice call</title>
+            <desc>
+              Scenarios, stages, grading and bonuses are compiled into a prompt by the Edge Function.
+              The agent speaks, the customer replies in character, each turn is graded and the stage
+              advances. At the end a review is produced and saved to history.
+            </desc>
+            <defs>
+              <marker id="cfarrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </marker>
+            </defs>
+
+            <text x="20" y="16" style={{ fontSize: 10.5, fill: "var(--ink-faint)" }}>You configure</text>
+
+            <Box x={20}  y={26} w={150} title="Scenarios" sub="Persona, difficulty" {...cfg} />
+            <Box x={182} y={26} w={150} title="Stages" sub="Goal, reveals, examples" {...cfg} />
+            <Box x={344} y={26} w={150} title="Grading" sub="Rubric, what good is" {...cfg} />
+            <Box x={506} y={26} w={154} title="Bonuses" sub="e.g. mobile question" {...cfg} />
+
+            <line x1="340" y1="76" x2="340" y2="98" stroke="var(--ink-faint)" strokeWidth="1.5" markerEnd="url(#cfarrow)" />
+
+            <Box x={200} y={102} w={280} h={42} title="Compiled into the prompt" {...sys} />
+
+            <line x1="340" y1="148" x2="340" y2="170" stroke="var(--ink-faint)" strokeWidth="1.5" markerEnd="url(#cfarrow)" />
+
+            <rect x={40} y={174} width={600} height={96} rx={10} fill="none"
+              stroke="var(--border)" strokeWidth="1" strokeDasharray="4 4" />
+            <text x="56" y="190" style={{ fontSize: 10.5, fill: "var(--ink-faint)" }}>Each turn</text>
+
+            <Box x={68}  y={200} w={170} h={44} title="Agent speaks" sub="Voice or typed" {...act} />
+            <Box x={442} y={200} w={170} h={44} title="Customer replies" sub="In character, in stage" {...sys} />
+
+            <line x1="238" y1="222" x2="434" y2="222" stroke="var(--ink-faint)" strokeWidth="1.5" markerEnd="url(#cfarrow)" />
+            <text x="336" y="214" textAnchor="middle" style={{ fontSize: 10.5, fill: "var(--ink-faint)" }}>graded, stage may advance</text>
+
+            <path d="M527 244 L527 258 L153 258 L153 248" fill="none"
+              stroke="var(--ink-faint)" strokeWidth="1.5" markerEnd="url(#cfarrow)" />
+
+            <line x1="340" y1="274" x2="340" y2="292" stroke="var(--ink-faint)" strokeWidth="1.5" markerEnd="url(#cfarrow)" />
+
+            <Box x={140} y={296} w={190} h={40} title="Call review" {...sys} />
+            <Box x={350} y={296} w={190} h={40} title="Saved to history" {...sys} />
+            <line x1="330" y1="316" x2="342" y2="316" stroke="var(--ink-faint)" strokeWidth="1.5" markerEnd="url(#cfarrow)" />
+          </svg>
+
+          <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
+            Everything the customer does comes from these boxes — there is no behaviour hidden in code.
+            If a call feels wrong, the fix is here. The <b>End-of-call feedback</b> field below shapes the
+            review specifically, separately from how individual turns are graded.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CoachSettingsView({ scenarios, settings, stages, onSaveScenario, onAddScenario, onDeleteScenario, onSaveSettings,
                             onSaveStage, onAddStage, onDeleteStage }) {
   const [rubric, setRubric] = useState(settings.rubric || "");
@@ -5719,6 +5815,8 @@ function CoachSettingsView({ scenarios, settings, stages, onSaveScenario, onAddS
         <h2 className="sw-display text-lg font-bold">Coach Setup</h2>
         <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Scenarios and how calls are graded</span>
       </div>
+
+      <CoachFlowDiagram />
 
       <p className="text-sm mb-4 p-3 rounded-xl" style={{ background: "var(--primary-soft)", color: "var(--ink-soft)" }}>
         This is what turns generic sales coaching into coaching on <b>your</b> method. The more specifically
