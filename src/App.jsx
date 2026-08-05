@@ -429,6 +429,25 @@ function fyMonthDate(y, mi) {
   return new Date(mi <= 8 ? y : y + 1, cal, 1, 0, 0, 0, 0);
 }
 
+/* FY week numbering. Week 1 is the week containing 1 April, and weeks run
+   Monday to Sunday like the rest of the app. A date in late March can
+   therefore belong to week 52/53 of the previous FY. */
+function fyWeekStart(y) {
+  return weekStart(new Date(y, 3, 1, 12, 0, 0, 0));
+}
+function fyWeekOf(d) {
+  const day = new Date(d);
+  if (Number.isNaN(day.getTime())) return null;
+  let y = fyYearOf(day);
+  let w1 = fyWeekStart(y);
+  const ws = weekStart(day);
+  // 1 April can fall mid-week, so a date early in April may still sit in
+  // the last week of the outgoing FY.
+  if (ws.getTime() < w1.getTime()) { y -= 1; w1 = fyWeekStart(y); }
+  const week = Math.floor((ws.getTime() - w1.getTime()) / 604800000) + 1;
+  return { fy: y, week, start: ws };
+}
+
 /* A period key is one of the shorthand keys above, or:
      fy:2024        whole financial year 2024-25
      fy:2024:m:3    July 2024 (month index 3 within that FY)
@@ -1571,7 +1590,9 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
       const mp = productFilter === "All"
         || String(r.product || "").toLowerCase().includes(productFilter.toLowerCase());
       const mf = focusFilter === "All"
-        || (focusFilter === "aged" ? (r.ageDays != null && r.ageDays >= 90) : !!r.needsAction);
+        || (focusFilter === "aged" ? (r.ageDays != null && r.ageDays >= 90)
+          : focusFilter === "aged60" ? (r.ageDays != null && r.ageDays >= 60)
+          : !!r.needsAction);
       const mc = !campaignOnly || !!r.campaign;
       const macq = !acqOnly || !!r.isAcq;
       return mq && ms && ma && mp && mf && mc && macq;
@@ -1674,6 +1695,9 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
   }, [gpCountable, isOffice, is2ic, scope, profile, agentFilter, gpWorking]);
   const ngpCount = useMemo(() => viewRows.filter((r) => r.ngp).length, [viewRows]);
   const agedCount = useMemo(() => viewRows.filter((r) => r.ageDays != null && r.ageDays >= 90).length, [viewRows]);
+  // 60+ is inclusive of the 90+ set — it's "at least this old", not a band,
+  // so the two counts deliberately overlap.
+  const aged60Count = useMemo(() => viewRows.filter((r) => r.ageDays != null && r.ageDays >= 60).length, [viewRows]);
   const attentionCount = useMemo(() => viewRows.filter((r) => r.needsAction).length, [viewRows]);
   // Counts only pure-NSOV rows, matching the filter above
   const nsovCount = useMemo(() => productScoped.filter((o) => isNSOV(o) && !isNGP(o)).length, [productScoped, isNSOV, isNGP]);
@@ -2585,6 +2609,15 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
                 ? { background: "var(--amber-soft)", color: "var(--amber)", fontWeight: 600, height: "100%" }
                 : { background: "transparent", color: attentionCount ? "var(--ink-soft)" : "var(--ink-faint)", height: "100%" }}>
               Need Actions{attentionCount ? <b style={{ fontWeight: 700 }}> ({attentionCount})</b> : ""}
+            </button>
+            <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
+            <button onClick={() => setFocusFilter(focusFilter === "aged60" ? "All" : "aged60")}
+              title="Submitted more than 60 days ago (includes the 90d+ ones)"
+              className="sw-focus px-2 text-xs whitespace-nowrap"
+              style={focusFilter === "aged60"
+                ? { background: "var(--amber-soft)", color: "var(--amber)", fontWeight: 600, height: "100%" }
+                : { background: "transparent", color: aged60Count ? "var(--ink-soft)" : "var(--ink-faint)", height: "100%" }}>
+              60d+{aged60Count ? <b style={{ fontWeight: 700 }}> ({aged60Count})</b> : ""}
             </button>
             <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
             <button onClick={() => setFocusFilter(focusFilter === "aged" ? "All" : "aged")}
@@ -8621,6 +8654,10 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   const [placementView, setPlacementView] = useState("to_be_placed");
   const [dirtyOnly, setDirtyOnly] = useState(false);
   const [agedOnly, setAgedOnly] = useState(false);
+  // Ranked column can switch to a throughput matrix
+  const [rankView, setRankView] = useState("ranked");        // ranked | throughput
+  const [flowMode, setFlowMode] = useState("week");          // week (per day) | weeks (per week)
+  const [flowFy, setFlowFy] = useState(() => String(fyYearOf()));
   const [query, setQuery] = useState("");
   const [agentFilter, setAgentFilter] = useState("All");
   const [stateFilter, setStateFilter] = useState("All");
@@ -8884,6 +8921,92 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
     };
   }, [scopedForWork]);
 
+  /* Throughput: what each admin agent RECEIVED versus what they PLACED.
+     Received is dated off the NetSuite order date; placed is dated off the
+     sheet's "Order placed" column. That column syncs as free text rather
+     than a parsed date, so it's parsed defensively here and anything that
+     doesn't yield a real date is counted as unusable rather than silently
+     dropped — otherwise placed would just read zero with no explanation. */
+  const flow = useMemo(() => {
+    const parseDate = (v) => {
+      if (!v) return null;
+      const str = String(v).trim();
+      if (!str || /^(yes|no|y|n|true|false)$/i.test(str)) return null;
+      let d = new Date(str);
+      if (Number.isNaN(d.getTime())) {
+        // dd/mm/yyyy — the sheet's usual format, which Date() misreads as US
+        const m = /^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/.exec(str);
+        if (!m) return null;
+        const yr = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
+        d = new Date(yr, Number(m[2]) - 1, Number(m[1]));
+      }
+      if (Number.isNaN(d.getTime()) || d.getFullYear() < 1990) return null;
+      return d;
+    };
+
+    const y = parseInt(flowFy, 10);
+    const perDay = flowMode === "week";
+    let cols = [];
+    if (perDay) {
+      const ws = weekStart();
+      cols = Array.from({ length: 7 }, (_, i) => {
+        const d = new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() + i);
+        return { key: `d${i}`, label: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i], date: d };
+      });
+    } else {
+      const w1 = fyWeekStart(y);
+      const end = new Date(Math.min(Date.now(), new Date(y + 1, 3, 1).getTime()));
+      const last = Math.max(1, Math.floor((weekStart(end).getTime() - w1.getTime()) / 604800000) + 1);
+      const first = Math.max(1, last - 12);   // last 13 weeks keeps it readable
+      for (let w = first; w <= last; w++) cols.push({ key: `w${w}`, label: `W${w}`, week: w });
+    }
+
+    const colKeyFor = (d) => {
+      if (!d) return null;
+      if (perDay) {
+        const ws = weekStart();
+        const i = Math.floor((new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() - ws.getTime()) / 86400000);
+        return i >= 0 && i < 7 ? `d${i}` : null;
+      }
+      const fw = fyWeekOf(d);
+      if (!fw || fw.fy !== y) return null;
+      return `w${fw.week}`;
+    };
+
+    const by = {};
+    let placedUnparsed = 0, placedDated = 0;
+    const touch = (name) => {
+      const k = name || "Unallocated";
+      if (!by[k]) by[k] = { name: k, recv: {}, placed: {}, recvTotal: 0, placedTotal: 0 };
+      return by[k];
+    };
+    (unplaced || []).forEach((u) => {
+      const r = touch(u.admin_agent || null);
+      const rk = colKeyFor(parseDate(u.order_date));
+      if (rk) { r.recv[rk] = (r.recv[rk] || 0) + 1; r.recvTotal += 1; }
+      const pd = parseDate(u.order_placed);
+      if (pd) {
+        placedDated += 1;
+        const pk = colKeyFor(pd);
+        if (pk) { r.placed[pk] = (r.placed[pk] || 0) + 1; r.placedTotal += 1; }
+      } else if (u.order_placed) {
+        placedUnparsed += 1;
+      }
+    });
+
+    const rows = Object.values(by)
+      .filter((r) => r.recvTotal > 0 || r.placedTotal > 0)
+      .sort((a, b) => (b.recvTotal + b.placedTotal) - (a.recvTotal + a.placedTotal) || a.name.localeCompare(b.name));
+    const colTotals = {};
+    cols.forEach((c) => {
+      colTotals[c.key] = {
+        recv: rows.reduce((s, r) => s + (r.recv[c.key] || 0), 0),
+        placed: rows.reduce((s, r) => s + (r.placed[c.key] || 0), 0),
+      };
+    });
+    return { cols, rows, colTotals, placedUnparsed, placedDated };
+  }, [unplaced, flowMode, flowFy]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return inPeriod.filter((o) => {
@@ -9077,42 +9200,43 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
       /* Headline counts — this branch only renders on the Claimed view,
          so the old view === "unplaced" ternaries in here were dead code
          and have gone. Cards cascade in and the counts ease up. */
-      <div className="sw-cols-2 sw-stagger mb-3" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: "0.75rem" }}>
-        {/* Orders in period carries the money underneath it */}
-        <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>
-            Orders in period
-          </div>
-          <div className="sw-display" style={{ fontSize: 27, fontWeight: 600, letterSpacing: "-0.025em" }}>
-            <CountUp value={totals.all} />
-          </div>
-          <div className="flex items-center gap-3 mt-1.5">
-            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
-              GP <b className="sw-mono" style={{ color: "var(--ink-soft)" }}>{fmtGBP(totals.gp)}</b>
-            </span>
-            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
-              SOV <b className="sw-mono" style={{ color: "var(--ink-soft)" }}>{fmtGBP(totals.sov)}</b>
-            </span>
-          </div>
-        </div>
-
-        {[
-          ["Unallocated", totals.unallocated,
-            totals.unallocated ? "var(--amber)" : "var(--ink-faint)",
-            "Not yet handed to anyone"],
-          ["Over 90 days", totals.aged,
-            totals.aged ? "var(--red)" : "var(--ink-faint)",
-            "Sitting unplaced for more than 90 days"],
-          ["Dirty orders", totals.dirty, totals.dirty ? "var(--red)" : "var(--ink-faint)", "Flagged for review"],
-        ].map(([label, value, colour, hint]) => (
-          <div key={label} className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }} title={hint}>
-            <div className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{label}</div>
-            <div className="sw-display" style={{ fontSize: 27, fontWeight: 600, letterSpacing: "-0.025em", color: colour }}>
-              <CountUp value={value} />
+      {/* One card holding a 2x2 grid of the four figures, rather than four
+          cards strung across a row. Inline grid on purpose — critical
+          layout, no Tailwind JIT dependence. */}
+      <div className="sw-stagger rounded-xl mb-3 p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: "1px", background: "var(--border)" }}>
+          {[
+            ["Orders in period", totals.all, "var(--ink)", null, true],
+            ["Unallocated", totals.unallocated,
+              totals.unallocated ? "var(--amber)" : "var(--ink-faint)",
+              "Not yet handed to anyone", false],
+            ["Over 90 days", totals.aged,
+              totals.aged ? "var(--red)" : "var(--ink-faint)",
+              "Sitting unplaced for more than 90 days", false],
+            ["Dirty orders", totals.dirty,
+              totals.dirty ? "var(--red)" : "var(--ink-faint)",
+              "Flagged for review", false],
+          ].map(([label, value, colour, hint, isMoney]) => (
+            <div key={label} style={{ background: "var(--surface)", padding: "10px 14px" }} title={hint || undefined}>
+              <div className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{label}</div>
+              <div className="sw-display" style={{ fontSize: 25, fontWeight: 600, letterSpacing: "-0.025em", color: colour }}>
+                <CountUp value={value} />
+              </div>
+              {isMoney ? (
+                <div className="flex items-center gap-3 mt-0.5">
+                  <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                    GP <b className="sw-mono" style={{ color: "var(--ink-soft)" }}>{fmtGBP(totals.gp)}</b>
+                  </span>
+                  <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                    SOV <b className="sw-mono" style={{ color: "var(--ink-soft)" }}>{fmtGBP(totals.sov)}</b>
+                  </span>
+                </div>
+              ) : (
+                <div className="text-xs mt-0.5" style={{ color: "var(--ink-faint)" }}>{hint}</div>
+              )}
             </div>
-            <div className="text-xs mt-1.5" style={{ color: "var(--ink-faint)" }}>{hint}</div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
       )}
 
@@ -9178,18 +9302,142 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
 
       {/* Ranked column is a quarter of the page; the orders list takes the
           rest. Inline grid on purpose — critical layout, no Tailwind JIT. */}
-      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(190px, 1fr) minmax(0, 3fr)", gap: "0.75rem", alignItems: "start" }}>
+      <div className="sw-cols" style={{
+        display: "grid",
+        // Throughput needs room for a 7-day / 13-week matrix, so the column
+        // widens for it and drops back to a quarter for the ranked list.
+        gridTemplateColumns: rankView === "throughput"
+          ? "minmax(420px, 1.7fr) minmax(0, 2.3fr)"
+          : "minmax(190px, 1fr) minmax(0, 3fr)",
+        gap: "0.75rem", alignItems: "start",
+      }}>
 
         {/* Team workload — doubles as the agent picker */}
         <div className="sw-sticky-col flex flex-col gap-3 pr-0.5" style={{ position: "sticky", top: 66, maxHeight: "calc(100vh - 78px)", overflowY: "auto" }}>
           <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-            <div className="flex items-baseline justify-between mb-3">
+            <div className="flex items-baseline justify-between mb-2 gap-2">
               <span className="text-sm font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{deliveryTeam}</span>
-              {agentFilter !== "All" && (
+              {agentFilter !== "All" && rankView === "ranked" && (
                 <button onClick={() => setAgentFilter("All")} className="sw-focus text-xs" style={{ color: "var(--primary)" }}>Clear</button>
               )}
             </div>
 
+            <div className="flex items-center rounded-lg overflow-hidden mb-3" style={{ border: "1px solid var(--border)", height: 28 }}>
+              {[["ranked", "Ranked"], ["throughput", "Throughput"]].map(([k, lbl]) => (
+                <button key={k} onClick={() => setRankView(k)}
+                  className="sw-focus px-2.5 text-xs whitespace-nowrap" style={{ flex: 1, ...(rankView === k
+                    ? { background: "var(--primary)", color: "#fff", fontWeight: 600, height: "100%" }
+                    : { background: "transparent", color: "var(--ink-faint)", height: "100%" }) }}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
+
+            {rankView === "throughput" ? (
+              <div>
+                <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+                  <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 26 }}>
+                    {[["week", "This week"], ["weeks", "Per week"]].map(([k, lbl]) => (
+                      <button key={k} onClick={() => setFlowMode(k)}
+                        className="sw-focus px-2 text-xs whitespace-nowrap" style={flowMode === k
+                          ? { background: "var(--primary-soft)", color: "var(--primary)", fontWeight: 600, height: "100%" }
+                          : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
+                        {lbl}
+                      </button>
+                    ))}
+                  </div>
+                  {flowMode === "weeks" && (
+                    <select className="sw-input sw-focus" style={{ width: 96, height: 26, fontSize: 11.5 }}
+                      value={flowFy} onChange={(e) => setFlowFy(e.target.value)}>
+                      {fyList().map((y) => <option key={y} value={y}>{fyLabel(y)}</option>)}
+                    </select>
+                  )}
+                </div>
+
+                <div style={{ overflowX: "auto" }}>
+                  <table className="w-full" style={{ fontSize: 11.5, borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr>
+                        <th className="text-left" style={{ padding: "3px 6px 5px 0", color: "var(--ink-faint)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em" }}>Agent</th>
+                        {flow.cols.map((c) => (
+                          <th key={c.key} style={{ padding: "3px 3px 5px", color: "var(--ink-faint)", fontWeight: 600, fontSize: 10, textAlign: "center", minWidth: 30 }}>
+                            {c.label}
+                          </th>
+                        ))}
+                        <th style={{ padding: "3px 0 5px 6px", color: "var(--ink-faint)", fontWeight: 600, fontSize: 10, textAlign: "right" }}>Tot</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {flow.rows.map((r) => (
+                        <React.Fragment key={r.name}>
+                          {/* Received on top, placed underneath, so the gap
+                              between the two reads down each column */}
+                          <tr>
+                            <td rowSpan={2} style={{ padding: "4px 6px 4px 0", borderTop: "1px solid var(--border)", verticalAlign: "middle", maxWidth: 110 }}>
+                              <div className="truncate" style={{ fontSize: 12, fontWeight: 500 }}>{r.name}</div>
+                            </td>
+                            {flow.cols.map((c) => (
+                              <td key={c.key} className="sw-mono" style={{ padding: "2px 3px 0", textAlign: "center", borderTop: "1px solid var(--border)", color: (r.recv[c.key] || 0) ? "var(--blue)" : "var(--ink-faint)" }}>
+                                {r.recv[c.key] || "·"}
+                              </td>
+                            ))}
+                            <td className="sw-mono" style={{ padding: "2px 0 0 6px", textAlign: "right", borderTop: "1px solid var(--border)", color: "var(--blue)", fontWeight: 600 }}>{r.recvTotal}</td>
+                          </tr>
+                          <tr>
+                            {flow.cols.map((c) => (
+                              <td key={c.key} className="sw-mono" style={{ padding: "0 3px 4px", textAlign: "center", color: (r.placed[c.key] || 0) ? "var(--green)" : "var(--ink-faint)" }}>
+                                {r.placed[c.key] || "·"}
+                              </td>
+                            ))}
+                            <td className="sw-mono" style={{ padding: "0 0 4px 6px", textAlign: "right", color: "var(--green)", fontWeight: 600 }}>{r.placedTotal}</td>
+                          </tr>
+                        </React.Fragment>
+                      ))}
+                      {flow.rows.length === 0 && (
+                        <tr><td colSpan={flow.cols.length + 2} className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>
+                          Nothing in this window.
+                        </td></tr>
+                      )}
+                    </tbody>
+                    {flow.rows.length > 0 && (
+                      <tfoot>
+                        <tr>
+                          <td style={{ padding: "5px 6px 1px 0", borderTop: "2px solid var(--border)", fontSize: 10, textTransform: "uppercase", color: "var(--ink-faint)", fontWeight: 600 }}>Received</td>
+                          {flow.cols.map((c) => (
+                            <td key={c.key} className="sw-mono" style={{ padding: "5px 3px 1px", textAlign: "center", borderTop: "2px solid var(--border)", color: "var(--blue)", fontWeight: 700 }}>{flow.colTotals[c.key].recv || "·"}</td>
+                          ))}
+                          <td className="sw-mono" style={{ padding: "5px 0 1px 6px", textAlign: "right", borderTop: "2px solid var(--border)", color: "var(--blue)", fontWeight: 700 }}>
+                            {flow.rows.reduce((s, r) => s + r.recvTotal, 0)}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td style={{ padding: "1px 6px 4px 0", fontSize: 10, textTransform: "uppercase", color: "var(--ink-faint)", fontWeight: 600 }}>Placed</td>
+                          {flow.cols.map((c) => (
+                            <td key={c.key} className="sw-mono" style={{ padding: "1px 3px 4px", textAlign: "center", color: "var(--green)", fontWeight: 700 }}>{flow.colTotals[c.key].placed || "·"}</td>
+                          ))}
+                          <td className="sw-mono" style={{ padding: "1px 0 4px 6px", textAlign: "right", color: "var(--green)", fontWeight: 700 }}>
+                            {flow.rows.reduce((s, r) => s + r.placedTotal, 0)}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                </div>
+
+                <div className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
+                  <span style={{ color: "var(--blue)", fontWeight: 600 }}>Received</span> off the NetSuite date ·{" "}
+                  <span style={{ color: "var(--green)", fontWeight: 600 }}>Placed</span> off the order-placed date
+                  {flowMode === "weeks" ? " · FY weeks run Apr–Mar, Mon–Sun" : ""}
+                </div>
+                {flow.placedUnparsed > 0 && (
+                  <div className="text-xs mt-1.5 rounded-lg px-2 py-1.5" style={{ background: "var(--amber-soft)", color: "var(--amber)" }}>
+                    {flow.placedUnparsed} row{flow.placedUnparsed === 1 ? "" : "s"} have an "Order placed" value that isn't a
+                    date, so they can't be counted here. The sheet syncs that column as text.
+                  </div>
+                )}
+              </div>
+            ) : (
+            <div>
             {view === "unplaced" && (
               <div className="text-xs mb-2" style={{ color: "var(--ink-faint)" }}>
                 {placementView === "to_be_placed" ? "Orders to be placed"
@@ -9270,6 +9518,8 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                 ? "Open orders per admin agent, from the Unplaced Rep sheet. Click a name to filter."
                 : "Blue is open work, green is complete. Click a name to filter the list."}
             </p>
+            </div>
+            )}
           </div>
         </div>
 
