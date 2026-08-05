@@ -6114,6 +6114,219 @@ function OtherVisualsView({ orders, netsuite, forecasts, staff }) {
 /*  SETTINGS — office-only, holds Statuses and Pay Plans                   */
 /* ---------------------------------------------------------------------- */
 
+/* Developer view — what feeds this app, how fresh it is, and where it
+   comes from. Office-only. The point is that when a number looks wrong,
+   the first question is always "when did that last sync?" and there was
+   nowhere to answer it. */
+const DATA_SOURCES = [
+  {
+    key: "orders", table: "orders", label: "Lilac Box orders",
+    source: "Submitted in this app", cadence: "Live (Realtime)",
+    freshField: "last_updated", dateField: "submission_date",
+    note: "Written directly by agents. Realtime push plus a 2-minute safety poll.",
+  },
+  {
+    key: "netsuite_orders", table: "netsuite_orders", label: "NetSuite orders",
+    source: "NetSuite workbook → Apps Script", cadence: "Hourly trigger",
+    freshField: "synced_at", dateField: "order_date",
+    note: "The GP and SOV authority. Lilac claims are matched to these by document number.",
+  },
+  {
+    key: "unplaced_orders", table: "unplaced_orders", label: "Unplaced / to be placed",
+    source: "NetSuite saved search customsearch723 → RESTlet", cadence: "Hourly (pg_cron)",
+    freshField: "synced_at", dateField: "order_date",
+    note: "Direct API pull. Rows that leave the search are deleted, so this table is a live snapshot, not a log.",
+  },
+  {
+    key: "forecasts", table: "forecasts", label: "Forecasts",
+    source: "Submitted in this app", cadence: "Live (Realtime)",
+    freshField: "created_at", dateField: "forecast_week",
+    note: "Weekly agent submissions.",
+  },
+  {
+    key: "staff", table: "staff", label: "Staff",
+    source: "Admin page", cadence: "On change",
+    freshField: null, dateField: null,
+    note: "Names, teams, pay plans, leavers. Alt names resolve NetSuite spellings back to a person.",
+  },
+  {
+    key: "coach_sessions", table: "coach_sessions", label: "Coach sessions",
+    source: "Sales Coach", cadence: "On completion",
+    freshField: "created_at", dateField: "created_at",
+    note: "Practice call transcripts and scores.",
+  },
+];
+
+function DeveloperView() {
+  const [rows, setRows] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true); setErr("");
+    const out = {};
+    for (const s of DATA_SOURCES) {
+      try {
+        const { count, error: cErr } = await supabase
+          .from(s.table).select("*", { count: "exact", head: true });
+        if (cErr) throw cErr;
+
+        let newest = null;
+        if (s.freshField) {
+          const { data } = await supabase
+            .from(s.table).select(s.freshField)
+            .order(s.freshField, { ascending: false }).limit(1);
+          newest = data && data[0] ? data[0][s.freshField] : null;
+        }
+        out[s.key] = { count: count ?? 0, newest, ok: true };
+      } catch (e) {
+        out[s.key] = { count: null, newest: null, ok: false, error: String(e?.message || e) };
+      }
+    }
+    setRows(out);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  // How stale is stale? Anything synced hourly should be under two hours.
+  const ageOf = (iso) => {
+    if (!iso) return null;
+    const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+    if (Number.isNaN(mins)) return null;
+    return mins;
+  };
+  const ageLabel = (mins) => {
+    if (mins == null) return "—";
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    if (mins < 1440) return `${Math.floor(mins / 60)}h ago`;
+    return `${Math.floor(mins / 1440)}d ago`;
+  };
+  const ageTone = (mins, cadence) => {
+    if (mins == null) return "var(--ink-faint)";
+    const hourly = /hour/i.test(cadence);
+    if (hourly) return mins <= 120 ? "var(--green)" : mins <= 360 ? "var(--amber)" : "var(--red)";
+    return mins <= 1440 ? "var(--green)" : "var(--amber)";
+  };
+
+  const summary = useMemo(() => {
+    const list = DATA_SOURCES.map((s) => ({ s, r: rows[s.key] })).filter((x) => x.r);
+    const failing = list.filter((x) => !x.r.ok).length;
+    const stale = list.filter((x) => {
+      if (!x.r.ok || !x.s.freshField) return false;
+      const m = ageOf(x.r.newest);
+      return m != null && /hour/i.test(x.s.cadence) && m > 360;
+    }).length;
+    const totalRows = list.reduce((n, x) => n + (x.r.count || 0), 0);
+    return { failing, stale, totalRows, checked: list.length };
+  }, [rows]);
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <ShieldAlert size={18} style={{ color: "var(--primary)" }} />
+        <h2 className="sw-display text-lg font-bold">Developer</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>What feeds this app and how fresh it is</span>
+        <button onClick={load} disabled={loading}
+          className="sw-focus ml-auto text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5"
+          style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>
+          <RefreshCw size={12} /> {loading ? "Checking..." : "Recheck"}
+        </button>
+      </div>
+
+      {/* Sticky one-line health summary — small on purpose, it should be
+          glanceable rather than another dashboard to read. */}
+      <div style={{ position: "sticky", top: 62, zIndex: 5 }} className="mb-3">
+        <div className="rounded-xl px-3 py-2 flex items-center gap-3 flex-wrap"
+          style={{
+            background: summary.failing ? "var(--red-soft)" : summary.stale ? "var(--amber-soft)" : "var(--surface)",
+            border: `1px solid ${summary.failing ? "var(--red)" : summary.stale ? "var(--amber)" : "var(--border)"}`,
+            boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+          }}>
+          <span style={{
+            width: 8, height: 8, borderRadius: 99, flexShrink: 0,
+            background: summary.failing ? "var(--red)" : summary.stale ? "var(--amber)" : "var(--green)",
+          }} />
+          <span className="text-xs font-semibold" style={{ color: "var(--ink)" }}>
+            {loading ? "Checking sources…"
+              : summary.failing ? `${summary.failing} source${summary.failing > 1 ? "s" : ""} unreachable`
+              : summary.stale ? `${summary.stale} source${summary.stale > 1 ? "s" : ""} behind schedule`
+              : "All sources reporting"}
+          </span>
+          <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+            {summary.checked}/{DATA_SOURCES.length} checked · {summary.totalRows.toLocaleString()} rows total
+          </span>
+          <span className="text-xs ml-auto sw-mono" style={{ color: "var(--ink-faint)" }}>
+            {DATA_SOURCES.filter((s) => rows[s.key]?.ok && s.freshField).map((s) => {
+              const m = ageOf(rows[s.key].newest);
+              return (
+                <span key={s.key} style={{ marginLeft: 10, color: ageTone(m, s.cadence) }}>
+                  {s.label.split(" ")[0]} {ageLabel(m)}
+                </span>
+              );
+            })}
+          </span>
+        </div>
+      </div>
+
+      {err && (
+        <div className="rounded-xl p-3 mb-3 text-xs" style={{ background: "var(--red-soft)", color: "var(--ink)" }}>{err}</div>
+      )}
+
+      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table className="w-full text-sm">
+            <thead>
+              <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
+                {["Table", "Where it comes from", "How often", "Rows", "Last update"].map((h, i) => (
+                  <th key={i} className={`px-3 py-2 text-xs font-semibold uppercase tracking-wide ${i >= 3 ? "text-right" : "text-left"}`}
+                    style={{ color: "var(--ink-soft)" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {DATA_SOURCES.map((s) => {
+                const r = rows[s.key];
+                const mins = r?.ok ? ageOf(r.newest) : null;
+                return (
+                  <tr key={s.key} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td className="px-3 py-2.5">
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>{s.label}</div>
+                      <div className="sw-mono" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>{s.table}</div>
+                    </td>
+                    <td className="px-3 py-2.5" style={{ maxWidth: 300 }}>
+                      <div className="text-xs" style={{ color: "var(--ink-soft)" }}>{s.source}</div>
+                      <div className="text-xs mt-0.5" style={{ color: "var(--ink-faint)", lineHeight: 1.4 }}>{s.note}</div>
+                    </td>
+                    <td className="px-3 py-2.5 text-xs" style={{ color: "var(--ink-soft)", whiteSpace: "nowrap" }}>{s.cadence}</td>
+                    <td className="px-3 py-2.5 sw-mono text-xs text-right" style={{ fontWeight: 600 }}>
+                      {r ? (r.ok ? (r.count ?? 0).toLocaleString() : "—") : "…"}
+                    </td>
+                    <td className="px-3 py-2.5 text-xs text-right" style={{ whiteSpace: "nowrap" }}>
+                      {!r ? <span style={{ color: "var(--ink-faint)" }}>checking…</span>
+                        : !r.ok ? <span style={{ color: "var(--red)", fontWeight: 600 }} title={r.error}>unreachable</span>
+                        : !s.freshField ? <span style={{ color: "var(--ink-faint)" }}>n/a</span>
+                        : <span className="sw-mono" style={{ color: ageTone(mins, s.cadence), fontWeight: 600 }}>{ageLabel(mins)}</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <p className="text-xs mt-3" style={{ color: "var(--ink-faint)" }}>
+        Row counts come from the database directly, so they reflect what the app can actually see —
+        including anything row-level security is hiding. "Last update" reads the newest sync timestamp
+        in each table: green means on schedule, amber means running late, red means something has stopped.
+        A source showing as unreachable usually means its migration hasn't been run.
+      </p>
+    </div>
+  );
+}
+
 function SettingsView({ statusRows, onSaveStatus, newCount,
                        coachScenarios, coachSettings, onSaveCoachScenario, onAddCoachScenario, onDeleteCoachScenario, onSaveCoachSettings,
                        coachStages, onSaveStage, onAddStage, onDeleteStage,
@@ -6126,6 +6339,7 @@ function SettingsView({ statusRows, onSaveStatus, newCount,
           { key: "statuses", label: "Order Statuses", icon: Palette, badge: newCount },
           { key: "coach", label: "Coach Setup", icon: Headphones, badge: 0 },
           { key: "visuals", label: "Other Visuals", icon: BarChart3, badge: 0 },
+          { key: "developer", label: "Developer", icon: ShieldAlert, badge: 0 },
         ].map((s) => (
           <button key={s.key} onClick={() => setSection(s.key)}
             className="sw-focus px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1.5"
@@ -6149,6 +6363,7 @@ function SettingsView({ statusRows, onSaveStatus, newCount,
       {section === "visuals" && (
         <OtherVisualsView orders={orders} netsuite={netsuite} forecasts={forecasts} staff={staff} />
       )}
+      {section === "developer" && <DeveloperView />}
     </div>
   );
 }
@@ -7900,7 +8115,7 @@ function ForecastView({ netsuite, profile, staff }) {
   const [view, setView] = useState("summary");   // summary | detail
   const [teamFilter, setTeamFilter] = useState("All");
   const [agentFilter, setAgentFilter] = useState("All");
-  const [pillarFilter, setPillarFilter] = useState(null);   // set by clicking the treemap
+  const [pillarFilter, setPillarFilter] = useState(null);   // product group filter
   const [fcOpen, setFcOpen] = useState({});                 // expanded rows
   const [adding, setAdding] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -7944,6 +8159,24 @@ function ForecastView({ netsuite, profile, staff }) {
     if (pillarFilter && groupForPillar(r.pillar) !== pillarFilter) return false;
     return true;
   }), [rows, week, teamFilter, agentFilter, pillarFilter]);
+
+  /* Forecasted deals grouped by team, for the cards under the table. The
+     table answers "how much" — this answers "off the back of what", which
+     is the question managers actually ask next. */
+  const teamDeals = useMemo(() => {
+    const byTeam = {};
+    weekRows.forEach((r) => {
+      const t = r.agent_team || r.lead_gen_team || "Unassigned";
+      if (!byTeam[t]) byTeam[t] = { team: t, deals: [], gp: 0, sov: 0, units: 0 };
+      byTeam[t].deals.push(r);
+      byTeam[t].gp += num(r.gp);
+      byTeam[t].sov += num(r.sov);
+      byTeam[t].units += num(r.units);
+    });
+    return Object.values(byTeam)
+      .map((t) => ({ ...t, deals: [...t.deals].sort((a, b) => num(b.gp) - num(a.gp)) }))
+      .sort((a, b) => b.gp - a.gp);
+  }, [weekRows]);
 
   // ---- Summary: one line per team, pillar SOV/units across ------------
   const summary = useMemo(() => {
@@ -8368,20 +8601,21 @@ function ForecastView({ netsuite, profile, staff }) {
           <option value="All">All agents</option>
           {agentOptions.map((a) => <option key={a} value={a}>{a}</option>)}
         </select>
-        {pillarFilter && (
-          <button onClick={() => setPillarFilter(null)}
-            className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1"
-            style={{ background: "var(--primary)", color: "#fff" }}
-            title="Clear the product filter">
-            {pillarFilter} <X size={12} />
-          </button>
-        )}
+        {/* The treemap used to set this; with the charts gone it needs its
+            own control rather than being permanently unreachable. */}
+        <select className="sw-input sw-focus" style={{ width: 160 }}
+          value={pillarFilter || "All"}
+          onChange={(e) => setPillarFilter(e.target.value === "All" ? null : e.target.value)}>
+          <option value="All">All products</option>
+          {PILLAR_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
+          <option value="Other">Other</option>
+        </select>
       </div>
 
       {/* SUMMARY */}
       {view === "summary" && (
         <>
-        <div className="sw-cols mb-4" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px", gap: "0.75rem", alignItems: "start" }}>
+        <div className="mb-4">
 
           {/* Expandable breakdown — all teams first, then each team */}
           <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
@@ -8477,47 +8711,83 @@ function ForecastView({ netsuite, profile, staff }) {
             </div>
           </div>
 
-          {/* Charts, pinned beside the table */}
-          <div className="sw-sticky-col flex flex-col gap-3 pr-0.5" style={{ position: "sticky", top: 66, maxHeight: "calc(100vh - 78px)", overflowY: "auto" }}>
-            <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              <div className="flex items-baseline justify-between mb-2">
-                <span className="sw-display font-bold text-xs" style={{ color: "var(--ink-soft)" }}>GP BY PILLAR</span>
-                {pillarFilter && <button onClick={() => setPillarFilter(null)} className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>Clear</button>}
-              </div>
-              <ProductTreemap items={pillarChartItems} height={150} selected={pillarFilter} onSelect={setPillarFilter} />
-            </div>
-            <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              <div className="sw-display text-xs mb-2" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>GP BY AGENT</div>
-              <ProductBars items={agentChartItems} height={190}
-                selected={agentFilter === "All" ? null : agentFilter}
-                onSelect={(name) => setAgentFilter(name && name !== agentFilter ? name : "All")} />
-            </div>
-            <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              <div className="px-3 py-2 text-xs font-bold uppercase" style={{ background: "var(--surface-alt)", color: "var(--ink-soft)" }}>Leads passed in</div>
-              <table className="w-full">
-                <tbody>
-                  {summary.teams.map((t) => {
-                    const total = Object.keys(t.leads).reduce((s, p) => s + (t.leads[p] || 0), 0);
-                    return (
-                      <tr key={t.team} style={{ borderTop: "1px solid var(--border)" }}>
-                        <td className="px-3 py-1.5 text-xs font-semibold truncate">{t.team}</td>
-                        <td className="px-3 py-1.5 sw-mono text-xs font-bold text-right">{total}</td>
-                      </tr>
-                    );
-                  })}
-                  {summary.teams.length === 0 && (
-                    <tr><td className="px-3 py-4 text-xs text-center" style={{ color: "var(--ink-faint)" }}>None this week.</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
         </div>
 
           <p className="text-xs mb-3" style={{ color: "var(--ink-faint)" }}>
             Click a team or pillar to open it up. GP splits 80% to the closer and 50% to the lead gen where
             there is one, with the 30% overlap coming off as DC — so the Grand Total is what actually lands.
           </p>
+          {/* Forecasted deals by team. Three columns so the three selling
+              teams sit side by side; anything extra wraps underneath. */}
+          <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "0.75rem" }}>
+            {teamDeals.map((t) => (
+              <div key={t.team} className="rounded-xl overflow-hidden"
+                style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+                <div className="px-3 py-2.5" style={{ borderBottom: "1px solid var(--border)", background: "var(--surface-alt)" }}>
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="sw-display truncate" style={{ fontSize: 13, fontWeight: 600 }}>{t.team}</span>
+                    <span className="sw-mono shrink-0" style={{ fontSize: 14, fontWeight: 700, color: "var(--green)" }}>{fmtGBP(t.gp)}</span>
+                  </div>
+                  <div className="flex items-center gap-3 mt-0.5">
+                    <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                      {t.deals.length} deal{t.deals.length === 1 ? "" : "s"}
+                    </span>
+                    <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                      SOV <b className="sw-mono" style={{ color: "var(--ink-soft)" }}>{fmtGBP(t.sov)}</b>
+                    </span>
+                    {t.units > 0 && (
+                      <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                        {t.units} unit{t.units === 1 ? "" : "s"}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div style={{ maxHeight: 300, overflowY: "auto" }}>
+                  {t.deals.map((d) => (
+                    <div key={d.id} className="px-3 py-2" style={{ borderTop: "1px solid var(--border)" }}>
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="truncate" style={{ fontSize: 12.5, fontWeight: 600, minWidth: 0 }}>
+                          {d.business_name || "—"}
+                        </span>
+                        <span className="sw-mono shrink-0" style={{ fontSize: 12.5, fontWeight: 600, color: "var(--green)" }}>
+                          {fmtGBP(d.gp)}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                        <span className="rounded px-1.5 py-0.5" style={{ fontSize: 10, background: "var(--primary-soft)", color: "var(--primary)", fontWeight: 600 }}>
+                          {d.pillar || "—"}
+                        </span>
+                        <span className="text-xs truncate" style={{ color: "var(--ink-faint)", fontSize: 10.5 }}>
+                          {d.agent_name || "—"}{d.lead_gen_name ? ` · LG ${d.lead_gen_name}` : ""}
+                        </span>
+                        <span className="sw-mono ml-auto shrink-0" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>
+                          {fmtGBP(d.sov)}
+                        </span>
+                      </div>
+                      {(d.next_step || d.signpost_date) && (
+                        <div className="text-xs mt-1 truncate" style={{ color: "var(--ink-soft)", fontSize: 10.5 }}>
+                          {d.next_step || "Next step not set"}
+                          {d.signpost_date ? ` · ${fmtDate(d.signpost_date)}` : ""}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {t.deals.length === 0 && (
+                    <div className="px-3 py-6 text-center text-xs" style={{ color: "var(--ink-faint)" }}>Nothing forecast.</div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {teamDeals.length === 0 && (
+            <div className="rounded-xl py-10 text-center text-xs"
+              style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-faint)" }}>
+              No deals forecast for this week.
+            </div>
+          )}
+
         </>
       )}
 
@@ -9227,6 +9497,8 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   const [rankView, setRankView] = useState("ranked");        // ranked | throughput
   const [flowMode, setFlowMode] = useState("week");          // week (per day) | weeks (per week)
   const [flowFy, setFlowFy] = useState(() => String(fyYearOf()));
+  // 0 = this week, 1 = last week, and so on back
+  const [weekBack, setWeekBack] = useState(0);
   const [query, setQuery] = useState("");
   const [agentFilter, setAgentFilter] = useState("All");
   const [stateFilter, setStateFilter] = useState("All");
@@ -9501,6 +9773,22 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
     };
   }, [scopedForWork]);
 
+  const shownWeekStart = useMemo(() => {
+    const ws = weekStart();
+    return new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() - weekBack * 7);
+  }, [weekBack]);
+
+  const weekBackOptions = useMemo(() => Array.from({ length: 12 }, (_, i) => {
+    const ws = weekStart();
+    const d = new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() - i * 7);
+    const fri = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 4);
+    const fmt = (x) => x.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+    return {
+      value: i,
+      label: i === 0 ? "This week" : i === 1 ? "Last week" : `${fmt(d)} – ${fmt(fri)}`,
+    };
+  }), []);
+
   /* Throughput: what each admin agent RECEIVED versus what they PLACED.
      Received is dated off the NetSuite order date; placed is dated off the
      sheet's "Order placed" column. That column syncs as free text rather
@@ -9528,10 +9816,12 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
     const perDay = flowMode === "week";
     let cols = [];
     if (perDay) {
-      const ws = weekStart();
-      cols = Array.from({ length: 7 }, (_, i) => {
+      // Monday to Friday only — nobody places orders at the weekend, and two
+      // permanently empty columns just made the matrix harder to read.
+      const ws = shownWeekStart;
+      cols = Array.from({ length: 5 }, (_, i) => {
         const d = new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() + i);
-        return { key: `d${i}`, label: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i], date: d };
+        return { key: `d${i}`, label: ["Mon", "Tue", "Wed", "Thu", "Fri"][i], date: d };
       });
     } else {
       const w1 = fyWeekStart(y);
@@ -9544,9 +9834,12 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
     const colKeyFor = (d) => {
       if (!d) return null;
       if (perDay) {
-        const ws = weekStart();
+        const ws = shownWeekStart;
         const i = Math.floor((new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() - ws.getTime()) / 86400000);
-        return i >= 0 && i < 7 ? `d${i}` : null;
+        // Anything landing on Sat or Sun is rolled into the Friday, so a
+        // weekend-dated order isn't silently lost from the totals.
+        if (i === 5 || i === 6) return "d4";
+        return i >= 0 && i < 5 ? `d${i}` : null;
       }
       const fw = fyWeekOf(d);
       if (!fw || fw.fy !== y) return null;
@@ -9585,7 +9878,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
       };
     });
     return { cols, rows, colTotals, placedUnparsed, placedDated };
-  }, [unplaced, flowMode, flowFy]);
+  }, [unplaced, flowMode, flowFy, shownWeekStart]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -9917,7 +10210,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
               <div>
                 <div className="flex items-center gap-1.5 mb-2 flex-wrap">
                   <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 26 }}>
-                    {[["week", "This week"], ["weeks", "Per week"]].map(([k, lbl]) => (
+                    {[["week", "By day"], ["weeks", "Per week"]].map(([k, lbl]) => (
                       <button key={k} onClick={() => setFlowMode(k)}
                         className="sw-focus px-2 text-xs whitespace-nowrap" style={flowMode === k
                           ? { background: "var(--primary-soft)", color: "var(--primary)", fontWeight: 600, height: "100%" }
@@ -9926,6 +10219,13 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                       </button>
                     ))}
                   </div>
+                  {flowMode === "week" && (
+                    <select className="sw-input sw-focus" style={{ width: 128, height: 26, fontSize: 11.5 }}
+                      value={weekBack} onChange={(e) => setWeekBack(parseInt(e.target.value, 10))}
+                      title="Which week to show">
+                      {weekBackOptions.map((w) => <option key={w.value} value={w.value}>{w.label}</option>)}
+                    </select>
+                  )}
                   {flowMode === "weeks" && (
                     <select className="sw-input sw-focus" style={{ width: 96, height: 26, fontSize: 11.5 }}
                       value={flowFy} onChange={(e) => setFlowFy(e.target.value)}>
