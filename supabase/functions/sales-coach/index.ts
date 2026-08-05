@@ -237,7 +237,7 @@ RETURN ONLY JSON — no prose, no code fences:
 }`;
 }
 
-function summarySystem(rubric: string, method: string, stagesSummary: string, callRole: string) {
+function summarySystem(rubric: string, method: string, stagesSummary: string, callRole: string, feedbackGuidance?: string) {
   return `You are a sales coach reviewing a practice ${callRole === "lead_gen" ? "lead generation" : "closing"} call by a BT Local Business agent.
 
 Be specific, warm and genuinely useful. Quote what they actually said. Assume they are competent and looking to improve, not failing — most agents doing this are doing a reasonable job and need sharpening, not rescuing.
@@ -253,6 +253,10 @@ ${rubric ? `\nHOUSE RULES\n${rubric}` : ""}
 
 GRADE FAIRLY: C is a solid, ordinary call. B is good. A is genuinely excellent.
 D and E are for calls with real problems, not merely imperfect ones.
+${feedbackGuidance ? `
+HOUSE RULES FOR THIS FEEDBACK — these override the general guidance above
+${feedbackGuidance}
+` : ""}
 
 RETURN ONLY JSON — no prose, no code fences:
 {
@@ -275,7 +279,7 @@ Deno.serve(async (req) => {
     const body = await req.json();
     const {
       mode, scenario, history = [], persona, rubric, method,
-      stageIndex = 0, difficulty = "normal",
+      stageIndex = 0, difficulty = "normal", feedbackGuidance,
     } = body;
 
     // The agent no longer picks lead-gen vs closer. A scenario carries its
@@ -318,7 +322,7 @@ Deno.serve(async (req) => {
       const transcript = history
         .map((t: any) => `${t.role === "agent" ? "AGENT" : "CUSTOMER"}: ${t.text}`).join("\n");
       const raw = await askModel(
-        summarySystem(rubric, method, stagesSummary, callRole),
+        summarySystem(rubric, method, stagesSummary, callRole, feedbackGuidance),
         `Here is the full call. Review it.\n\n${transcript}`,
         SUMMARY_MODEL, 1600,
       );
