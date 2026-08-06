@@ -3194,6 +3194,50 @@ function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove }) 
 function LilacForm({ onSubmit, submitting }) {
   const { sellers } = useStaff();
   const [f, setF] = useState({ closerPct: "100%", leadGenPct: "0%" });
+
+  /* Pull a saved quote in by its reference. Everything the quote already
+     knows — customer, company, products, contract length — gets filled in
+     rather than retyped. Only empty fields are touched, so a partly filled
+     form isn't overwritten. */
+  const [quoteRef, setQuoteRef] = useState("");
+  const [quoteState, setQuoteState] = useState({ loading: false, error: "", found: null });
+
+  const pullQuote = useCallback(async () => {
+    const ref = quoteRef.trim();
+    if (!ref) return;
+    setQuoteState({ loading: true, error: "", found: null });
+    const { data, error } = await supabase.from("quotes").select("*")
+      .ilike("quote_ref", ref).order("created_at", { ascending: false }).limit(1);
+    if (error) {
+      setQuoteState({ loading: false, error: error.message, found: null });
+      return;
+    }
+    const q = data && data[0];
+    if (!q) {
+      setQuoteState({ loading: false, error: `No quote found for "${ref}".`, found: null });
+      return;
+    }
+
+    const items = Array.isArray(q.items) ? q.items : [];
+    // One line per product, with quantity and term where they're set
+    const detail = items.map((it) => {
+      const bits = [it.name];
+      if (num(it.qty) > 1) bits.push(`× ${num(it.qty)}`);
+      if (num(it.termMonths)) bits.push(`(${num(it.termMonths)} month term)`);
+      return bits.join(" ");
+    }).join("\n");
+
+    setF((p) => ({
+      ...p,
+      lEName: p.lEName || q.company_name || "",
+      tradingAs: p.tradingAs || q.company_name || "",
+      customerName: p.customerName || q.customer_name || "",
+      closerName: p.closerName || q.rep_name || "",
+      orderDetails: p.orderDetails || detail,
+      quoteRef: q.quote_ref,
+    }));
+    setQuoteState({ loading: false, error: "", found: q });
+  }, [quoteRef]);
   const [dealTypes, setDealTypes] = useState([]);
   const [srDealTypes, setSrDealTypes] = useState([]);
   const [arbNeeded, setArbNeeded] = useState(false);
@@ -3307,6 +3351,7 @@ function LilacForm({ onSubmit, submitting }) {
       document_number: null,
       campaign_source: "Lilac Box",
       description: f.orderDetails || "Submitted via New Submission portal.",
+      quote_ref: f.quoteRef || null,
       closer_name: f.closerName || null,
       lead_gen_name: f.leadGenName || null,
       closer_id: closerStaff?.user_id || null,
@@ -3318,6 +3363,58 @@ function LilacForm({ onSubmit, submitting }) {
 
   return (
     <form onSubmit={handleSubmit}>
+      <SectionCard title="From a quote" tone="primary">
+        <div style={{ gridColumn: "span 3" }}>
+          <div className="flex items-end gap-2 flex-wrap">
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <label className="sw-label">Quote reference</label>
+              <input className="sw-input sw-focus" value={quoteRef}
+                placeholder="e.g. OH-ACMELTD-060826"
+                onChange={(e) => setQuoteRef(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); pullQuote(); } }} />
+            </div>
+            <button type="button" onClick={pullQuote} disabled={!quoteRef.trim() || quoteState.loading}
+              className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold text-white"
+              style={{ background: quoteRef.trim() ? "var(--primary)" : "var(--ink-faint)", height: 38 }}>
+              {quoteState.loading ? "Looking..." : "Pull in quote"}
+            </button>
+          </div>
+
+          {quoteState.error && (
+            <div className="rounded-lg p-2 mt-2 text-xs" style={{ background: "var(--red-soft)", color: "var(--ink)" }}>
+              {quoteState.error}
+            </div>
+          )}
+
+          {quoteState.found && (
+            <div className="rounded-lg p-2.5 mt-2" style={{ background: "var(--green-soft)", border: "1px solid var(--green)" }}>
+              <div className="flex items-center gap-1.5 mb-1">
+                <CheckCircle2 size={13} style={{ color: "var(--green)" }} />
+                <span className="text-xs font-bold" style={{ color: "var(--green)" }}>
+                  {quoteState.found.quote_ref}
+                </span>
+                <span className="text-xs" style={{ color: "var(--ink-soft)" }}>
+                  {quoteState.found.company_name}
+                  {quoteState.found.rep_name ? ` · ${quoteState.found.rep_name}` : ""}
+                </span>
+                <span className="sw-mono text-xs ml-auto" style={{ fontWeight: 700 }}>
+                  {fmtGBP(quoteState.found.total)}
+                </span>
+              </div>
+              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                Filled in what was blank — anything you'd already typed was left alone.
+              </div>
+            </div>
+          )}
+
+          {!quoteState.found && !quoteState.error && (
+            <div className="text-xs mt-1.5" style={{ color: "var(--ink-faint)" }}>
+              Optional. Pulls the customer, company and products through from a quote you've already printed.
+            </div>
+          )}
+        </div>
+      </SectionCard>
+
       <SectionCard title="Core Details" tone="primary">
         <Field label="CUG" name="cug" value={f.cug} onChange={set} required />
         <Field label="LE Number" name="lENumber" value={f.lENumber} onChange={set} required />
@@ -6710,7 +6807,7 @@ function AddStaffForm({ onAdd, onCancel }) {
 
 /* Staff who aren't fully set up yet, and NetSuite names nothing matches.
    Both are silent problems — figures quietly land nowhere. */
-function AdminIssues({ staff, netsuite, leads, aliases, onAddAlias, onDeleteAlias, plans }) {
+function AdminIssues({ staff, netsuite, leads, aliases, onAddAlias, onDeleteAlias, onAddLeaver, plans }) {
   const [newAlias, setNewAlias] = useState("");
   const [newTarget, setNewTarget] = useState("");
   const [tab, setTab] = useState("staff");
@@ -6761,6 +6858,9 @@ function AdminIssues({ staff, netsuite, leads, aliases, onAddAlias, onDeleteAlia
   const unmatchedLeads = unmatchedBySource.leads;
 
   const sellers = (staff || []).filter((s) => s.sells !== false);
+  // Split so the picker doesn't mix people who've left in with the team
+  const current = useMemo(() => sellers.filter((s) => s.active !== false), [sellers]);   // eslint-disable-line
+  const formerStaff = useMemo(() => (staff || []).filter((s) => s.active === false), [staff]);
 
   return (
     <div className="rounded-2xl overflow-hidden mb-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
@@ -6846,14 +6946,35 @@ function AdminIssues({ staff, netsuite, leads, aliases, onAddAlias, onDeleteAlia
                   <div key={u.name} className="flex items-center gap-2 rounded-lg px-2 py-1.5" style={{ background: "var(--amber-soft)" }}>
                     <span className="text-xs flex-1 truncate" style={{ fontWeight: 600 }}>{u.name}</span>
                     <span className="text-xs shrink-0" style={{ color: "var(--ink-faint)" }}>{u.count} lead{u.count === 1 ? "" : "s"}</span>
-                    <select className="sw-input sw-focus shrink-0" style={{ width: 168, height: 28, fontSize: 12 }}
+                    <select className="sw-input sw-focus shrink-0" style={{ width: 196, height: 28, fontSize: 12 }}
                       defaultValue=""
                       onChange={async (e) => {
-                        if (!e.target.value) return;
-                        await onAddAlias(u.name, e.target.value);
+                        const v = e.target.value;
+                        if (!v) return;
+                        e.target.value = "";
+                        // Someone who left and was never on the staff list —
+                        // create them as an ex-employee so their historical
+                        // leads are attributed rather than sitting unassigned
+                        if (v === "__exemployee") {
+                          await onAddLeaver(u.name);
+                          return;
+                        }
+                        await onAddAlias(u.name, v);
                       }}>
                       <option value="">Assign to…</option>
-                      {sellers.map((s) => <option key={s.id} value={s.full_name}>{s.full_name}</option>)}
+                      {current.length > 0 && (
+                        <optgroup label="Current staff">
+                          {current.map((s) => <option key={s.id} value={s.full_name}>{s.full_name}</option>)}
+                        </optgroup>
+                      )}
+                      {formerStaff.length > 0 && (
+                        <optgroup label="Ex-employees">
+                          {formerStaff.map((s) => <option key={s.id} value={s.full_name}>{s.full_name}</option>)}
+                        </optgroup>
+                      )}
+                      <optgroup label="Not on the list">
+                        <option value="__exemployee">Add as ex-employee</option>
+                      </optgroup>
                     </select>
                   </div>
                 ))}
@@ -6907,7 +7028,7 @@ function AdminIssues({ staff, netsuite, leads, aliases, onAddAlias, onDeleteAlia
 }
 
 function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, onResetPassword, onSetActive, plans,
-                    netsuite, leads, aliases, onAddAlias, onDeleteAlias, planHistory, onAssignPlan, onDeleteAssignment,
+                    netsuite, leads, aliases, onAddAlias, onDeleteAlias, onAddLeaver, planHistory, onAssignPlan, onDeleteAssignment,
                     planTiers, planMetrics, planTablesMissing, planError,
                     onSavePlan, onAddPlan, onDeletePlan, onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric }) {
   const teamOptions = useMemo(() => Array.from(new Set(staff.map((s) => s.team).filter(Boolean))), [staff]);
@@ -6957,7 +7078,7 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
       </div>
 
       <AdminIssues staff={staff} netsuite={netsuite} leads={leads} aliases={aliases}
-        onAddAlias={onAddAlias} onDeleteAlias={onDeleteAlias} plans={plans} />
+        onAddAlias={onAddAlias} onDeleteAlias={onDeleteAlias} onAddLeaver={onAddLeaver} plans={plans} />
 
       {/* Two big columns: agents on the left, pay plans on the right — set
           up once, in one place, rather than hopping between pages. */}
@@ -13539,6 +13660,22 @@ export default function App() {
     loadAliases();
   }, [loadAliases]);
 
+  /* Someone who appears in the data but never had a staff record — usually
+     because they left before this app existed. Creating them inactive means
+     their historical figures attribute properly while they stay out of every
+     picker and ranking. */
+  const addLeaver = useCallback(async (fullName) => {
+    const name = String(fullName || "").trim();
+    if (!name) return;
+    const { error } = await supabase.from("staff").insert({
+      full_name: name, active: false, sells: true,
+    });
+    if (error) { setToast(`Couldn't add: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
+    setToast(`${name} added as an ex-employee`);
+    setTimeout(() => setToast(""), 3000);
+    loadStaff();
+  }, [loadStaff]);
+
   const deleteAlias = useCallback(async (id) => {
     const { error } = await supabase.from("staff_aliases").delete().eq("id", id);
     if (error) { setToast(`Couldn't delete: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
@@ -14091,7 +14228,7 @@ export default function App() {
         {tab === "quote" && <QuoteBuilderView profile={profile} staff={staff} />}
         {tab === "coach" && <SalesCoachView />}
         {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onResetPassword={resetPassword} onSetActive={setStaffActive} plans={payPlans}
-          netsuite={netsuiteResolved} leads={leadsForAdmin} aliases={aliases} onAddAlias={addAlias} onDeleteAlias={deleteAlias}
+          netsuite={netsuiteResolved} leads={leadsForAdmin} aliases={aliases} onAddAlias={addAlias} onDeleteAlias={deleteAlias} onAddLeaver={addLeaver}
           planHistory={planHistory} onAssignPlan={assignPlan} onDeleteAssignment={deleteAssignment}
           planTiers={planTiers} planMetrics={planMetrics} planTablesMissing={planTablesMissing} planError={planError}
           onSavePlan={savePayPlan} onAddPlan={addPayPlan} onDeletePlan={deletePayPlan}
