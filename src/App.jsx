@@ -10415,13 +10415,15 @@ function LeadsView({ staff, profile }) {
     <div>
       <div className="flex items-center gap-3 mb-3 flex-wrap">
         <Phone size={18} style={{ color: "var(--primary)" }} />
-        <h2 className="sw-display text-lg font-bold">Creator Conversations</h2>
+        <h2 className="sw-display text-lg font-bold">Leads</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Creator conversations</span>
         <select className="sw-input sw-focus" style={{ width: 160, height: 32, fontSize: 12.5 }}
           value={month} onChange={(e) => setMonth(e.target.value)}>
           {monthOptions.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
         </select>
-        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
-          Day {days.done} of {days.total} · {Math.max(0, days.total - days.done)} remaining
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}
+          title="Leads count in the month they were created">
+          by created date · day {days.done} of {days.total}, {Math.max(0, days.total - days.done)} left
         </span>
 
         <div className="ml-auto flex items-center gap-3 flex-wrap">
@@ -13000,6 +13002,8 @@ function NavLink({ icon: Icon, label, active, badge, onClick, href, tint }) {
   const TINTS = {
     purple: { bg: "var(--primary-soft)", fg: "var(--primary)" },
     green: { bg: "var(--green-soft)", fg: "var(--green)" },
+    gold: { bg: "var(--gold-soft)", fg: "var(--gold)" },
+    blue: { bg: "var(--blue-soft)", fg: "var(--blue)" },
   };
   const t = tint ? TINTS[tint] : null;
   const style = {
@@ -13099,7 +13103,6 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
     { label: "Day by Day", icon: CalendarDays, active: tab === "daybyday", onClick: go("daybyday") },
     { label: "Sales Breakdown", icon: BarChart3, active: tab === "breakdown", onClick: go("breakdown") },
     { label: "Sales Distribution", icon: Users, active: tab === "distribution", onClick: go("distribution") },
-    { label: "Creator Conversations", icon: Phone, active: tab === "leads", onClick: go("leads") },
     { label: "TV Mode", icon: Radio, href: "#tv", onClick: () => setTimeout(() => window.location.reload(), 0) },
   ];
   const submissions = [
@@ -13113,7 +13116,7 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
     { label: "Change Password", icon: KeyRound, onClick: () => { onChangePassword(); setMobileOpen(false); } },
   ];
 
-  const dashActive = ["tops", "daybyday", "breakdown", "distribution", "leads"].includes(tab);
+  const dashActive = ["tops", "daybyday", "breakdown", "distribution"].includes(tab);
   const subActive = ["new", "landscapes", "quote"].includes(tab);
   const setActive = ["admin", "statuses"].includes(tab);
 
@@ -13135,6 +13138,7 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
             <NavLink icon={Inbox} label="Sales Delivery" active={tab === "delivery"} onClick={go("delivery")} tint="purple" />
           )}
           <NavLink icon={TrendingUp} label="Forecasting" active={tab === "forecast"} onClick={go("forecast")} tint="green" />
+          <NavLink icon={Phone} label="Leads" active={tab === "leads"} onClick={go("leads")} tint="blue" />
           <NavMenu icon={LayoutDashboard} label="Dashboards" childActive={dashActive} items={dashboards} />
           <NavMenu icon={Inbox} label="Submission Boxes" childActive={subActive} items={submissions} />
           <NavLink icon={Headphones} label="Sales Coach" active={tab === "coach"} onClick={go("coach")} />
@@ -13167,6 +13171,7 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
               { label: "Claimed", icon: ClipboardList, active: tab === "dashboard", onClick: go("dashboard") },
               ...(canSeeDelivery ? [{ label: "Sales Delivery", icon: Inbox, active: tab === "delivery", onClick: go("delivery") }] : []),
               { label: "Forecasting", icon: TrendingUp, active: tab === "forecast", onClick: go("forecast") },
+              { label: "Leads", icon: Phone, active: tab === "leads", onClick: go("leads") },
             ] },
             { heading: "Dashboards", items: dashboards },
             { heading: "Submission Boxes", items: submissions },
