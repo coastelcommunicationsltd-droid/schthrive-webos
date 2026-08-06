@@ -9767,7 +9767,7 @@ function QuotationDoc({ quoteNumber, dateStr, customerName, companyName, repName
           <table style={{ width: "100%", marginBottom: 4, borderCollapse: "separate", borderSpacing: 0 }}>
             <thead>
               <tr>
-                {[["Item", "left", true, false], ["Qty", "right", false, false], ["Unit Price", "right", false, false], ["Total", "right", false, true]].map(([label, align, tl, tr], i) => (
+                {[["Item", "left", true, false], ["Qty", "right", false, false], ["Unit Price", "right", false, false], ["Term", "right", false, false], ["Total", "right", false, true]].map(([label, align, tl, tr], i) => (
                   <th key={i} style={{
                     background: PURPLE_DARK, color: "#fff", textAlign: align, padding: "11px 14px",
                     fontSize: 10.5, letterSpacing: "0.6px", textTransform: "uppercase",
@@ -9785,13 +9785,17 @@ function QuotationDoc({ quoteNumber, dateStr, customerName, companyName, repName
                   </td>
                   <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: INK }}>{it.qty}</td>
                   <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: INK }}>{fmtGBP(num(it.unitPrice))}</td>
+                  {/* Term is shown for the customer's benefit, never totalled */}
+                  <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: SLATE, fontSize: 12.5, whiteSpace: "nowrap" }}>
+                    {num(it.termMonths) ? `${num(it.termMonths)} months` : "—"}
+                  </td>
                   <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", fontWeight: 700, color: PURPLE_DARK }}>
                     {fmtGBP(num(it.qty) * num(it.unitPrice))}
                   </td>
                 </tr>
               ))}
               {(!items || !items.length) && (
-                <tr><td colSpan={4} style={{ textAlign: "center", color: SLATE, padding: 30, borderBottom: `1px solid ${BORDER}` }}>No items added yet</td></tr>
+                <tr><td colSpan={5} style={{ textAlign: "center", color: SLATE, padding: 30, borderBottom: `1px solid ${BORDER}` }}>No items added yet</td></tr>
               )}
             </tbody>
           </table>
@@ -9838,7 +9842,10 @@ function QuotationDoc({ quoteNumber, dateStr, customerName, companyName, repName
           {items && items.length ? (
             <ul style={{ paddingLeft: 20, margin: 0 }}>
               {items.map((it, i) => (
-                <li key={i} style={{ marginBottom: 4 }}>{it.name}{num(it.qty) > 1 ? ` × ${it.qty}` : ""}</li>
+                <li key={i} style={{ marginBottom: 4 }}>
+                  {it.name}{num(it.qty) > 1 ? ` × ${it.qty}` : ""}
+                  {num(it.termMonths) ? <span style={{ color: SLATE }}> — {num(it.termMonths)} month term</span> : null}
+                </li>
               ))}
             </ul>
           ) : <div style={{ color: SLATE, fontSize: 12.5 }}>No items on this quote.</div>}
@@ -9893,31 +9900,23 @@ function QuoteBuilderView({ profile, staff }) {
     [staff, profile]
   );
 
-  const [q, setQ] = useState({
-    customerName: "",
-    companyName: "",
-    monthly: "",
-    term: "60",
-    directPhone: "",
-    services: "Cloud Voice Package – 5 Users & 5 × Yealink W73P Handsets\nCloud Voice Unlimited Calling Plan – Unlimited calls to UK local, national & UK mobiles\nSOGEA Broadband – XMbps Download / XMbps Upload – Minimum Guaranteed Access Line Speed (MGALS): XMbps\nBusiness Antivirus, Detect & Respond licences – Covers up to X devices",
-    senderName: "",
-    senderTitle: "Sales Advisor",
-  });
-  const [copied, setCopied] = useState("");
-
-  /* Two documents, one page. "confirmation" is the post-sale letter this
-     app already had; "quotation" is the priced version with line items. */
-  const [mode, setMode] = useState("confirmation");
+  /* Everything the quotation needs. Prefilled from whoever's signed in. */
   const [quote, setQuote] = useState({
     customer: "", company: "", repName: "", repPhone: "",
     notes: "Prices exclude VAT. Subject to standard BT Local Business terms and conditions.",
   });
   const [items, setItems] = useState([]);
+  const [savedRef, setSavedRef] = useState("");
+
+  useEffect(() => {
+    if (me && !quote.repName) setQuote((p) => ({ ...p, repName: me.full_name || "" }));
+  }, [me]);   // eslint-disable-line
 
   const addItem = (cat) => setItems((p) => [...p, {
     id: Date.now() + Math.random(),
     name: cat ? cat.name : "", category: cat ? cat.category : "",
     unit: cat ? cat.unit : "", qty: 1, unitPrice: 0,
+    termMonths: 60,   // most common; shown on the quote, never totalled
   }]);
   const updateItem = (id, field, value) => setItems((p) => p.map((it) => (it.id === id ? { ...it, [field]: value } : it)));
   const removeItem = (id) => setItems((p) => p.filter((it) => it.id !== id));
@@ -9926,34 +9925,54 @@ function QuoteBuilderView({ profile, staff }) {
   const vat = subtotal * 0.2;
   const total = subtotal + vat;
   const quoteDate = useMemo(() => new Date().toISOString(), []);
-  const quoteNumber = "Q-" + quoteDate.slice(0, 10).replace(/-/g, "");
 
-  // Prefill from whoever's signed in
-  useEffect(() => {
-    if (me && !q.senderName) setQ((p) => ({ ...p, senderName: me.full_name || "" }));
-    if (me && !quote.repName) setQuote((p) => ({ ...p, repName: me.full_name || "" }));
-  }, [me]);   // eslint-disable-line
+  /* Reference is built to be recognisable rather than sequential:
+     rep initials, a squashed company name, and the date. */
+  const quoteNumber = useMemo(() => {
+    const initials = String(quote.repName || "")
+      .split(/\s+/).filter(Boolean).map((w) => w[0]).join("").toUpperCase().slice(0, 3) || "XX";
+    const co = String(quote.company || "")
+      .toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10) || "CUSTOMER";
+    const d = new Date(quoteDate);
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yy = String(d.getFullYear()).slice(2);
+    return `${initials}-${co}-${dd}${mm}${yy}`;
+  }, [quote.repName, quote.company, quoteDate]);
 
-  const set = (k) => (e) => setQ((p) => ({ ...p, [k]: e.target.value }));
-  const serviceLines = q.services.split("\n").map((s) => s.trim()).filter(Boolean);
-
-  const printQuote = () => {
-    const node = document.getElementById("sw-quote-doc");
-    if (!node) return;
-    const w = window.open("", "_blank");
-    if (!w) return;
-    w.document.write(`<!doctype html><html><head><title>Order Confirmation — ${q.companyName || "Customer"}</title>
-      <meta charset="utf-8" />
-      <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
-        body { margin:0; font-family:'Inter',Arial,sans-serif; }
-        @page { margin: 12mm; }
-      </style></head><body>${node.outerHTML}</body></html>`);
-    w.document.close();
-    setTimeout(() => { w.focus(); w.print(); }, 400);
-  };
+  /* Printing saves the quote too. That's the point at which it becomes a
+     real document the customer has seen, and it means the agent can pull
+     it straight through when they come to submit the order rather than
+     retyping the customer, company and products. */
+  const saveQuote = useCallback(async () => {
+    if (!items.length) return;
+    try {
+      const { data: sess } = await supabase.auth.getSession();
+      const { error } = await supabase.from("quotes").insert({
+        quote_ref: quoteNumber,
+        created_by: sess?.session?.user?.id || null,
+        rep_name: quote.repName || null,
+        rep_phone: quote.repPhone || null,
+        customer_name: quote.customer || null,
+        company_name: quote.company || null,
+        items: items.map((it) => ({
+          name: it.name, category: it.category, unit: it.unit,
+          qty: num(it.qty), unitPrice: num(it.unitPrice), termMonths: num(it.termMonths) || null,
+        })),
+        subtotal, vat, total,
+        notes: quote.notes || null,
+      });
+      if (!error) {
+        setSavedRef(quoteNumber);
+        setTimeout(() => setSavedRef(""), 4000);
+      }
+    } catch {
+      // Never block the print on a failed save
+    }
+  }, [items, quoteNumber, quote, subtotal, vat, total]);
 
   const printQuotation = () => {
+    saveQuote();
     const node = document.getElementById("sw-quotation-doc");
     if (!node) return;
     const w = window.open("", "_blank");
@@ -9970,66 +9989,30 @@ function QuoteBuilderView({ profile, staff }) {
     setTimeout(() => { w.focus(); w.print(); }, 400);
   };
 
-  const copyText = () => {
-    const node = document.getElementById("sw-quote-doc");
-    if (!node) return;
-    navigator.clipboard?.writeText(node.innerText || "");
-    setCopied("Copied — paste straight into an email");
-    setTimeout(() => setCopied(""), 2500);
-  };
-
-  const H = ({ children }) => (
-    <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", margin: "22px 0 8px", letterSpacing: "-0.01em" }}>{children}</div>
-  );
-  const P = ({ children, dim }) => (
-    <p style={{ fontSize: 13, lineHeight: 1.6, color: dim ? "rgba(255,255,255,0.72)" : "rgba(255,255,255,0.92)", margin: "0 0 10px" }}>{children}</p>
-  );
-  const Bullet = ({ children }) => (
-    <li style={{ fontSize: 13, lineHeight: 1.6, color: "rgba(255,255,255,0.92)", marginBottom: 4 }}>{children}</li>
-  );
-
   return (
     <div>
       <div className="flex items-center gap-3 mb-4 flex-wrap">
         <FileText size={18} style={{ color: "var(--primary)" }} />
         <h2 className="sw-display text-lg font-bold">Quote Builder</h2>
-        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
-          {mode === "quotation" ? "Priced quotation to send before the sale" : "Order confirmation to send after the sale"}
-        </span>
-
-        <div className="flex items-center rounded-lg overflow-hidden ml-2" style={{ border: "1px solid var(--border)", height: 34 }}>
-          {[["confirmation", "Order confirmation"], ["quotation", "Priced quotation"]].map(([k, lbl]) => (
-            <button key={k} onClick={() => setMode(k)}
-              className="sw-focus px-3 text-xs whitespace-nowrap"
-              style={mode === k
-                ? { background: "var(--primary)", color: "#fff", fontWeight: 600, height: "100%" }
-                : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
-              {lbl}
-            </button>
-          ))}
-        </div>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Priced quotation for the customer</span>
 
         <div className="ml-auto flex items-center gap-2">
-          {copied && <span className="text-xs font-semibold" style={{ color: "var(--green)" }}>{copied}</span>}
-          {mode === "confirmation" ? (
-            <>
-              <button onClick={copyText} className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold"
-                style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>Copy text</button>
-              <button onClick={printQuote} className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold text-white"
-                style={{ background: "var(--primary)" }}>Print / Save PDF</button>
-            </>
-          ) : (
-            <button onClick={printQuotation} disabled={!items.length}
-              className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold text-white"
-              style={{ background: items.length ? "var(--primary)" : "var(--ink-faint)" }}>
-              Print / Save PDF (2 pages)
-            </button>
+          {savedRef && (
+            <span className="text-xs font-semibold" style={{ color: "var(--green)" }}>
+              Saved as {savedRef}
+            </span>
           )}
+          <button onClick={printQuotation} disabled={!items.length}
+            className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold text-white"
+            title="Prints both pages and saves the quote so it can be picked when the order is submitted"
+            style={{ background: items.length ? "var(--primary)" : "var(--ink-faint)" }}>
+            Print / Save PDF (2 pages)
+          </button>
         </div>
       </div>
 
       {/* PRICED QUOTATION */}
-      {mode === "quotation" && (
+      {(
         <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(280px, 360px) minmax(0, 1fr)", gap: "1rem", alignItems: "start" }}>
 
           <div className="rounded-xl p-4 sw-sticky-col" style={{ background: "var(--surface)", border: "1px solid var(--border)", position: "sticky", top: 66, maxHeight: "calc(100vh - 84px)", overflowY: "auto" }}>
@@ -10077,13 +10060,18 @@ function QuoteBuilderView({ profile, staff }) {
             </div>
 
             {items.map((it) => (
-              <div key={it.id} style={{ display: "grid", gridTemplateColumns: "1fr 52px 74px 22px", gap: 6, marginBottom: 6, alignItems: "center" }}>
+              <div key={it.id} style={{ display: "grid", gridTemplateColumns: "1fr 46px 66px 62px 22px", gap: 5, marginBottom: 6, alignItems: "center" }}>
                 <input className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }} value={it.name} placeholder="Product name"
                   onChange={(e) => updateItem(it.id, "name", e.target.value)} />
-                <input className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }} type="number" min="1" value={it.qty}
+                <input className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }} type="number" min="1" value={it.qty} title="Quantity"
                   onChange={(e) => updateItem(it.id, "qty", e.target.value)} />
-                <input className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }} type="number" value={it.unitPrice} placeholder="Unit £"
+                <input className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }} type="number" value={it.unitPrice} placeholder="Unit £" title="Unit price"
                   onChange={(e) => updateItem(it.id, "unitPrice", e.target.value)} />
+                <select className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }} value={it.termMonths || ""} title="Contract length"
+                  onChange={(e) => updateItem(it.id, "termMonths", e.target.value)}>
+                  {[12, 24, 36, 60, 84].map((m) => <option key={m} value={m}>{m}m</option>)}
+                  <option value="">—</option>
+                </select>
                 <button onClick={() => removeItem(it.id)} className="sw-focus" style={{ color: "var(--red)", fontSize: 14 }}>✕</button>
               </div>
             ))}
@@ -10118,130 +10106,6 @@ function QuoteBuilderView({ profile, staff }) {
         </div>
       )}
 
-      {mode === "confirmation" && (
-      <>
-
-      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(260px, 320px) minmax(0, 1fr)", gap: "1rem", alignItems: "start" }}>
-
-        {/* Inputs */}
-        <div className="rounded-xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="sw-display text-sm mb-3" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>DETAILS</div>
-
-          <label className="sw-label">Customer contact name</label>
-          <input className="sw-input sw-focus mb-2" value={q.customerName} onChange={set("customerName")} placeholder="e.g. Sarah" />
-
-          <label className="sw-label">Company name</label>
-          <input className="sw-input sw-focus mb-2" value={q.companyName} onChange={set("companyName")} />
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
-            <div>
-              <label className="sw-label">£ per month</label>
-              <input className="sw-input sw-focus mb-2" value={q.monthly} onChange={set("monthly")} placeholder="249" />
-            </div>
-            <div>
-              <label className="sw-label">Term (months)</label>
-              <input className="sw-input sw-focus mb-2" value={q.term} onChange={set("term")} />
-            </div>
-          </div>
-
-          <label className="sw-label">Services — one per line</label>
-          <textarea className="sw-input sw-focus mb-2" rows={7} value={q.services} onChange={set("services")} />
-
-          <div className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
-            <div className="text-xs font-semibold uppercase mb-2" style={{ color: "var(--ink-soft)" }}>Your details</div>
-            <label className="sw-label">Name</label>
-            <input className="sw-input sw-focus mb-2" value={q.senderName} onChange={set("senderName")} />
-            <label className="sw-label">Job title</label>
-            <input className="sw-input sw-focus mb-2" value={q.senderTitle} onChange={set("senderTitle")} />
-            <label className="sw-label">Direct telephone</label>
-            <input className="sw-input sw-focus" value={q.directPhone} onChange={set("directPhone")} placeholder="01752 XXXXXX" />
-          </div>
-        </div>
-
-        {/* The document itself */}
-        <div id="sw-quote-doc" style={{ background: "#4C1D8F", borderRadius: 16, padding: "34px 38px", color: "#fff" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 26 }}>
-            <div>
-              <div style={{ fontSize: 21, fontWeight: 700, letterSpacing: "-0.02em" }}>Order Confirmation</div>
-              <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.7)", marginTop: 2 }}>
-                What happens next{q.companyName ? ` — ${q.companyName}` : ""}
-              </div>
-            </div>
-            <div style={{ background: "#fff", borderRadius: 8, padding: "8px 12px" }}>
-              <img src="/logo.jpg" alt="BT Local Business — Coastel Communications" style={{ height: 34, display: "block" }} />
-            </div>
-          </div>
-
-          <P>Dear {q.customerName || "Customer Name"},</P>
-          <P>Firstly, thank you for choosing to place your order with me and BT Local Business. I truly appreciate your trust in us and look forward to supporting you throughout your installation and beyond.</P>
-          <P>Below is a clear summary of your agreed package, along with what you can expect over the coming weeks. Please keep this email for reference.</P>
-          <P>If at any stage you have questions or need clarification, you can contact me directly on {q.directPhone || "01752 XXXXXX"}.</P>
-
-          <H>Your Agreed Package</H>
-          <div style={{ background: "rgba(255,255,255,0.10)", borderRadius: 10, padding: "14px 18px", marginBottom: 12 }}>
-            <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.04em", color: "rgba(255,255,255,0.65)", marginBottom: 6 }}>Contract &amp; charges</div>
-            <div style={{ fontSize: 22, fontWeight: 700 }}>£{q.monthly || "X"} <span style={{ fontSize: 13, fontWeight: 400, color: "rgba(255,255,255,0.75)" }}>per month (excl. VAT)</span></div>
-            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.8)", marginTop: 2 }}>{q.term || "60"} month agreement</div>
-          </div>
-
-          <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.04em", color: "rgba(255,255,255,0.65)", marginBottom: 6 }}>Services included</div>
-          <ul style={{ margin: "0 0 14px", paddingLeft: 18 }}>
-            {serviceLines.map((s, i) => <Bullet key={i}>{s}</Bullet>)}
-          </ul>
-
-          <P>You will shortly receive a series of automated emails confirming:</P>
-          <ul style={{ margin: "0 0 10px", paddingLeft: 18 }}>
-            <Bullet>The full product breakdown</Bullet>
-            <Bullet>Your official order reference number(s)</Bullet>
-            <Bullet>Provisional installation / activation dates</Bullet>
-          </ul>
-          <P dim>Please review these carefully and let me know if anything appears incorrect.</P>
-
-          <H>Estimated Timescales</H>
-          <P dim>Whilst we will always aim to complete your order as efficiently as possible, the following are standard estimated lead times:</P>
-          <div style={{ background: "rgba(255,255,255,0.08)", borderRadius: 10, overflow: "hidden", marginBottom: 10 }}>
-            {LEAD_TIMES.map(([svc, time], i) => (
-              <div key={svc} style={{ display: "flex", justifyContent: "space-between", padding: "7px 14px", fontSize: 12.5, background: i % 2 ? "rgba(255,255,255,0.05)" : "transparent" }}>
-                <span>{svc}</span><span style={{ color: "rgba(255,255,255,0.78)" }}>{time}</span>
-              </div>
-            ))}
-          </div>
-          <P dim>These timescales may vary depending on survey requirements and engineering availability, and are all subject to survey.</P>
-
-          <H>What Happens Next</H>
-          <P><b>1. Sales Delivery contact</b> — you may receive a call or email from our Sales Delivery Team to confirm order details, arrange any required engineer visit, and validate installation information. If you spot any discrepancy, tell me or the Sales Delivery agent immediately so we can resolve it before the order progresses.</P>
-          <P><b>2. Credit &amp; validation</b> — your order passes through our Credit Referral Department for validation.</P>
-          <P><b>3. Aftersales &amp; installation</b> — if your package includes broadband, our Aftersales Team will confirm installation dates and engineer time slots by email. If Openreach attendance is required, you'll receive the appointment window.</P>
-          <P><b>4. Cloud setup (if applicable)</b> — for Cloud Voice, Cloud Works or Digital Voice you'll receive a CRF to complete and return, and an invitation to book a Welcome Call with our Cloud Onboarding Team. The order won't progress until both are done.</P>
-          <P><b>5. Order completion</b> — once installation is complete a new account number is generated (beginning WW, WM, ST, GP or VP). Each product may generate its own number.</P>
-
-          <H>Important Information</H>
-          <P><b>Subject to survey.</b> Any installation or activation date is subject to survey and may change following engineering checks. You'll be notified by email, text or phone if it does.</P>
-          <P><b>Minimum Guaranteed Access Line Speed.</b> If, after a 30-day stabilisation period, your service consistently falls below the stated threshold and cannot be resolved, you may have the option to leave without Early Termination Charges by following our Faults Process.</P>
-
-          <H>Ongoing Support</H>
-          <P>Thank you again for your business and for taking the time to work through your requirements with me.</P>
-          <P>I'm available Monday to Friday, 9:00am–5:00pm. I'm typically unavailable between 11:30am and 3:00pm due to customer appointments, however voicemails and emails will be answered the same working day wherever possible, or by 12:00pm the next working day at the latest.</P>
-          <P>I look forward to seeing your services go live and supporting your business moving forward.</P>
-
-          <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.25)" }}>
-            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.8)" }}>Kind regards,</div>
-            <div style={{ fontSize: 16, fontWeight: 700, marginTop: 8 }}>{q.senderName || "Your name"}</div>
-            <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.78)" }}>{q.senderTitle}</div>
-            <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.78)" }}>BT Local Business (Devon, Cornwall, Somerset and Dorset)</div>
-            {q.directPhone && <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.78)", marginTop: 6 }}>Direct: {q.directPhone}</div>}
-            <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.6)", marginTop: 6 }}>
-              Plymouth 01752 777880 · Exeter 01392 825990 · Taunton 01823 490000 · Bournemouth 01202 868869
-            </div>
-            <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.5)", marginTop: 12, lineHeight: 1.5 }}>
-              Prices are indicative and will be confirmed when the order is accepted by BT. They may be subject to survey.
-              All products and services come with our standard terms and conditions, available online.
-            </div>
-          </div>
-        </div>
-      </div>
-      </>
-      )}
     </div>
   );
 }
@@ -10312,7 +10176,7 @@ function LeadsView({ staff, profile }) {
 
   // Rules grouped into the column blocks the table shows
   const groups = useMemo(() => {
-    const order = ["Cloud", "BT Net", "Mobile", "Broadband", "Security", "Appt"];
+    const order = ["Cloud", "DV4B", "BT Net", "Mobile", "Broadband", "Security", "Appt"];
     const byGroup = {};
     (rules || []).filter((r) => r.active !== false).forEach((r) => {
       if (!byGroup[r.product_group]) byGroup[r.product_group] = [];
