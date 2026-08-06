@@ -10214,6 +10214,332 @@ function QuoteBuilderView({ profile, staff }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  LEADS — creator conversations, scored from the Leads sheet             */
+/* ---------------------------------------------------------------------- */
+
+/* Column A packs the whole lead into one string:
+     "Security 3+  Acq <> Cloud Acq <> Broadband"
+      ^modifier ^mod  ^type      ^product
+   A row scores every rule it matches, so an Acq Cloud at 3+ credits the
+   Cloud rule AND the Acq Cloud 3+ rule — two conversations, which is how
+   the sheet has always worked. The rules themselves live in the database
+   so they can be changed without a deploy. */
+function scoreLead(productRaw, rules) {
+  const hay = String(productRaw || "").toLowerCase();
+  const hits = [];
+  (rules || []).forEach((r) => {
+    if (r.active === false) return;
+    const all = (r.match_all || []).every((t) => hay.includes(String(t).toLowerCase()));
+    if (!all) return;
+    const none = (r.match_none || []).some((t) => hay.includes(String(t).toLowerCase()));
+    if (none) return;
+    hits.push(r);
+  });
+  return hits;
+}
+
+function LeadsView({ staff, profile }) {
+  const [leads, setLeads] = useState([]);
+  const [rules, setRules] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [month, setMonth] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [showRules, setShowRules] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const [lr, rr] = await Promise.all([
+      supabase.from("leads").select("*").limit(20000),
+      supabase.from("lead_rules").select("*").order("sort_order"),
+    ]);
+    setLeads(lr.data || []);
+    setRules(rr.data || []);
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const monthOptions = useMemo(() => {
+    const out = [];
+    const now = new Date();
+    for (let i = 0; i < 14; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      out.push({
+        key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
+        label: d.toLocaleDateString("en-GB", { month: "long", year: "numeric" }),
+      });
+    }
+    return out;
+  }, []);
+
+  // Rules grouped into the column blocks the table shows
+  const groups = useMemo(() => {
+    const order = ["Cloud", "BT Net", "Mobile", "Broadband", "Security", "Appt"];
+    const byGroup = {};
+    (rules || []).filter((r) => r.active !== false).forEach((r) => {
+      if (!byGroup[r.product_group]) byGroup[r.product_group] = [];
+      byGroup[r.product_group].push(r);
+    });
+    return order.filter((g) => byGroup[g]).map((g) => ({
+      key: g,
+      label: g === "Appt" ? "Appts" : g,
+      rules: byGroup[g].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)),
+    }));
+  }, [rules]);
+
+  /* Score every lead in the month. "Unsent" in Lead Status voids the row
+     entirely, however many rules it would otherwise have matched. */
+  const scored = useMemo(() => {
+    const [y, m] = month.split("-").map(Number);
+    const from = new Date(y, m - 1, 1);
+    const to = new Date(y, m, 1);
+
+    return (leads || []).filter((l) => {
+      if (/unsent/i.test(String(l.sent_status || ""))) return false;
+      const d = l.lead_date ? new Date(l.lead_date) : null;
+      if (!d || d < from || d >= to) return false;
+      return true;
+    }).map((l) => ({ ...l, hits: scoreLead(l.product_raw, rules) }))
+      .filter((l) => l.hits.length > 0);
+  }, [leads, rules, month]);
+
+  // Which team each creator belongs to, resolved from the staff list
+  const teamOf = useCallback((name) => {
+    const s = (staff || []).find((x) => nameKey(x.full_name) === nameKey(name)
+      || (x.alt_name && nameKey(x.alt_name) === nameKey(name)));
+    return s?.team || null;
+  }, [staff]);
+
+  const blankRow = useCallback((name) => {
+    const o = { name, team: teamOf(name), total: 0, accounts: new Set(), byRule: {}, byGroup: {} };
+    (rules || []).forEach((r) => { o.byRule[r.key] = 0; });
+    groups.forEach((g) => { o.byGroup[g.key] = 0; });
+    return o;
+  }, [rules, groups, teamOf]);
+
+  const byAgent = useMemo(() => {
+    const m = {};
+    scored.forEach((l) => {
+      const name = l.creator || "Unassigned";
+      if (!m[name]) m[name] = blankRow(name);
+      const row = m[name];
+      l.hits.forEach((r) => {
+        const v = num(r.value) || 1;
+        row.byRule[r.key] = (row.byRule[r.key] || 0) + v;
+        row.byGroup[r.product_group] = (row.byGroup[r.product_group] || 0) + v;
+        row.total += v;
+      });
+      if (l.company_name) row.accounts.add(l.company_name);
+    });
+    return Object.values(m).sort((a, b) => b.total - a.total);
+  }, [scored, blankRow]);
+
+  const byTeam = useMemo(() => {
+    const m = {};
+    byAgent.forEach((a) => {
+      const t = a.team || "Unassigned";
+      if (!m[t]) m[t] = { ...blankRow(t), name: t, agents: [] };
+      const row = m[t];
+      row.agents.push(a);
+      row.total += a.total;
+      Object.keys(a.byRule).forEach((k) => { row.byRule[k] = (row.byRule[k] || 0) + a.byRule[k]; });
+      Object.keys(a.byGroup).forEach((k) => { row.byGroup[k] = (row.byGroup[k] || 0) + a.byGroup[k]; });
+      a.accounts.forEach((c) => row.accounts.add(c));
+    });
+    return SELLING_TEAMS.map((t) => m[t]).filter(Boolean)
+      .concat(Object.keys(m).filter((t) => !SELLING_TEAMS.includes(t)).map((t) => m[t]));
+  }, [byAgent, blankRow]);
+
+  /* Banding is on conversations per working day so far this month, not on
+     the raw total — someone who started mid-month isn't behind. */
+  const days = useMemo(() => {
+    const [y, m] = month.split("-").map(Number);
+    const ref = new Date(y, m - 1, 15);
+    const now = new Date();
+    const isThisMonth = now.getFullYear() === y && now.getMonth() === m - 1;
+    return {
+      total: workdaysInMonth(ref),
+      done: isThisMonth ? workdaysElapsedInMonth(now) : workdaysInMonth(ref),
+    };
+  }, [month]);
+
+  const bandOf = (total) => {
+    if (!days.done) return null;
+    const perDay = total / days.done;
+    if (perDay < 2) return "red";
+    if (perDay < 4) return "amber";
+    return null;
+  };
+  const bandBg = { red: "rgba(214,69,65,0.13)", amber: "rgba(184,134,11,0.15)" };
+
+  const grand = useMemo(() => {
+    const o = blankRow("All teams");
+    byTeam.forEach((t) => {
+      o.total += t.total;
+      Object.keys(t.byRule).forEach((k) => { o.byRule[k] = (o.byRule[k] || 0) + t.byRule[k]; });
+      Object.keys(t.byGroup).forEach((k) => { o.byGroup[k] = (o.byGroup[k] || 0) + t.byGroup[k]; });
+      t.accounts.forEach((c) => o.accounts.add(c));
+    });
+    return o;
+  }, [byTeam, blankRow]);
+
+  const colCount = 1 + groups.reduce((n, g) => n + 1 + g.rules.length, 0) + 2;
+
+  const Cell = ({ v, bold, tone, faint }) => (
+    <td className="sw-mono" style={{
+      padding: "4px 6px", textAlign: "center", fontSize: 12.5,
+      fontWeight: bold ? 700 : 500,
+      color: v ? (tone || "var(--ink)") : "var(--ink-faint)",
+      borderLeft: faint ? "none" : "1px solid var(--border)",
+    }}>{v || "·"}</td>
+  );
+
+  const Row = ({ r, bold, indent, band }) => (
+    <tr style={{ borderTop: "1px solid var(--border)", background: band ? bandBg[band] : "transparent" }}>
+      <td style={{ padding: "4px 8px", paddingLeft: indent ? 20 : 8, whiteSpace: "nowrap", maxWidth: 190 }}>
+        <div className="truncate" style={{ fontSize: 12.5, fontWeight: bold ? 700 : 500 }}>{r.name}</div>
+      </td>
+      {groups.map((g) => (
+        <React.Fragment key={g.key}>
+          <Cell v={r.byGroup[g.key]} bold tone="var(--primary)" />
+          {g.rules.map((rule) => <Cell key={rule.key} v={r.byRule[rule.key]} faint />)}
+        </React.Fragment>
+      ))}
+      <Cell v={r.total} bold tone="var(--green)" />
+      <Cell v={r.accounts.size} />
+    </tr>
+  );
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-3 flex-wrap">
+        <Phone size={18} style={{ color: "var(--primary)" }} />
+        <h2 className="sw-display text-lg font-bold">Creator Conversations</h2>
+        <select className="sw-input sw-focus" style={{ width: 160, height: 32, fontSize: 12.5 }}
+          value={month} onChange={(e) => setMonth(e.target.value)}>
+          {monthOptions.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+        </select>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+          Day {days.done} of {days.total} · {Math.max(0, days.total - days.done)} remaining
+        </span>
+
+        <div className="ml-auto flex items-center gap-3 flex-wrap">
+          <span className="flex items-center gap-1.5 text-xs" style={{ color: "var(--ink-faint)" }}>
+            <span style={{ width: 11, height: 11, borderRadius: 3, background: bandBg.red, border: "1px solid var(--red)" }} />
+            Sub 2 convos a day
+          </span>
+          <span className="flex items-center gap-1.5 text-xs" style={{ color: "var(--ink-faint)" }}>
+            <span style={{ width: 11, height: 11, borderRadius: 3, background: bandBg.amber, border: "1px solid var(--amber)" }} />
+            Sub 4 convos a day
+          </span>
+          {profile?.role === "office" && (
+            <button onClick={() => setShowRules((v) => !v)} className="sw-focus text-xs font-semibold"
+              style={{ color: "var(--primary)" }}>
+              {showRules ? "Hide scoring" : "How this scores"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {showRules && (
+        <div className="rounded-xl p-3 mb-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="text-xs font-semibold uppercase mb-2" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Scoring rules</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "0.5rem" }}>
+            {rules.filter((r) => r.active !== false).map((r) => (
+              <div key={r.key} className="rounded-lg px-2.5 py-2" style={{ background: "var(--surface-alt)" }}>
+                <div className="flex items-baseline justify-between gap-2">
+                  <span style={{ fontSize: 12.5, fontWeight: 600 }}>{r.label}</span>
+                  <span className="sw-mono" style={{ fontSize: 12, fontWeight: 700, color: "var(--green)" }}>+{r.value}</span>
+                </div>
+                <div className="sw-mono" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>
+                  needs: {(r.match_all || []).join(" + ") || "anything"}
+                </div>
+                {r.note && <div style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>{r.note}</div>}
+              </div>
+            ))}
+          </div>
+          <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
+            A lead scores every rule it matches, so an Acq Cloud at 3+ credits Cloud, Acq Cloud and Acq Cloud 3+.
+            Anything marked <b>Unsent</b> scores nothing at all. Edit these in the <code>lead_rules</code> table.
+          </p>
+        </div>
+      )}
+
+      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table className="w-full" style={{ borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "var(--surface-alt)" }}>
+                <th rowSpan={2} className="text-left px-2 py-1.5" style={{ fontSize: 10.5, textTransform: "uppercase", color: "var(--ink-soft)", letterSpacing: "0.04em" }}>Creator</th>
+                {groups.map((g) => (
+                  <th key={g.key} colSpan={1 + g.rules.length} className="px-2 py-1.5"
+                    style={{ fontSize: 11.5, fontWeight: 700, color: "var(--primary)", borderLeft: "2px solid var(--border)", textAlign: "center" }}>
+                    {g.label}
+                  </th>
+                ))}
+                <th rowSpan={2} className="px-2 py-1.5" style={{ fontSize: 11.5, fontWeight: 700, color: "var(--green)", borderLeft: "2px solid var(--border)" }}>Total</th>
+                <th rowSpan={2} className="px-2 py-1.5" style={{ fontSize: 10.5, color: "var(--ink-soft)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Accounts</th>
+              </tr>
+              <tr style={{ background: "var(--surface-alt)" }}>
+                {groups.map((g) => (
+                  <React.Fragment key={g.key}>
+                    <th className="px-2 py-1" style={{ fontSize: 10, color: "var(--ink-faint)", borderLeft: "2px solid var(--border)" }}>Total</th>
+                    {g.rules.map((r) => (
+                      <th key={r.key} className="px-2 py-1" style={{ fontSize: 10, color: "var(--ink-faint)", fontWeight: 500, whiteSpace: "nowrap" }}
+                        title={`${(r.match_all || []).join(" + ")} · worth ${r.value}`}>
+                        {r.label.replace(/^Acq /, "")}
+                      </th>
+                    ))}
+                  </React.Fragment>
+                ))}
+              </tr>
+            </thead>
+
+            <tbody>
+              {/* Office */}
+              <tr style={{ background: "var(--ink)" }}>
+                <td colSpan={colCount} className="px-2 py-1 text-xs font-bold uppercase" style={{ color: "#fff", letterSpacing: "0.04em" }}>
+                  Overall team numbers
+                </td>
+              </tr>
+              {byTeam.map((t) => <Row key={t.name} r={t} bold />)}
+              <Row r={grand} bold />
+
+              {/* Each team, then its people */}
+              {byTeam.map((t) => (
+                <React.Fragment key={`blk-${t.name}`}>
+                  <tr style={{ background: "var(--primary-soft)", borderTop: "2px solid var(--border)" }}>
+                    <td colSpan={colCount} className="px-2 py-1 text-xs font-bold uppercase" style={{ color: "var(--primary)", letterSpacing: "0.04em" }}>
+                      {t.name}
+                    </td>
+                  </tr>
+                  {t.agents.map((a) => <Row key={a.name} r={a} indent band={bandOf(a.total)} />)}
+                  <Row r={t} bold />
+                </React.Fragment>
+              ))}
+
+              {byAgent.length === 0 && (
+                <tr><td colSpan={colCount} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                  {loading ? "Loading..." : "No scored leads for this month — check the sync has run."}
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
+        Conversations are credited from the product string on each lead. A lead can score several rules at once —
+        an Acq Cloud at 3+ counts as more than one. Anything marked <b>Unsent</b> scores nothing.
+        Rows shade by conversations per working day so far this month, so someone who joined mid-month isn't
+        penalised for the days before they started.
+      </p>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /*  LANDSCAPES — prospect bank, allocated out to be called                 */
 /* ---------------------------------------------------------------------- */
 
@@ -12773,6 +13099,7 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
     { label: "Day by Day", icon: CalendarDays, active: tab === "daybyday", onClick: go("daybyday") },
     { label: "Sales Breakdown", icon: BarChart3, active: tab === "breakdown", onClick: go("breakdown") },
     { label: "Sales Distribution", icon: Users, active: tab === "distribution", onClick: go("distribution") },
+    { label: "Creator Conversations", icon: Phone, active: tab === "leads", onClick: go("leads") },
     { label: "TV Mode", icon: Radio, href: "#tv", onClick: () => setTimeout(() => window.location.reload(), 0) },
   ];
   const submissions = [
@@ -12786,7 +13113,7 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
     { label: "Change Password", icon: KeyRound, onClick: () => { onChangePassword(); setMobileOpen(false); } },
   ];
 
-  const dashActive = ["tops", "daybyday", "breakdown", "distribution"].includes(tab);
+  const dashActive = ["tops", "daybyday", "breakdown", "distribution", "leads"].includes(tab);
   const subActive = ["new", "landscapes", "quote"].includes(tab);
   const setActive = ["admin", "statuses"].includes(tab);
 
@@ -13591,6 +13918,7 @@ export default function App() {
         {tab === "daybyday" && <DayByDayView orders={orders} staff={staff} netsuite={netsuiteResolved} />}
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuiteResolved} />}
         {tab === "distribution" && <DistributionView orders={orders} netsuite={netsuiteResolved} staff={staff} />}
+        {tab === "leads" && <LeadsView staff={staff} profile={profile} />}
         {tab === "delivery" && (profile?.role === "office" || profile?.role === "sd" || profile?.role === "sd_2ic") && (
           <DeliveryView orders={orders} netsuite={netsuiteResolved} staff={staff} profile={profile} unplaced={unplaced}
             deliveryTeam={deliveryTeam} onAllocate={allocateOrder} onSaveOrder={saveOrder} onOpenOrder={setSelected} />
