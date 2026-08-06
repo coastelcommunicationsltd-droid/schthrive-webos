@@ -10590,19 +10590,33 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
      so that column is used where present and the text is only parsed here
      as a fallback for rows synced before the migration. */
   const flow = useMemo(() => {
+    /* NetSuite gives dates DAY-FIRST (4/8/2026 is 4 August). new Date()
+       reads that as US month-first and returns 8 April — a valid date, so
+       it never errors, it just silently lands in the wrong month. That has
+       to be tried LAST, not first, or slash-separated dates are quietly
+       wrong wherever the day happens to be 12 or below. */
     const parseDate = (v) => {
       if (!v) return null;
       const str = String(v).trim();
       if (!str || /^(yes|no|y|n|true|false)$/i.test(str)) return null;
-      let d = new Date(str);
-      if (Number.isNaN(d.getTime())) {
-        // dd/mm/yyyy — the sheet's usual format, which Date() misreads as US
-        const m = /^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/.exec(str);
-        if (!m) return null;
+
+      let d = null;
+
+      // dd/mm/yyyy, optionally followed by a time
+      const m = /^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})/.exec(str);
+      if (m) {
+        const day = Number(m[1]);
+        const mon = Number(m[2]);
         const yr = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
-        d = new Date(yr, Number(m[2]) - 1, Number(m[1]));
+        if (mon >= 1 && mon <= 12 && day >= 1 && day <= 31) {
+          d = new Date(yr, mon - 1, day);
+        }
       }
-      if (Number.isNaN(d.getTime()) || d.getFullYear() < 1990) return null;
+
+      // ISO or anything else the browser can read — unambiguous, so safe
+      if (!d) d = new Date(str);
+
+      if (!d || Number.isNaN(d.getTime()) || d.getFullYear() < 1990) return null;
       return d;
     };
 
