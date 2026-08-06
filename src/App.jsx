@@ -10288,17 +10288,24 @@ function LeadsView({ staff, profile }) {
     }));
   }, [rules]);
 
-  /* Score every lead in the month. "Unsent" in Lead Status voids the row
-     entirely, however many rules it would otherwise have matched. */
+  /* Score every lead created in the month.
+
+     The Unsent rule only bites where the creator and the owner are the
+     same person: a lead you raised and kept yourself, never sent, isn't a
+     conversation passed to anyone. An unsent lead that DID go to someone
+     else still represents work done, so it counts. */
   const scored = useMemo(() => {
     const [y, m] = month.split("-").map(Number);
     const from = new Date(y, m - 1, 1);
     const to = new Date(y, m, 1);
 
     return (leads || []).filter((l) => {
-      if (/unsent/i.test(String(l.sent_status || ""))) return false;
       const d = l.lead_date ? new Date(l.lead_date) : null;
       if (!d || d < from || d >= to) return false;
+      const unsent = /unsent/i.test(String(l.sent_status || ""));
+      const selfOwned = l.creator && l.lead_owner
+        && nameKey(l.creator) === nameKey(l.lead_owner);
+      if (unsent && selfOwned) return false;
       return true;
     }).map((l) => ({ ...l, hits: scoreLead(l.product_raw, rules) }))
       .filter((l) => l.hits.length > 0);
@@ -10318,12 +10325,15 @@ function LeadsView({ staff, profile }) {
     return o;
   }, [rules, groups, teamOf]);
 
-  const byAgent = useMemo(() => {
-    const m = {};
+  /* The same aggregation runs twice — once crediting whoever created the
+     lead (the lead gen), once crediting whoever owns it (the closer). */
+  const aggregate = useCallback((pickName) => {
+    const byName = {};
     scored.forEach((l) => {
-      const name = l.creator || "Unassigned";
-      if (!m[name]) m[name] = blankRow(name);
-      const row = m[name];
+      const name = pickName(l);
+      if (!name) return;
+      if (!byName[name]) byName[name] = blankRow(name);
+      const row = byName[name];
       l.hits.forEach((r) => {
         const v = num(r.value) || 1;
         row.byRule[r.key] = (row.byRule[r.key] || 0) + v;
@@ -10332,24 +10342,35 @@ function LeadsView({ staff, profile }) {
       });
       if (l.company_name) row.accounts.add(l.company_name);
     });
-    return Object.values(m).sort((a, b) => b.total - a.total);
-  }, [scored, blankRow]);
+    const people = Object.values(byName).sort((a, b) => b.total - a.total);
 
-  const byTeam = useMemo(() => {
-    const m = {};
-    byAgent.forEach((a) => {
+    const byTeamMap = {};
+    people.forEach((a) => {
       const t = a.team || "Unassigned";
-      if (!m[t]) m[t] = { ...blankRow(t), name: t, agents: [] };
-      const row = m[t];
+      if (!byTeamMap[t]) byTeamMap[t] = { ...blankRow(t), name: t, agents: [] };
+      const row = byTeamMap[t];
       row.agents.push(a);
       row.total += a.total;
       Object.keys(a.byRule).forEach((k) => { row.byRule[k] = (row.byRule[k] || 0) + a.byRule[k]; });
       Object.keys(a.byGroup).forEach((k) => { row.byGroup[k] = (row.byGroup[k] || 0) + a.byGroup[k]; });
       a.accounts.forEach((c) => row.accounts.add(c));
     });
-    return SELLING_TEAMS.map((t) => m[t]).filter(Boolean)
-      .concat(Object.keys(m).filter((t) => !SELLING_TEAMS.includes(t)).map((t) => m[t]));
-  }, [byAgent, blankRow]);
+    const teams = SELLING_TEAMS.map((t) => byTeamMap[t]).filter(Boolean)
+      .concat(Object.keys(byTeamMap).filter((t) => !SELLING_TEAMS.includes(t)).map((t) => byTeamMap[t]));
+
+    const all = blankRow("All teams");
+    teams.forEach((t) => {
+      all.total += t.total;
+      Object.keys(t.byRule).forEach((k) => { all.byRule[k] = (all.byRule[k] || 0) + t.byRule[k]; });
+      Object.keys(t.byGroup).forEach((k) => { all.byGroup[k] = (all.byGroup[k] || 0) + t.byGroup[k]; });
+      t.accounts.forEach((c) => all.accounts.add(c));
+    });
+
+    return { people, teams, all };
+  }, [scored, blankRow]);
+
+  const leadGens = useMemo(() => aggregate((l) => l.creator), [aggregate]);
+  const closers = useMemo(() => aggregate((l) => l.lead_owner), [aggregate]);
 
   /* Banding is on conversations per working day so far this month, not on
      the raw total — someone who started mid-month isn't behind. */
@@ -10372,17 +10393,6 @@ function LeadsView({ staff, profile }) {
     return null;
   };
   const bandBg = { red: "rgba(214,69,65,0.13)", amber: "rgba(184,134,11,0.15)" };
-
-  const grand = useMemo(() => {
-    const o = blankRow("All teams");
-    byTeam.forEach((t) => {
-      o.total += t.total;
-      Object.keys(t.byRule).forEach((k) => { o.byRule[k] = (o.byRule[k] || 0) + t.byRule[k]; });
-      Object.keys(t.byGroup).forEach((k) => { o.byGroup[k] = (o.byGroup[k] || 0) + t.byGroup[k]; });
-      t.accounts.forEach((c) => o.accounts.add(c));
-    });
-    return o;
-  }, [byTeam, blankRow]);
 
   const colCount = 1 + groups.reduce((n, g) => n + 1 + g.rules.length, 0) + 2;
 
@@ -10463,79 +10473,98 @@ function LeadsView({ staff, profile }) {
           </div>
           <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
             A lead scores every rule it matches, so an Acq Cloud at 3+ credits Cloud, Acq Cloud and Acq Cloud 3+.
-            Anything marked <b>Unsent</b> scores nothing at all. Edit these in the <code>lead_rules</code> table.
+            An <b>Unsent</b> lead only drops out when the creator and owner are the same person — a lead
+            you raised and kept yourself was never passed to anyone. Edit these in the <code>lead_rules</code> table.
           </p>
         </div>
       )}
 
-      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-        <div style={{ overflowX: "auto" }}>
-          <table className="w-full" style={{ borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ background: "var(--surface-alt)" }}>
-                <th rowSpan={2} className="text-left px-2 py-1.5" style={{ fontSize: 10.5, textTransform: "uppercase", color: "var(--ink-soft)", letterSpacing: "0.04em" }}>Creator</th>
-                {groups.map((g) => (
-                  <th key={g.key} colSpan={1 + g.rules.length} className="px-2 py-1.5"
-                    style={{ fontSize: 11.5, fontWeight: 700, color: "var(--primary)", borderLeft: "2px solid var(--border)", textAlign: "center" }}>
-                    {g.label}
-                  </th>
-                ))}
-                <th rowSpan={2} className="px-2 py-1.5" style={{ fontSize: 11.5, fontWeight: 700, color: "var(--green)", borderLeft: "2px solid var(--border)" }}>Total</th>
-                <th rowSpan={2} className="px-2 py-1.5" style={{ fontSize: 10.5, color: "var(--ink-soft)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Accounts</th>
-              </tr>
-              <tr style={{ background: "var(--surface-alt)" }}>
-                {groups.map((g) => (
-                  <React.Fragment key={g.key}>
-                    <th className="px-2 py-1" style={{ fontSize: 10, color: "var(--ink-faint)", borderLeft: "2px solid var(--border)" }}>Total</th>
-                    {g.rules.map((r) => (
-                      <th key={r.key} className="px-2 py-1" style={{ fontSize: 10, color: "var(--ink-faint)", fontWeight: 500, whiteSpace: "nowrap" }}
-                        title={`${(r.match_all || []).join(" + ")} · worth ${r.value}`}>
-                        {r.label.replace(/^Acq /, "")}
+      {/* One table per role. Lead gens are credited off Created By, closers
+          off Lead Owner — the same lead can appear in both. */}
+      {[
+        { key: "gen", label: "Lead Gens", sub: "credited on Created By", data: leadGens, accent: "var(--primary)" },
+        { key: "close", label: "Closers", sub: "credited on Lead Owner", data: closers, accent: "var(--blue)" },
+      ].map((tbl) => (
+        <div key={tbl.key} className="mb-4">
+          <div className="flex items-baseline gap-2 mb-1.5">
+            <span className="sw-display" style={{ fontSize: 14, fontWeight: 700, color: tbl.accent }}>{tbl.label}</span>
+            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{tbl.sub}</span>
+            <span className="sw-mono ml-auto" style={{ fontSize: 13, fontWeight: 700, color: "var(--green)" }}>
+              {tbl.data.all.total}
+            </span>
+          </div>
+
+          <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div style={{ overflowX: "auto" }}>
+              <table className="w-full" style={{ borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: "var(--surface-alt)" }}>
+                    <th rowSpan={2} className="text-left px-2 py-1.5" style={{ fontSize: 10.5, textTransform: "uppercase", color: "var(--ink-soft)", letterSpacing: "0.04em" }}>
+                      {tbl.key === "gen" ? "Creator" : "Owner"}
+                    </th>
+                    {groups.map((g) => (
+                      <th key={g.key} colSpan={1 + g.rules.length} className="px-2 py-1.5"
+                        style={{ fontSize: 11.5, fontWeight: 700, color: tbl.accent, borderLeft: "2px solid var(--border)", textAlign: "center" }}>
+                        {g.label}
                       </th>
                     ))}
-                  </React.Fragment>
-                ))}
-              </tr>
-            </thead>
+                    <th rowSpan={2} className="px-2 py-1.5" style={{ fontSize: 11.5, fontWeight: 700, color: "var(--green)", borderLeft: "2px solid var(--border)" }}>Total</th>
+                    <th rowSpan={2} className="px-2 py-1.5" style={{ fontSize: 10.5, color: "var(--ink-soft)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Accounts</th>
+                  </tr>
+                  <tr style={{ background: "var(--surface-alt)" }}>
+                    {groups.map((g) => (
+                      <React.Fragment key={g.key}>
+                        <th className="px-2 py-1" style={{ fontSize: 10, color: "var(--ink-faint)", borderLeft: "2px solid var(--border)" }}>Total</th>
+                        {g.rules.map((r) => (
+                          <th key={r.key} className="px-2 py-1" style={{ fontSize: 10, color: "var(--ink-faint)", fontWeight: 500, whiteSpace: "nowrap" }}
+                            title={`${(r.match_all || []).join(" + ")} · worth ${r.value}`}>
+                            {r.label.replace(/^Acq /, "")}
+                          </th>
+                        ))}
+                      </React.Fragment>
+                    ))}
+                  </tr>
+                </thead>
 
-            <tbody>
-              {/* Office */}
-              <tr style={{ background: "var(--ink)" }}>
-                <td colSpan={colCount} className="px-2 py-1 text-xs font-bold uppercase" style={{ color: "#fff", letterSpacing: "0.04em" }}>
-                  Overall team numbers
-                </td>
-              </tr>
-              {byTeam.map((t) => <Row key={t.name} r={t} bold />)}
-              <Row r={grand} bold />
-
-              {/* Each team, then its people */}
-              {byTeam.map((t) => (
-                <React.Fragment key={`blk-${t.name}`}>
-                  <tr style={{ background: "var(--primary-soft)", borderTop: "2px solid var(--border)" }}>
-                    <td colSpan={colCount} className="px-2 py-1 text-xs font-bold uppercase" style={{ color: "var(--primary)", letterSpacing: "0.04em" }}>
-                      {t.name}
+                <tbody>
+                  <tr style={{ background: "var(--ink)" }}>
+                    <td colSpan={colCount} className="px-2 py-1 text-xs font-bold uppercase" style={{ color: "#fff", letterSpacing: "0.04em" }}>
+                      Overall team numbers
                     </td>
                   </tr>
-                  {t.agents.map((a) => <Row key={a.name} r={a} indent band={bandOf(a.total)} />)}
-                  <Row r={t} bold />
-                </React.Fragment>
-              ))}
+                  {tbl.data.teams.map((t) => <Row key={t.name} r={t} bold />)}
+                  <Row r={tbl.data.all} bold />
 
-              {byAgent.length === 0 && (
-                <tr><td colSpan={colCount} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
-                  {loading ? "Loading..." : "No scored leads for this month — check the sync has run."}
-                </td></tr>
-              )}
-            </tbody>
-          </table>
+                  {tbl.data.teams.map((t) => (
+                    <React.Fragment key={`${tbl.key}-blk-${t.name}`}>
+                      <tr style={{ background: "var(--primary-soft)", borderTop: "2px solid var(--border)" }}>
+                        <td colSpan={colCount} className="px-2 py-1 text-xs font-bold uppercase" style={{ color: tbl.accent, letterSpacing: "0.04em" }}>
+                          {t.name}
+                        </td>
+                      </tr>
+                      {t.agents.map((a) => <Row key={a.name} r={a} indent band={bandOf(a.total)} />)}
+                      <Row r={t} bold />
+                    </React.Fragment>
+                  ))}
+
+                  {tbl.data.people.length === 0 && (
+                    <tr><td colSpan={colCount} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                      {loading ? "Loading..." : "Nothing scored for this month — check the sync has run."}
+                    </td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
-      </div>
+      ))}
 
       <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
-        Conversations are credited from the product string on each lead. A lead can score several rules at once —
-        an Acq Cloud at 3+ counts as more than one. Anything marked <b>Unsent</b> scores nothing.
-        Rows shade by conversations per working day so far this month, so someone who joined mid-month isn't
-        penalised for the days before they started.
+        Conversations are credited from the product string on each lead, and a lead can score several rules at
+        once — an Acq Cloud at 3+ counts as more than one. The same lead credits the <b>lead gen</b> who created
+        it and the <b>closer</b> who owns it, so it appears in both tables. An <b>Unsent</b> lead only drops out
+        where creator and owner are the same person. Rows shade by conversations per working day so far this
+        month, so someone who joined mid-month isn't penalised for the days before they started.
       </p>
     </div>
   );
