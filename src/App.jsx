@@ -8438,11 +8438,12 @@ function ForecastView({ netsuite, profile, staff }) {
     const byTeam = {};
     weekRows.forEach((r) => {
       const t = r.agent_team || r.lead_gen_team || "Unassigned";
-      if (!byTeam[t]) byTeam[t] = { team: t, deals: [], gp: 0, sov: 0, units: 0 };
+      if (!byTeam[t]) byTeam[t] = { team: t, deals: [], gp: 0, sov: 0, units: 0, landed: 0, actualGp: 0 };
       byTeam[t].deals.push(r);
       byTeam[t].gp += num(r.gp);
       byTeam[t].sov += num(r.sov);
       byTeam[t].units += num(r.units);
+      if (r.matched_at) { byTeam[t].landed += 1; byTeam[t].actualGp += num(r.actual_gp); }
     });
     return Object.values(byTeam)
       .map((t) => ({ ...t, deals: [...t.deals].sort((a, b) => num(b.gp) - num(a.gp)) }))
@@ -9059,7 +9060,7 @@ function ForecastView({ netsuite, profile, staff }) {
                     <span className="sw-display truncate" style={{ fontSize: 13, fontWeight: 600 }}>{t.team}</span>
                     <span className="sw-mono shrink-0" style={{ fontSize: 14, fontWeight: 700, color: "var(--green)" }}>{fmtGBP(t.gp)}</span>
                   </div>
-                  <div className="flex items-center gap-3 mt-0.5">
+                  <div className="flex items-center gap-3 mt-0.5 flex-wrap">
                     <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
                       {t.deals.length} deal{t.deals.length === 1 ? "" : "s"}
                     </span>
@@ -9071,39 +9072,96 @@ function ForecastView({ netsuite, profile, staff }) {
                         {t.units} unit{t.units === 1 ? "" : "s"}
                       </span>
                     )}
+                    {t.landed > 0 && (
+                      <span className="text-xs font-semibold" style={{ color: "var(--green)" }}
+                        title={`${fmtGBP(t.actualGp)} actual GP found in NetSuite`}>
+                        {t.landed} landed · {fmtGBP(t.actualGp)}
+                      </span>
+                    )}
                   </div>
                 </div>
 
                 <div style={{ maxHeight: 300, overflowY: "auto" }}>
-                  {t.deals.map((d) => (
-                    <div key={d.id} className="px-3 py-2" style={{ borderTop: "1px solid var(--border)" }}>
-                      <div className="flex items-baseline justify-between gap-2">
-                        <span className="truncate" style={{ fontSize: 12.5, fontWeight: 600, minWidth: 0 }}>
-                          {d.business_name || "—"}
-                        </span>
-                        <span className="sw-mono shrink-0" style={{ fontSize: 12.5, fontWeight: 600, color: "var(--green)" }}>
-                          {fmtGBP(d.gp)}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                        <span className="rounded px-1.5 py-0.5" style={{ fontSize: 10, background: "var(--primary-soft)", color: "var(--primary)", fontWeight: 600 }}>
-                          {d.pillar || "—"}
-                        </span>
-                        <span className="text-xs truncate" style={{ color: "var(--ink-faint)", fontSize: 10.5 }}>
-                          {d.agent_name || "—"}{d.lead_gen_name ? ` · LG ${d.lead_gen_name}` : ""}
-                        </span>
-                        <span className="sw-mono ml-auto shrink-0" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>
-                          {fmtGBP(d.sov)}
-                        </span>
-                      </div>
-                      {(d.next_step || d.signpost_date) && (
-                        <div className="text-xs mt-1 truncate" style={{ color: "var(--ink-soft)", fontSize: 10.5 }}>
-                          {d.next_step || "Next step not set"}
-                          {d.signpost_date ? ` · ${fmtDate(d.signpost_date)}` : ""}
+                  {t.deals.map((d) => {
+                    const conf = num(d.matched_confidence);
+                    const weak = d.matched_at && conf > 0 && conf < 0.6;
+                    const gpDiff = d.matched_at ? num(d.actual_gp) - num(d.gp) : null;
+                    return (
+                      <button key={d.id} onClick={() => setOpenForecast(d)}
+                        className="sw-focus w-full text-left px-3 py-2"
+                        style={{
+                          borderTop: "1px solid var(--border)",
+                          background: d.matched_at ? (weak ? "var(--amber-soft)" : "var(--green-soft)") : "transparent",
+                        }}>
+                        <div className="flex items-baseline justify-between gap-2">
+                          <span className="truncate flex items-center gap-1" style={{ fontSize: 12.5, fontWeight: 600, minWidth: 0 }}>
+                            {d.matched_at && (
+                              <CheckCircle2 size={11} style={{ color: weak ? "var(--amber)" : "var(--green)", flexShrink: 0 }} />
+                            )}
+                            {d.business_name || "—"}
+                          </span>
+                          <span className="sw-mono shrink-0" style={{ fontSize: 12.5, fontWeight: 600, color: "var(--green)" }}>
+                            {fmtGBP(d.gp)}
+                          </span>
                         </div>
-                      )}
-                    </div>
-                  ))}
+
+                        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                          <span className="rounded px-1.5 py-0.5" style={{ fontSize: 10, background: "var(--primary-soft)", color: "var(--primary)", fontWeight: 600 }}>
+                            {d.pillar || "—"}
+                          </span>
+                          {d.status && d.status !== "Open" && (
+                            <span className="rounded px-1.5 py-0.5" style={{
+                              fontSize: 10, fontWeight: 600,
+                              background: d.status === "Won" ? "var(--green-soft)" : d.status === "Lost" ? "var(--red-soft)" : "var(--surface-alt)",
+                              color: d.status === "Won" ? "var(--green)" : d.status === "Lost" ? "var(--red)" : "var(--ink-soft)",
+                            }}>{d.status}</span>
+                          )}
+                          <span className="sw-mono ml-auto shrink-0" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>
+                            {fmtGBP(d.sov)} SOV{num(d.units) ? ` · ${num(d.units)}u` : ""}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                          <span className="truncate" style={{ color: "var(--ink-faint)", fontSize: 10.5 }}>
+                            {d.agent_name || "—"}{d.lead_gen_name ? ` · LG ${d.lead_gen_name}` : ""}
+                          </span>
+                          {d.opp_id && (
+                            <span className="sw-mono shrink-0" style={{ fontSize: 10, color: "var(--ink-faint)" }}>{d.opp_id}</span>
+                          )}
+                        </div>
+
+                        {/* Where it's got to, or what NetSuite found */}
+                        {d.matched_at ? (
+                          <div className="mt-1 rounded px-1.5 py-1" style={{ background: "rgba(255,255,255,0.55)" }}>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span style={{ fontSize: 10, fontWeight: 700, color: weak ? "var(--amber)" : "var(--green)" }}>
+                                LANDED
+                              </span>
+                              <span className="sw-mono" style={{ fontSize: 10.5 }}>{fmtGBP(d.actual_gp)} actual</span>
+                              <span className="sw-mono" style={{
+                                fontSize: 10.5, fontWeight: 600,
+                                color: Math.abs(gpDiff || 0) < 1 ? "var(--ink-faint)" : (gpDiff || 0) < 0 ? "var(--red)" : "var(--amber)",
+                              }}>
+                                {Math.abs(gpDiff || 0) < 1 ? "on forecast" : `${(gpDiff || 0) > 0 ? "+" : ""}${fmtGBP(gpDiff || 0)}`}
+                              </span>
+                            </div>
+                            {d.matched_company && !sameCompanyish(d.matched_company, d.business_name) && (
+                              <div className="truncate" style={{ fontSize: 10, color: "var(--ink-faint)" }}>
+                                NS: {d.matched_company}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          (d.next_step || d.signpost_date) && (
+                            <div className="mt-1 truncate" style={{ color: "var(--ink-soft)", fontSize: 10.5 }}>
+                              {d.next_step || "Next step not set"}
+                              {d.signpost_date ? ` · ${fmtDate(d.signpost_date)}` : ""}
+                            </div>
+                          )
+                        )}
+                      </button>
+                    );
+                  })}
                   {t.deals.length === 0 && (
                     <div className="px-3 py-6 text-center text-xs" style={{ color: "var(--ink-faint)" }}>Nothing forecast.</div>
                   )}
