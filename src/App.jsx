@@ -8093,9 +8093,9 @@ function isoDateStr(d) {
 function ForecastCell({ value, money = true, bold, tone, highlight, noBorder }) {
   const empty = !value;
   return (
-    <td className="px-2 py-2 sw-mono whitespace-nowrap"
+    <td className="px-2 py-2.5 sw-mono whitespace-nowrap"
       style={{
-        fontSize: 13.5, textAlign: "center",
+        fontSize: 15, textAlign: "center",
         fontWeight: bold ? 700 : 500,
         color: empty ? "var(--ink-faint)" : (tone || "var(--ink)"),
         borderLeft: noBorder ? "none" : "1px solid var(--border)",
@@ -8133,15 +8133,15 @@ function FcRow({ label, v, sov, prods, cols, bold, tone, depth = 0, onFocus, foc
       borderTop: "1px solid var(--border)",
       background: focused ? "var(--primary-soft)" : "transparent",
     }}>
-      <td className="px-3 py-2 whitespace-nowrap" style={{ paddingLeft: 12 + depth * 20 }}>
+      <td className="px-3 py-2.5 whitespace-nowrap" style={{ paddingLeft: 12 + depth * 20 }}>
         {onFocus ? (
           <button onClick={onFocus} className="sw-focus text-left"
             title={focused ? "Clear this filter" : `Filter everything below to ${label}`}
-            style={{ fontSize: 13.5, fontWeight: bold ? 700 : 600, color: focused ? "var(--primary)" : (tone || "var(--ink-soft)"), textDecoration: focused ? "underline" : "none" }}>
+            style={{ fontSize: 15, fontWeight: bold ? 700 : 600, color: focused ? "var(--primary)" : (tone || "var(--ink-soft)"), textDecoration: focused ? "underline" : "none" }}>
             {label}
           </button>
         ) : (
-          <span style={{ fontSize: 13.5, fontWeight: bold ? 700 : 600, color: tone || "var(--ink-soft)" }}>{label}</span>
+          <span style={{ fontSize: 15, fontWeight: bold ? 700 : 600, color: tone || "var(--ink-soft)" }}>{label}</span>
         )}
       </td>
       {v == null
@@ -8456,6 +8456,7 @@ function ForecastView({ netsuite, profile, staff }) {
   // only the deals that have landed.
   const [valueMode, setValueMode] = useState("forecast");   // forecast | statted
   const [soldOnly, setSoldOnly] = useState(false);
+  const [showDeals, setShowDeals] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToastLocal] = useState("");
   const { sellers } = useStaff();
@@ -8518,6 +8519,20 @@ function ForecastView({ netsuite, profile, staff }) {
     }).sort((a, b) => String(b.forecast_week || "").localeCompare(String(a.forecast_week || ""))
       || num(b.gp) - num(a.gp));
   }, [rows, dWeek, dTeam, dAgent, dPillar, dSold, dQuery]);
+
+  const detailTotals = useMemo(() => {
+    const t = { count: 0, gp: 0, sov: 0, units: 0, landed: 0, actualGp: 0, won: 0 };
+    detailRows.forEach((r) => {
+      t.count += 1;
+      t.gp += num(r.gp);
+      t.sov += num(r.sov);
+      t.units += num(r.units);
+      if (r.matched_at) { t.landed += 1; t.actualGp += num(r.actual_gp); }
+      if (r.status === "Won") t.won += 1;
+    });
+    return t;
+  }, [detailRows]);
+
 
   const weekOptions = useMemo(() => {
     const s = new Set(rows.map((r) => r.forecast_week).filter(Boolean));
@@ -8642,10 +8657,26 @@ function ForecastView({ netsuite, profile, staff }) {
 
   // ---- Hierarchical breakdown: all teams, then each team -------------
   // Same shape as Day by Day: totals first, opened up on demand.
+  /* Statted mode reads NetSuite for the week directly, so it shows every
+     order the office actually booked — not just the ones a forecast
+     happened to match. "Sold" is the filter for the matched subset. */
+  const stattedRows = useMemo(() => {
+    const ws = new Date(week);
+    const we = new Date(week);
+    we.setDate(we.getDate() + 6);
+    return (netsuite || []).filter((n) => {
+      if (!n.order_date) return false;
+      const d = new Date(String(n.order_date).slice(0, 10) + "T00:00:00");
+      if (d < ws || d > we) return false;
+      if (n.count_gp === false) return false;
+      if (teamFilter !== "All" && n.closer_team !== teamFilter && n.referrer_team !== teamFilter) return false;
+      if (agentFilter !== "All" && n.closer_name !== agentFilter && n.referrer_name !== agentFilter) return false;
+      if (pillarFilter && groupForPillar(n.item_name_grouped || n.product_group_2) !== pillarFilter) return false;
+      return true;
+    });
+  }, [netsuite, week, teamFilter, agentFilter, pillarFilter]);
+
   const breakdown = useMemo(() => {
-    // In statted mode the figures come from what NetSuite actually booked,
-    // and only matched rows can contribute — an unmatched forecast has no
-    // actual to show.
     const statted = valueMode === "statted";
     // SOV and units for each column, plus each pillar group so a column
     // can be opened into its parts without a second pass over the rows.
@@ -8666,11 +8697,26 @@ function ForecastView({ netsuite, profile, staff }) {
     const all = shell();
     const teams = {};
 
-    weekRows.forEach((r) => {
-      if (statted && !r.matched_at) return;
-      const gp = statted ? num(r.actual_gp) : num(r.gp);
-      const sov = statted ? num(r.actual_sov) : num(r.sov);
-      const units = statted ? 0 : num(r.units);   // NetSuite doesn't carry forecast units
+    // In statted mode the source is NetSuite itself, mapped onto the same
+    // shape a forecast row has, so everything below is unchanged.
+    const source = statted
+      ? stattedRows.map((n) => ({
+          gp: num(n.gp_office),
+          sov: num(n.contract_value),
+          units: num(n.quantity),
+          pillar: n.item_name_grouped || n.product_group_2 || "Other",
+          agent_team: n.closer_team,
+          lead_gen_team: n.referrer_team,
+          lead_gen_name: n.referrer_name,
+          closer_share: num(n.closer_gp),
+          lead_gen_share: num(n.referrer_gp),
+        }))
+      : weekRows;
+
+    source.forEach((r) => {
+      const gp = num(r.gp);
+      const sov = num(r.sov);
+      const units = num(r.units);
       const hasLg = !!(r.lead_gen_name && String(r.lead_gen_name).trim());
       const closerGp = hasLg ? gp * CLOSER_SPLIT : gp;
       const lgGp = hasLg ? gp * LEADGEN_SPLIT : 0;
@@ -8718,7 +8764,7 @@ function ForecastView({ netsuite, profile, staff }) {
       all,
       teams: Object.keys(teams).map((k) => teams[k]).sort((a, b) => b.gp - a.gp),
     };
-  }, [weekRows, valueMode]);
+  }, [weekRows, valueMode, stattedRows]);
 
   // ---- Accuracy: forecast vs what NetSuite actually shows -------------
   // Two different questions, both worth answering:
@@ -8839,8 +8885,17 @@ function ForecastView({ netsuite, profile, staff }) {
       setTimeout(() => setToastLocal(""), 5000);
       return;
     }
-    setDraft(blankRow);
-    setAdding(false);
+    // Stay open — agents usually add several in a row, and reopening the
+    // form each time is the slow part. The agent and week carry over so
+    // only the deal details need retyping.
+    setDraft((p) => ({
+      ...blankRow,
+      agent_name: p.agent_name,
+      lead_gen_name: p.lead_gen_name,
+      pillar: p.pillar,
+    }));
+    setToastLocal("Order forecasted");
+    setTimeout(() => setToastLocal(""), 2500);
     load();
   };
 
@@ -8997,40 +9052,38 @@ function ForecastView({ netsuite, profile, staff }) {
         {/* Headline figures on the left, the matrix to their right —
             read the totals first, then how they break down. */}
         <div className="sw-cols mb-4" style={{ display: "grid", gridTemplateColumns: "minmax(260px, 1fr) minmax(0, 3.4fr)", gap: "0.75rem", alignItems: "start" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "0.6rem" }}>
-            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)", gridColumn: "1 / -1" }}>
-              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast GP</div>
+          {/* Three cards, stacked. Forecast lines and Statted this week are
+              gone — lines is on the GP card, and statted is now readable
+              straight off the table's Statted toggle. */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "0.6rem" }}>
+            <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="text-sm font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast GP</div>
               {/* Net of the lead-gen double count — this is what actually lands */}
-              <div className="sw-display font-bold text-xl">{fmtGBP(summary.grand)}</div>
-              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
-                {summary.dc < 0
-                  ? `${fmtGBP(summary.gpSum)} claimed − ${fmtGBP(Math.abs(summary.dc))} DC`
-                  : `${accuracy.lines} lines`}
+              <div className="sw-display font-bold" style={{ fontSize: 30, letterSpacing: "-0.025em" }}>{fmtGBP(summary.grand)}</div>
+              <div className="text-sm" style={{ color: "var(--ink-faint)" }}>
+                {accuracy.lines} line{accuracy.lines === 1 ? "" : "s"} · {fmtGBP(accuracy.forecastSov)} SOV
               </div>
+              {summary.dc < 0 && (
+                <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                  {fmtGBP(summary.gpSum)} claimed − {fmtGBP(Math.abs(summary.dc))} DC
+                </div>
+              )}
             </div>
-            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast lines</div>
-              <div className="sw-display font-bold text-xl">{accuracy.lines}</div>
-              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{fmtGBP(accuracy.forecastSov)} SOV</div>
-            </div>
-            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Statted this week</div>
-              <div className="sw-display font-bold text-xl" style={{ color: "var(--green)" }}>{fmtGBP(accuracy.stattedGp)}</div>
-              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{accuracy.stattedCount} NetSuite orders</div>
-            </div>
-            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast vs actual</div>
-              <div className="sw-display font-bold text-xl" style={{ color: accuracy.gpVariance >= 0 ? "var(--green)" : "var(--red)" }}>
-                {accuracy.gpVariance >= 0 ? "+" : ""}{fmtGBP(accuracy.gpVariance)}
-              </div>
-              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>statted minus forecast</div>
-            </div>
-            <div className="rounded-2xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecasts landed</div>
-              <div className="sw-display font-bold text-xl" style={{ color: accuracy.hitRate >= 70 ? "var(--green)" : accuracy.hitRate >= 40 ? "var(--amber)" : "var(--red)" }}>
+
+            <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="text-sm font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecasts landed</div>
+              <div className="sw-display font-bold" style={{ fontSize: 30, letterSpacing: "-0.025em", color: accuracy.hitRate >= 70 ? "var(--green)" : accuracy.hitRate >= 40 ? "var(--amber)" : "var(--red)" }}>
                 {accuracy.landed}/{accuracy.lines}
               </div>
-              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{accuracy.hitRate.toFixed(0)}% seen in NetSuite</div>
+              <div className="text-sm" style={{ color: "var(--ink-faint)" }}>{accuracy.hitRate.toFixed(0)}% seen in NetSuite</div>
+            </div>
+
+            <div className="rounded-2xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="text-sm font-semibold uppercase" style={{ color: "var(--ink-soft)" }}>Forecast vs actual</div>
+              <div className="sw-display font-bold" style={{ fontSize: 30, letterSpacing: "-0.025em", color: accuracy.gpVariance >= 0 ? "var(--green)" : "var(--red)" }}>
+                {accuracy.gpVariance >= 0 ? "+" : ""}{fmtGBP(accuracy.gpVariance)}
+              </div>
+              <div className="text-sm" style={{ color: "var(--ink-faint)" }}>statted minus forecast</div>
             </div>
           </div>
 
@@ -9068,7 +9121,7 @@ function ForecastView({ netsuite, profile, staff }) {
 
             {valueMode === "statted" && (
               <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
-                Showing NetSuite actuals — unmatched forecasts are excluded, so totals read lower than forecast.
+                Every order NetSuite booked this week, forecast or not. Use <b>Sold</b> for just the forecast ones.
               </span>
             )}
             {soldOnly && valueMode !== "statted" && (
@@ -9085,8 +9138,8 @@ function ForecastView({ netsuite, profile, staff }) {
               <table className="w-full" style={{ borderCollapse: "collapse" }}>
                 <thead>
                   <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
-                    <th className="px-3 py-2 text-left text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }} rowSpan={2}>Metric</th>
-                    <th className="px-2 py-1.5 text-center text-xs font-bold" colSpan={2}
+                    <th className="px-3 py-2 text-left text-sm font-semibold uppercase" style={{ color: "var(--ink-soft)" }} rowSpan={2}>Metric</th>
+                    <th className="px-2 py-2 text-center text-sm font-bold" colSpan={2}
                       style={{ color: "var(--primary)", background: "var(--primary-soft)", borderLeft: "1px solid var(--border)" }}>
                       {valueMode === "statted" ? "Office total (statted)" : "Office total"}
                     </th>
@@ -9096,16 +9149,16 @@ function ForecastView({ netsuite, profile, staff }) {
                       const on = pillarFilter === c.key;
                       const parentOpen = openCols[c.parent];
                       return (
-                        <th key={c.key} colSpan={2} className="px-2 py-1.5 text-center"
+                        <th key={c.key} colSpan={2} className="px-2 py-2 text-center"
                           style={{
                             borderLeft: "2px solid var(--border)",
                             background: on ? "var(--primary-soft)" : (c.part ? "var(--surface)" : "transparent"),
                           }}>
                           <span className="inline-flex items-center gap-1">
                             <button onClick={() => setPillarFilter(on ? null : c.key)}
-                              className="sw-focus text-sm font-bold"
+                              className="sw-focus font-bold"
                               title={on ? "Clear this filter" : `Show only ${c.label}`}
-                              style={{ color: c.accent, textDecoration: on ? "underline" : "none" }}>
+                              style={{ fontSize: 15, color: c.accent, textDecoration: on ? "underline" : "none" }}>
                               {c.label}
                             </button>
                             {(c.canOpen || parentOpen) && (
@@ -9130,13 +9183,13 @@ function ForecastView({ netsuite, profile, staff }) {
                   <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
                     <th className="px-2 py-1.5 text-center text-xs font-bold"
                       style={{ color: "var(--green)", background: "var(--primary-soft)", borderLeft: "1px solid var(--border)" }}>GP</th>
-                    <th className="px-2 py-1.5 text-center text-xs font-bold"
+                    <th className="px-2 py-1.5 text-center text-sm font-bold"
                       style={{ color: "var(--ink-soft)", background: "var(--primary-soft)" }}>SOV</th>
                     {shownProductCols.map((c) => (
                       <React.Fragment key={c.key}>
-                        <th className="px-2 py-1.5 text-center text-xs font-semibold"
+                        <th className="px-2 py-1.5 text-center text-sm font-semibold"
                           style={{ color: "var(--ink-faint)", borderLeft: "2px solid var(--border)" }}>SOV</th>
-                        <th className="px-2 py-1.5 text-center text-xs font-semibold"
+                        <th className="px-2 py-1.5 text-center text-sm font-semibold"
                           style={{ color: "var(--ink-faint)" }}>Units</th>
                       </React.Fragment>
                     ))}
@@ -9164,7 +9217,7 @@ function ForecastView({ netsuite, profile, staff }) {
                       are already single-counted. */}
                   {valueMode === "forecast" && (
                   <tr style={{ borderTop: "2px solid var(--border)", background: "var(--red-soft)" }}>
-                    <td className="px-3 py-2 text-xs font-semibold" style={{ color: "var(--red)" }}>
+                    <td className="px-3 py-2.5 font-semibold" style={{ color: "var(--red)", fontSize: 14 }}>
                       DC <span style={{ fontWeight: 400 }}>(teams claim {fmtGBP(summary.gpSum)})</span>
                     </td>
                     <ForecastCell value={summary.dc} bold tone="var(--red)" highlight />
@@ -9190,11 +9243,13 @@ function ForecastView({ netsuite, profile, staff }) {
             overlap coming off as DC — so the office total is what actually lands.
           </p>
           {/* Forecasted deals by team — the orders feeding the table above.
-              Click any team or product row up there to narrow these. */}
+              Hidden by default: it's detail you go looking for, not
+              something needed on every visit. */}
           <div className="flex items-baseline gap-2 mb-2 flex-wrap">
-            <span className="text-xs font-semibold uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>
+            <label className="flex items-center gap-1.5 text-sm font-semibold uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em", cursor: "pointer" }}>
+              <input type="checkbox" checked={showDeals} onChange={(e) => setShowDeals(e.target.checked)} />
               Deals feeding this
-            </span>
+            </label>
             <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
               {weekRows.length} deal{weekRows.length === 1 ? "" : "s"}
             </span>
@@ -9222,6 +9277,7 @@ function ForecastView({ netsuite, profile, staff }) {
               </>
             )}
           </div>
+          {showDeals && (
           <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "0.75rem" }}>
             {teamDeals.map((t) => (
               <div key={t.team} className="rounded-xl overflow-hidden"
@@ -9340,8 +9396,9 @@ function ForecastView({ netsuite, profile, staff }) {
               </div>
             ))}
           </div>
+          )}
 
-          {teamDeals.length === 0 && (
+          {showDeals && teamDeals.length === 0 && (
             <div className="rounded-xl py-10 text-center text-xs"
               style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-faint)" }}>
               No deals forecast for this week.
@@ -9405,6 +9462,24 @@ function ForecastView({ netsuite, profile, staff }) {
                 {detailRows.length} of {rows.length}
               </span>
             </div>
+          </div>
+
+          {/* Totals for whatever the filters have left */}
+          <div className="sw-cols-2 mb-2" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "0.6rem" }}>
+            {[
+              ["Forecasts", detailTotals.count, "var(--ink)", `${detailTotals.won} marked won`],
+              ["Forecast GP", fmtGBP(detailTotals.gp), "var(--green)", `${fmtGBP(detailTotals.sov)} SOV`],
+              ["Landed", `${detailTotals.landed}/${detailTotals.count}`,
+                detailTotals.count && detailTotals.landed / detailTotals.count >= 0.5 ? "var(--green)" : "var(--amber)",
+                `${fmtGBP(detailTotals.actualGp)} actual`],
+              ["Units", detailTotals.units, "var(--ink)", "across all lines"],
+            ].map(([label, value, colour, sub]) => (
+              <div key={label} className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+                <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{label}</div>
+                <div className="sw-display font-bold" style={{ fontSize: 22, letterSpacing: "-0.02em", color: colour }}>{value}</div>
+                <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{sub}</div>
+              </div>
+            ))}
           </div>
 
           <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }}>
