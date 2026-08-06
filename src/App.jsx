@@ -5257,6 +5257,10 @@ function PayPlansView({ plans, staff, tiers, metrics, tablesMissing, error, onSa
   const [newName, setNewName] = useState("");
   const [adding, setAdding] = useState(false);
   const [openForecast, setOpenForecast] = useState(null);
+  // Forecast figures vs what NetSuite actually statted, and a filter to
+  // only the deals that have landed.
+  const [valueMode, setValueMode] = useState("forecast");   // forecast | statted
+  const [soldOnly, setSoldOnly] = useState(false);
 
   const countByPlan = useMemo(() => {
     const m = {};
@@ -6787,6 +6791,10 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
   const [openForecast, setOpenForecast] = useState(null);
+  // Forecast figures vs what NetSuite actually statted, and a filter to
+  // only the deals that have landed.
+  const [valueMode, setValueMode] = useState("forecast");   // forecast | statted
+  const [soldOnly, setSoldOnly] = useState(false);
 
   const sorted = useMemo(
     () => [...staff].sort((a, b) => (a.active === false) - (b.active === false) || String(a.full_name).localeCompare(String(b.full_name))),
@@ -8374,6 +8382,10 @@ function ForecastView({ netsuite, profile, staff }) {
   const [openCols, setOpenCols] = useState({});             // product columns broken into parts
   const [adding, setAdding] = useState(false);
   const [openForecast, setOpenForecast] = useState(null);
+  // Forecast figures vs what NetSuite actually statted, and a filter to
+  // only the deals that have landed.
+  const [valueMode, setValueMode] = useState("forecast");   // forecast | statted
+  const [soldOnly, setSoldOnly] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToastLocal] = useState("");
   const { sellers } = useStaff();
@@ -8414,8 +8426,9 @@ function ForecastView({ netsuite, profile, staff }) {
     if (teamFilter !== "All" && r.agent_team !== teamFilter && r.lead_gen_team !== teamFilter) return false;
     if (agentFilter !== "All" && r.agent_name !== agentFilter && r.lead_gen_name !== agentFilter) return false;
     if (pillarFilter && groupForPillar(r.pillar) !== pillarFilter) return false;
+    if (soldOnly && !r.matched_at) return false;
     return true;
-  }), [rows, week, teamFilter, agentFilter, pillarFilter]);
+  }), [rows, week, teamFilter, agentFilter, pillarFilter, soldOnly]);
 
   /* The product columns as rendered: an open column is replaced by its
      parts, so the table widens only when asked. */
@@ -8519,6 +8532,10 @@ function ForecastView({ netsuite, profile, staff }) {
   // ---- Hierarchical breakdown: all teams, then each team -------------
   // Same shape as Day by Day: totals first, opened up on demand.
   const breakdown = useMemo(() => {
+    // In statted mode the figures come from what NetSuite actually booked,
+    // and only matched rows can contribute — an unmatched forecast has no
+    // actual to show.
+    const statted = valueMode === "statted";
     // SOV and units for each column, plus each pillar group so a column
     // can be opened into its parts without a second pass over the rows.
     const blankProds = () => {
@@ -8539,7 +8556,10 @@ function ForecastView({ netsuite, profile, staff }) {
     const teams = {};
 
     weekRows.forEach((r) => {
-      const gp = num(r.gp), sov = num(r.sov), units = num(r.units);
+      if (statted && !r.matched_at) return;
+      const gp = statted ? num(r.actual_gp) : num(r.gp);
+      const sov = statted ? num(r.actual_sov) : num(r.sov);
+      const units = statted ? 0 : num(r.units);   // NetSuite doesn't carry forecast units
       const hasLg = !!(r.lead_gen_name && String(r.lead_gen_name).trim());
       const closerGp = hasLg ? gp * CLOSER_SPLIT : gp;
       const lgGp = hasLg ? gp * LEADGEN_SPLIT : 0;
@@ -8587,7 +8607,7 @@ function ForecastView({ netsuite, profile, staff }) {
       all,
       teams: Object.keys(teams).map((k) => teams[k]).sort((a, b) => b.gp - a.gp),
     };
-  }, [weekRows]);
+  }, [weekRows, valueMode]);
 
   // ---- Accuracy: forecast vs what NetSuite actually shows -------------
   // Two different questions, both worth answering:
@@ -8625,9 +8645,10 @@ function ForecastView({ netsuite, profile, staff }) {
 
     return {
       lines: weekRows.length,
-      landed: landedThisWeek.length,
+      landed: matched.length,
+      landedThisWeek: landedThisWeek.length,
       matchedAny: matched.length,
-      hitRate: weekRows.length ? (landedThisWeek.length / weekRows.length) * 100 : 0,
+      hitRate: weekRows.length ? (matched.length / weekRows.length) * 100 : 0,
       forecastGp, forecastSov, matchedGp, matchedSov,
       stattedGp, stattedSov, stattedCount,
       gpVariance: stattedGp - forecastGp,
@@ -8904,6 +8925,48 @@ function ForecastView({ netsuite, profile, staff }) {
 
         <div>
 
+          {/* Forecast vs what actually statted, and a filter to only the
+              deals that have landed. */}
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 30 }}>
+              {[["forecast", "Forecast"], ["statted", "Statted"]].map(([k, lbl]) => (
+                <button key={k} onClick={() => setValueMode(k)}
+                  className="sw-focus px-3 text-xs whitespace-nowrap"
+                  title={k === "statted"
+                    ? "What NetSuite actually booked, for the deals that matched"
+                    : "What was forecast at the start of the week"}
+                  style={valueMode === k
+                    ? { background: "var(--primary)", color: "#fff", fontWeight: 600, height: "100%" }
+                    : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
+
+            <button onClick={() => setSoldOnly((v) => !v)}
+              className="sw-focus px-3 rounded-lg text-xs font-semibold flex items-center gap-1.5"
+              title="Only forecasts that have been found in NetSuite"
+              style={{
+                height: 30,
+                background: soldOnly ? "var(--green)" : "transparent",
+                color: soldOnly ? "#fff" : (accuracy.landed ? "var(--green)" : "var(--ink-faint)"),
+                border: `1px solid ${soldOnly ? "var(--green)" : "var(--border)"}`,
+              }}>
+              <CheckCircle2 size={12} /> Sold{accuracy.landed ? ` (${accuracy.landed})` : ""}
+            </button>
+
+            {valueMode === "statted" && (
+              <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                Showing NetSuite actuals — unmatched forecasts are excluded, so totals read lower than forecast.
+              </span>
+            )}
+            {soldOnly && valueMode !== "statted" && (
+              <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                Landed deals only, at their forecast values.
+              </span>
+            )}
+          </div>
+
           {/* Breakdown. Column headings do the filtering, and each product
               can be opened into the pillars that make it up. */}
           <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
@@ -8914,7 +8977,7 @@ function ForecastView({ netsuite, profile, staff }) {
                     <th className="px-3 py-2 text-left text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)" }} rowSpan={2}>Metric</th>
                     <th className="px-2 py-1.5 text-center text-xs font-bold" colSpan={2}
                       style={{ color: "var(--primary)", background: "var(--primary-soft)", borderLeft: "1px solid var(--border)" }}>
-                      Office total
+                      {valueMode === "statted" ? "Office total (statted)" : "Office total"}
                     </th>
                     {/* One grouped heading per product, each spanning its
                         SOV and units pair. The + opens it into its parts. */}
@@ -8974,25 +9037,16 @@ function ForecastView({ netsuite, profile, staff }) {
 
                   {/* Per team */}
                   {breakdown.teams.map((t) => (
-                    <React.Fragment key={t.team}>
-                      <FcRow label={t.team} v={t.gp} sov={t.sov} prods={t.prods} cols={shownProductCols} bold
-                        focused={teamFilter === t.team}
-                        onFocus={() => setTeamFilter(teamFilter === t.team ? "All" : t.team)} />
-                      {teamFilter === t.team && PILLAR_GROUPS.map((g) => {
-                        const node = t.groups[g];
-                        if (!node || (!node.gp && !node.sov)) return null;
-                        return (
-                          <FcRow key={g} label={g} v={node.gp} sov={node.sov} prods={node.prods} cols={shownProductCols}
-                            depth={1} tone="var(--ink-faint)"
-                            focused={pillarFilter === g}
-                            onFocus={() => setPillarFilter(pillarFilter === g ? null : g)} />
-                        );
-                      })}
-                    </React.Fragment>
+                    <FcRow key={t.team} label={t.team} v={t.gp} sov={t.sov} prods={t.prods} cols={shownProductCols} bold
+                      focused={teamFilter === t.team}
+                      onFocus={() => setTeamFilter(teamFilter === t.team ? "All" : t.team)} />
                   ))}
 
                   {/* What the overlap costs. The teams above add to more
-                      than the office total; this reconciles them. */}
+                      than the office total; this reconciles them. Only
+                      meaningful on forecast figures — NetSuite's actuals
+                      are already single-counted. */}
+                  {valueMode === "forecast" && (
                   <tr style={{ borderTop: "2px solid var(--border)", background: "var(--red-soft)" }}>
                     <td className="px-3 py-2 text-xs font-semibold" style={{ color: "var(--red)" }}>
                       DC <span style={{ fontWeight: 400 }}>(teams claim {fmtGBP(summary.gpSum)})</span>
@@ -9006,6 +9060,7 @@ function ForecastView({ netsuite, profile, staff }) {
                       </React.Fragment>
                     ))}
                   </tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -9508,6 +9563,10 @@ function LandscapesView({ profile, staff }) {
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [openForecast, setOpenForecast] = useState(null);
+  // Forecast figures vs what NetSuite actually statted, and a filter to
+  // only the deals that have landed.
+  const [valueMode, setValueMode] = useState("forecast");   // forecast | statted
+  const [soldOnly, setSoldOnly] = useState(false);
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState("");
   const [query, setQuery] = useState("");
