@@ -5256,6 +5256,7 @@ function PayPlansView({ plans, staff, tiers, metrics, tablesMissing, error, onSa
   const [selectedId, setSelectedId] = useState(null);
   const [newName, setNewName] = useState("");
   const [adding, setAdding] = useState(false);
+  const [openForecast, setOpenForecast] = useState(null);
 
   const countByPlan = useMemo(() => {
     const m = {};
@@ -6785,6 +6786,7 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
   const [selectedId, setSelectedId] = useState(null);
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
+  const [openForecast, setOpenForecast] = useState(null);
 
   const sorted = useMemo(
     () => [...staff].sort((a, b) => (a.active === false) - (b.active === false) || String(a.full_name).localeCompare(String(b.full_name))),
@@ -8153,6 +8155,214 @@ function FcRow({ label, v, sov, prods, cols, bold, tone, depth = 0, onFocus, foc
   );
 }
 
+/* Loose company-name comparison, matching what the database matcher does —
+   used only to decide whether NetSuite's name is worth showing separately. */
+function sameCompanyish(a, b) {
+  const n = (s) => String(s || "").toLowerCase()
+    .replace(/^.*\b(t\/?a|trading as)\b\s*/, "")
+    .replace(/\b(ltd|limited|plc|llp|inc|co|company|holdings|group|uk|the|mr|mrs|miss|ms|dr|and|&)\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ").trim();
+  return n(a) === n(b);
+}
+
+/* One forecast, opened up. Shows what was forecast, what NetSuite actually
+   has where a match was found, and the gap between them. Managers can
+   correct or remove a line from here rather than only from the row. */
+function ForecastDrawer({ row, canManage, onSave, onDelete, onClose }) {
+  const [f, setF] = useState({
+    business_name: row.business_name || "", opp_id: row.opp_id || "",
+    pillar: row.pillar || "", sov: row.sov ?? 0, gp: row.gp ?? 0, units: row.units ?? 0,
+    next_step: row.next_step || "", notes: row.notes || "", status: row.status || "Open",
+  });
+  const [saving, setSaving] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+
+  const dirty = Object.keys(f).some((k) => String(f[k] ?? "") !== String(row[k] ?? ""));
+  const gpDiff = row.matched_at ? num(row.actual_gp) - num(row.gp) : null;
+  const sovDiff = row.matched_at ? num(row.actual_sov) - num(row.sov) : null;
+  const conf = num(row.matched_confidence);
+  const weak = row.matched_at && conf > 0 && conf < 0.6;
+
+  const Diff = ({ label, forecast, actual, diff }) => (
+    <div className="rounded-lg p-2.5" style={{ background: "var(--surface-alt)" }}>
+      <div className="text-xs mb-1" style={{ color: "var(--ink-faint)" }}>{label}</div>
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="sw-mono" style={{ fontSize: 13 }}>{fmtGBP(forecast)}</span>
+        <span style={{ color: "var(--ink-faint)", fontSize: 11 }}>forecast</span>
+        <span style={{ color: "var(--ink-faint)" }}>→</span>
+        <span className="sw-mono" style={{ fontSize: 13, fontWeight: 700 }}>{fmtGBP(actual)}</span>
+        <span style={{ color: "var(--ink-faint)", fontSize: 11 }}>actual</span>
+      </div>
+      <div className="sw-mono mt-0.5" style={{
+        fontSize: 12, fontWeight: 600,
+        color: Math.abs(diff) < 1 ? "var(--green)" : diff < 0 ? "var(--red)" : "var(--amber)",
+      }}>
+        {Math.abs(diff) < 1 ? "matches forecast" : `${diff > 0 ? "+" : ""}${fmtGBP(diff)}`}
+      </div>
+    </div>
+  );
+
+  return (
+    <div onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(20,16,40,0.35)", zIndex: 60, display: "flex", justifyContent: "flex-end" }}>
+      <div onClick={(e) => e.stopPropagation()}
+        style={{ width: "min(520px, 100%)", height: "100%", background: "var(--bg)", overflowY: "auto", boxShadow: "-8px 0 24px rgba(0,0,0,0.12)" }}>
+
+        <div className="flex items-start gap-2 px-4 py-3" style={{ borderBottom: "1px solid var(--border)", background: "var(--surface)" }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="sw-display font-bold text-base truncate">{row.business_name}</div>
+            <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+              {row.agent_name}{row.agent_team ? ` · ${row.agent_team}` : ""}
+              {row.lead_gen_name ? ` · LG ${row.lead_gen_name}` : ""}
+            </div>
+          </div>
+          <button onClick={onClose} className="sw-focus" style={{ color: "var(--ink-faint)" }}><X size={18} /></button>
+        </div>
+
+        <div className="p-4 flex flex-col gap-3">
+
+          {/* Did it land? */}
+          {row.matched_at ? (
+            <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: `1px solid ${weak ? "var(--amber)" : "var(--green)"}` }}>
+              <div className="flex items-center gap-1.5 mb-2">
+                <CheckCircle2 size={14} style={{ color: weak ? "var(--amber)" : "var(--green)" }} />
+                <span className="text-xs font-bold uppercase" style={{ color: weak ? "var(--amber)" : "var(--green)", letterSpacing: "0.04em" }}>
+                  Found in NetSuite
+                </span>
+                <span className="text-xs ml-auto" style={{ color: "var(--ink-faint)" }}>
+                  {(row.matched_by || row.match_method) === "opp_id" ? "matched on Opp ID" : "matched on name"}
+                  {conf > 0 && conf < 1 ? ` · ${Math.round(conf * 100)}% alike` : ""}
+                </span>
+              </div>
+
+              {row.matched_company && !sameCompanyish(row.matched_company, row.business_name) && (
+                <div className="rounded-lg p-2 mb-2" style={{ background: weak ? "var(--amber-soft)" : "var(--surface-alt)" }}>
+                  <div className="text-xs" style={{ color: "var(--ink-faint)" }}>NetSuite has this as</div>
+                  <div className="text-xs font-semibold">{row.matched_company}</div>
+                  {weak && (
+                    <div className="text-xs mt-1" style={{ color: "var(--amber)" }}>
+                      Loose match — worth checking it's the same deal.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
+                <Diff label="GP" forecast={row.gp} actual={row.actual_gp} diff={gpDiff} />
+                <Diff label="SOV" forecast={row.sov} actual={row.actual_sov} diff={sovDiff} />
+              </div>
+
+              <div className="flex items-center gap-3 mt-2 text-xs" style={{ color: "var(--ink-faint)" }}>
+                {row.matched_document && <span className="sw-mono">Doc {row.matched_document}</span>}
+                {row.matched_order_date && <span>Ordered {fmtDate(row.matched_order_date)}</span>}
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="text-xs font-bold uppercase mb-1" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Not found in NetSuite</div>
+              <div className="text-xs" style={{ color: "var(--ink-soft)" }}>
+                {row.status === "Won"
+                  ? "Marked won, but nothing matching has appeared. Either it hasn't been placed yet, or the company name is too different to match — adding the Opp ID below would settle it."
+                  : "Nothing matching has appeared yet. That's expected until the order is placed."}
+              </div>
+            </div>
+          )}
+
+          {/* The forecast itself */}
+          <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="text-xs font-bold uppercase mb-2" style={{ color: "var(--ink-soft)", letterSpacing: "0.04em" }}>The forecast</div>
+
+            {canManage ? (
+              <>
+                <label className="sw-label">Business</label>
+                <input className="sw-input sw-focus mb-2" value={f.business_name}
+                  onChange={(e) => setF((p) => ({ ...p, business_name: e.target.value }))} />
+
+                <label className="sw-label">Opp ID <span style={{ color: "var(--ink-faint)", fontWeight: 400 }}>— fills this in and the match becomes exact</span></label>
+                <input className="sw-input sw-focus mb-2" value={f.opp_id} placeholder="OID-..."
+                  onChange={(e) => setF((p) => ({ ...p, opp_id: e.target.value }))} />
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0.5rem" }} className="mb-2">
+                  <div>
+                    <label className="sw-label">GP</label>
+                    <input className="sw-input sw-focus" value={f.gp} onChange={(e) => setF((p) => ({ ...p, gp: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="sw-label">SOV</label>
+                    <input className="sw-input sw-focus" value={f.sov} onChange={(e) => setF((p) => ({ ...p, sov: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="sw-label">Units</label>
+                    <input className="sw-input sw-focus" value={f.units} onChange={(e) => setF((p) => ({ ...p, units: e.target.value }))} />
+                  </div>
+                </div>
+
+                <label className="sw-label">Next step</label>
+                <input className="sw-input sw-focus mb-2" value={f.next_step}
+                  onChange={(e) => setF((p) => ({ ...p, next_step: e.target.value }))} />
+
+                <label className="sw-label">Notes</label>
+                <textarea className="sw-input sw-focus" rows={3} value={f.notes}
+                  onChange={(e) => setF((p) => ({ ...p, notes: e.target.value }))} />
+              </>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                {[["Pillar", row.pillar], ["GP", fmtGBP(row.gp)], ["SOV", fmtGBP(row.sov)],
+                  ["Units", num(row.units) || "—"], ["Next step", row.next_step || "—"],
+                  ["Notes", row.notes || "—"]].map(([k, v]) => (
+                  <div key={k} className="flex items-baseline gap-2">
+                    <span className="text-xs shrink-0" style={{ color: "var(--ink-faint)", width: 78 }}>{k}</span>
+                    <span className="text-xs">{v}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {canManage && (
+            <div className="flex items-center gap-2">
+              <button disabled={!dirty || saving}
+                onClick={async () => {
+                  setSaving(true);
+                  await onSave(row.id, {
+                    business_name: f.business_name.trim(),
+                    opp_id: f.opp_id.trim() || null,
+                    gp: parseFloat(f.gp) || 0,
+                    sov: parseFloat(f.sov) || 0,
+                    units: parseFloat(f.units) || 0,
+                    next_step: f.next_step || null,
+                    notes: f.notes || null,
+                  });
+                  setSaving(false);
+                  onClose();
+                }}
+                className="sw-focus flex-1 py-2 rounded-lg text-sm font-semibold"
+                style={{ background: dirty ? "var(--primary)" : "var(--surface)", color: dirty ? "#fff" : "var(--ink-faint)", border: "1px solid var(--border)" }}>
+                {saving ? "Saving..." : "Save changes"}
+              </button>
+
+              {confirmDel ? (
+                <>
+                  <button onClick={async () => { await onDelete(row.id); onClose(); }}
+                    className="sw-focus py-2 px-3 rounded-lg text-sm font-semibold text-white" style={{ background: "var(--red)" }}>
+                    Really delete
+                  </button>
+                  <button onClick={() => setConfirmDel(false)} className="sw-focus text-xs" style={{ color: "var(--ink-faint)" }}>Cancel</button>
+                </>
+              ) : (
+                <button onClick={() => setConfirmDel(true)}
+                  className="sw-focus py-2 px-3 rounded-lg text-sm" style={{ color: "var(--red)", border: "1px solid var(--border)" }}>
+                  Delete
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ForecastView({ netsuite, profile, staff }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -8163,6 +8373,7 @@ function ForecastView({ netsuite, profile, staff }) {
   const [pillarFilter, setPillarFilter] = useState(null);   // product group filter
   const [openCols, setOpenCols] = useState({});             // product columns broken into parts
   const [adding, setAdding] = useState(false);
+  const [openForecast, setOpenForecast] = useState(null);
   const [saving, setSaving] = useState(false);
   const [toast, setToastLocal] = useState("");
   const { sellers } = useStaff();
@@ -8497,6 +8708,16 @@ function ForecastView({ netsuite, profile, staff }) {
     }
     setDraft(blankRow);
     setAdding(false);
+    load();
+  };
+
+  const deleteForecast = async (id) => {
+    const { error } = await supabase.from("forecasts").delete().eq("id", id);
+    if (error) {
+      setToastLocal(`Couldn't delete: ${error.message}`);
+      setTimeout(() => setToastLocal(""), 5000);
+      return;
+    }
     load();
   };
 
@@ -8916,10 +9137,24 @@ function ForecastView({ netsuite, profile, staff }) {
               <tbody>
                 {weekRows.map((r) => {
                   const gpDiff = r.matched_at ? num(r.actual_gp) - num(r.gp) : null;
+                  // A matched line is tinted green — the whole point of the
+                  // page is seeing at a glance what has actually landed.
+                  const weak = r.matched_at && num(r.matched_confidence) > 0 && num(r.matched_confidence) < 0.6;
                   return (
-                    <tr key={r.id} style={{ borderTop: "1px solid var(--border)" }}>
+                    <tr key={r.id}
+                      onClick={() => setOpenForecast(r)}
+                      style={{
+                        borderTop: "1px solid var(--border)",
+                        background: r.matched_at ? (weak ? "var(--amber-soft)" : "var(--green-soft)") : "transparent",
+                        cursor: "pointer",
+                      }}>
                       <td className="px-3 py-2">
-                        <div className="font-medium">{r.business_name}</div>
+                        <div className="font-medium flex items-center gap-1.5">
+                          {r.matched_at && (
+                            <CheckCircle2 size={12} style={{ color: weak ? "var(--amber)" : "var(--green)", flexShrink: 0 }} />
+                          )}
+                          {r.business_name}
+                        </div>
                         {r.opp_id && <div className="text-xs sw-mono" style={{ color: "var(--ink-faint)" }}>{r.opp_id}</div>}
                       </td>
                       <td className="px-3 py-2 text-xs">{r.agent_name}{r.agent_team ? <span style={{ color: "var(--ink-faint)" }}> · {r.agent_team}</span> : null}</td>
@@ -8932,6 +9167,7 @@ function ForecastView({ netsuite, profile, staff }) {
                       <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-soft)" }}>{r.next_step || "—"}</td>
                       <td className="px-3 py-2">
                         <select className="sw-input sw-focus" style={{ width: 96, fontSize: 11, padding: "4px 6px" }}
+                          onClick={(e) => e.stopPropagation()}
                           value={r.status || "Open"} onChange={(e) => updateRow(r.id, { status: e.target.value })}>
                           {FORECAST_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
                         </select>
@@ -8940,11 +9176,11 @@ function ForecastView({ netsuite, profile, staff }) {
                         {r.matched_at ? (
                           <div>
                             <div className="text-xs font-semibold" style={{ color: "var(--green)" }}>
-                              {fmtGBP(r.actual_gp)} · Doc {r.matched_document_number}
+                              {fmtGBP(r.actual_gp)}{(r.matched_document || r.matched_document_number) ? ` · Doc ${r.matched_document || r.matched_document_number}` : ""}
                             </div>
                             <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
                               {r.matched_order_date ? fmtDate(r.matched_order_date) : ""}
-                              {r.match_method === "business_name" ? " · by name" : " · by Opp ID"}
+                              {(r.matched_by || r.match_method) === "opp_id" ? " · by Opp ID" : " · by name"}
                             </div>
                             {r.matched_company && r.matched_company.toUpperCase() !== String(r.business_name || "").toUpperCase() && (
                               <div className="text-xs" style={{ color: "var(--amber)" }}>NS: {r.matched_company}</div>
@@ -8971,6 +9207,15 @@ function ForecastView({ netsuite, profile, staff }) {
             </table>
           </div>
         </div>
+      )}
+
+      {openForecast && (
+        <ForecastDrawer
+          row={weekRows.find((r) => r.id === openForecast.id) || openForecast}
+          canManage={profile?.role === "office" || profile?.role === "2ic"}
+          onSave={updateRow}
+          onDelete={deleteForecast}
+          onClose={() => setOpenForecast(null)} />
       )}
     </div>
   );
@@ -9204,6 +9449,7 @@ function LandscapesView({ profile, staff }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
+  const [openForecast, setOpenForecast] = useState(null);
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState("");
   const [query, setQuery] = useState("");
