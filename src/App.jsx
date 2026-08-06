@@ -6465,7 +6465,7 @@ const ROLE_OPTIONS = ["office", "2ic", "agent", "sd", "sd_2ic"];
 const ROLE_LABELS = { office: "Office", "2ic": "2IC", agent: "Agent", sd: "Sales Delivery", sd_2ic: "Sales Delivery 2IC" };
 
 function StaffDetailForm({ s, profileForStaff, onSaveStaff, onSaveProfile, onResetPassword, onSetActive, plans,
-                          planHistory, onAssignPlan, onDeleteAssignment }) {
+                          planHistory, onAssignPlan, onDeleteAssignment, managerOptions = [] }) {
   const [assigning, setAssigning] = useState(false);
   const [newPlan, setNewPlan] = useState("");
   const [newFrom, setNewFrom] = useState(new Date().toISOString().slice(0, 10));
@@ -6522,8 +6522,19 @@ function StaffDetailForm({ s, profileForStaff, onSaveStaff, onSaveProfile, onRes
           <input className="sw-input sw-focus" value={f.alt_name} onChange={(e) => setF((p) => ({ ...p, alt_name: e.target.value }))}
             placeholder="if NetSuite spells it differently" />
         </Row>
-        <Row label="Team">
-          <input className="sw-input sw-focus" value={f.team} onChange={(e) => setF((p) => ({ ...p, team: e.target.value }))} list="team-suggestions" />
+        <Row label="Manager">
+          {/* A dropdown rather than free text: teams are keyed on the
+              manager's name, so a typo here silently drops someone out of
+              every team total. Leavers stay selectable, since historical
+              rows may still point at them. */}
+          <select className="sw-input sw-focus" value={f.team}
+            onChange={(e) => setF((p) => ({ ...p, team: e.target.value }))}>
+            <option value="">— no manager —</option>
+            {managerOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+            {f.team && !managerOptions.includes(f.team) && (
+              <option value={f.team}>{f.team} (not on the staff list)</option>
+            )}
+          </select>
         </Row>
         <Row label="UIN">
           <input className="sw-input sw-focus" value={f.uin} onChange={(e) => setF((p) => ({ ...p, uin: e.target.value }))} />
@@ -6870,6 +6881,15 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
     () => [...staff].sort((a, b) => (a.active === false) - (b.active === false) || String(a.full_name).localeCompare(String(b.full_name))),
     [staff]
   );
+
+  /* Managers to choose from: anyone already named as a team, plus the
+     selling-team names, so a new manager can be picked before anyone has
+     been assigned to them. */
+  const managerOptions = useMemo(() => {
+    const s = new Set(SELLING_TEAMS);
+    (staff || []).forEach((x) => { if (x.team) s.add(x.team); });
+    return Array.from(s).sort();
+  }, [staff]);
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return sorted;
@@ -6935,7 +6955,7 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
         <div>
           {adding && <AddStaffForm onAdd={async (f) => { await onAddStaff(f); setAdding(false); }} onCancel={() => setAdding(false)} />}
           {!adding && selected && (
-            <StaffDetailForm key={selected.id} s={selected}
+            <StaffDetailForm key={selected.id} s={selected} managerOptions={managerOptions}
               profileForStaff={selected.user_id ? profileByUserId[selected.user_id] : null}
               onSaveStaff={onSaveStaff} onSaveProfile={onSaveProfile}
               onResetPassword={onResetPassword} onSetActive={onSetActive} plans={plans}
@@ -10341,9 +10361,12 @@ function LeadsView({ staff, profile }) {
   }, [staff]);
 
   const blankRow = useCallback((name) => {
-    const o = { name, team: teamOf(name), total: 0, accounts: new Set(), byRule: {}, byGroup: {} };
+    // byRule counts LEADS, byGroup and total sum POINTS — that's why BT Net
+    // ACQ shows as one record but adds two to the total.
+    const o = { name, team: teamOf(name), total: 0, accounts: new Set(), byRule: {}, byGroup: {}, acq: {} };
     (rules || []).forEach((r) => { o.byRule[r.key] = 0; });
     groups.forEach((g) => { o.byGroup[g.key] = 0; });
+    ["Cloud", "BT Net", "Mobile"].forEach((g) => { o.acq[g] = 0; });
     return o;
   }, [rules, groups, teamOf]);
 
@@ -10358,10 +10381,18 @@ function LeadsView({ staff, profile }) {
       const row = byName[name];
       l.hits.forEach((r) => {
         const v = num(r.value) || 1;
-        row.byRule[r.key] = (row.byRule[r.key] || 0) + v;
+        row.byRule[r.key] = (row.byRule[r.key] || 0) + 1;   // records
         row.byGroup[r.product_group] = (row.byGroup[r.product_group] || 0) + v;
         row.total += v;
       });
+      // Straight ACQ count per product, for the summary table
+      const isAcq = /\bacq\b/i.test(String(l.product_raw || ""));
+      if (isAcq) {
+        const hay = String(l.product_raw || "").toLowerCase();
+        if (hay.includes("cloud")) row.acq["Cloud"] += 1;
+        if (hay.includes("data")) row.acq["BT Net"] += 1;
+        if (hay.includes("mobile")) row.acq["Mobile"] += 1;
+      }
       if (l.company_name) row.accounts.add(l.company_name);
     });
     const people = Object.values(byName).sort((a, b) => b.total - a.total);
@@ -10375,6 +10406,7 @@ function LeadsView({ staff, profile }) {
       row.total += a.total;
       Object.keys(a.byRule).forEach((k) => { row.byRule[k] = (row.byRule[k] || 0) + a.byRule[k]; });
       Object.keys(a.byGroup).forEach((k) => { row.byGroup[k] = (row.byGroup[k] || 0) + a.byGroup[k]; });
+      Object.keys(a.acq).forEach((k) => { row.acq[k] = (row.acq[k] || 0) + a.acq[k]; });
       a.accounts.forEach((c) => row.accounts.add(c));
     });
     const teams = SELLING_TEAMS.map((t) => byTeamMap[t]).filter(Boolean)
@@ -10385,6 +10417,7 @@ function LeadsView({ staff, profile }) {
       all.total += t.total;
       Object.keys(t.byRule).forEach((k) => { all.byRule[k] = (all.byRule[k] || 0) + t.byRule[k]; });
       Object.keys(t.byGroup).forEach((k) => { all.byGroup[k] = (all.byGroup[k] || 0) + t.byGroup[k]; });
+      Object.keys(t.acq).forEach((k) => { all.acq[k] = (all.acq[k] || 0) + t.acq[k]; });
       t.accounts.forEach((c) => all.accounts.add(c));
     });
 
@@ -10419,6 +10452,47 @@ function LeadsView({ staff, profile }) {
   const colCount = 1 + groups.reduce((n, g) => n + 1 + (g.showRules ? g.rules.length : 0), 0) + 2;
 
   const GROUP_EDGE = "2px solid var(--border-strong, var(--ink-faint))";
+  const [copied, setCopied] = useState("");
+
+  /* Copying a table out of the page loses everything, because the styles
+     live in CSS variables the email client never sees. Writing the HTML to
+     the clipboard with the colours baked in as literal values keeps the
+     formatting when it lands in Outlook. */
+  const copyTable = useCallback(async (id, label) => {
+    const node = document.getElementById(id);
+    if (!node) return;
+
+    const clone = node.cloneNode(true);
+    // Resolve every CSS variable to the colour it currently evaluates to
+    const root = getComputedStyle(document.documentElement);
+    const varOf = (name) => root.getPropertyValue(name).trim() || "#000";
+    const resolve = (el) => {
+      const s = el.getAttribute("style");
+      if (s && s.includes("var(")) {
+        el.setAttribute("style", s.replace(/var\(([^),]+)(?:,[^)]*)?\)/g, (_, v) => varOf(v.trim())));
+      }
+      Array.from(el.children).forEach(resolve);
+    };
+    resolve(clone);
+
+    const html = `<table style="border-collapse:collapse;font-family:Arial,Helvetica,sans-serif;font-size:12px">${clone.innerHTML}</table>`;
+    const text = node.innerText || "";
+
+    try {
+      await navigator.clipboard.write([
+        new window.ClipboardItem({
+          "text/html": new Blob([html], { type: "text/html" }),
+          "text/plain": new Blob([text], { type: "text/plain" }),
+        }),
+      ]);
+      setCopied(`${label} copied — paste straight into an email`);
+    } catch {
+      // Older browsers, or a page without clipboard permission
+      await navigator.clipboard?.writeText(text);
+      setCopied(`${label} copied as plain text`);
+    }
+    setTimeout(() => setCopied(""), 3000);
+  }, []);
 
   const Cell = ({ v, bold, tone, edge, dark }) => (
     <td className="sw-mono" style={{
@@ -10427,6 +10501,45 @@ function LeadsView({ staff, profile }) {
       color: dark ? "#fff" : (v ? (tone || "var(--ink)") : "var(--ink-faint)"),
       borderLeft: edge ? GROUP_EDGE : "1px solid var(--border)",
     }}>{v || (dark ? 0 : "·")}</td>
+  );
+
+  /* The column headings, repeated above every team block. Without this a
+     block pasted on its own is just a grid of numbers. */
+  const HeadRows = ({ accent, nameLabel, teamHeading }) => (
+    <>
+      <tr style={{ background: teamHeading ? "var(--primary-soft)" : "var(--surface-alt)" }}>
+        <th rowSpan={2} className="text-left px-2 py-1.5"
+          style={{
+            fontSize: teamHeading ? 12 : 10.5, textTransform: "uppercase",
+            color: teamHeading ? accent : "var(--ink-soft)",
+            letterSpacing: "0.05em", fontWeight: 700, whiteSpace: "nowrap",
+          }}>
+          {nameLabel}
+        </th>
+        {groups.map((g) => (
+          <th key={g.key} colSpan={1 + (g.showRules ? g.rules.length : 0)} className="px-2 py-1.5"
+            style={{ fontSize: 11.5, fontWeight: 700, color: accent, borderLeft: GROUP_EDGE, textAlign: "center" }}>
+            {g.label}
+          </th>
+        ))}
+        <th rowSpan={2} className="px-2 py-1.5" style={{ fontSize: 11.5, fontWeight: 700, color: "var(--green)", borderLeft: GROUP_EDGE }}>Total</th>
+        <th rowSpan={2} className="px-2 py-1.5" style={{ fontSize: 10, color: "var(--ink-soft)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Accts</th>
+      </tr>
+      <tr style={{ background: teamHeading ? "var(--primary-soft)" : "var(--surface-alt)" }}>
+        {groups.map((g) => (
+          <React.Fragment key={g.key}>
+            <th className="px-2 py-1" style={{ fontSize: 10, color: "var(--ink-faint)", borderLeft: GROUP_EDGE, fontWeight: 600 }}>Total</th>
+            {g.showRules && g.rules.map((r) => (
+              <th key={r.key} className="px-2 py-1"
+                style={{ fontSize: 10, color: "var(--ink-faint)", fontWeight: 500, whiteSpace: "nowrap" }}
+                title={`${(r.match_all || []).join(" + ")}${(r.match_any || []).length ? ` + one of ${(r.match_any || []).join("/")}` : ""} · worth ${r.value}`}>
+                {r.label}
+              </th>
+            ))}
+          </React.Fragment>
+        ))}
+      </tr>
+    </>
   );
 
   /* `dark` renders the office and team totals as a solid purple bar, which
@@ -10479,6 +10592,7 @@ function LeadsView({ staff, profile }) {
             <span style={{ width: 11, height: 11, borderRadius: 3, background: bandBg.amber, border: "1px solid var(--amber)" }} />
             Sub 4 convos a day
           </span>
+          {copied && <span className="text-xs font-semibold" style={{ color: "var(--green)" }}>{copied}</span>}
           {profile?.role === "office" && (
             <button onClick={() => setShowRules((v) => !v)} className="sw-focus text-xs font-semibold"
               style={{ color: "var(--primary)" }}>
@@ -10513,92 +10627,128 @@ function LeadsView({ staff, profile }) {
         </div>
       )}
 
-      {/* One table per role. Lead gens are credited off Created By, closers
-          off Lead Owner — the same lead can appear in both. */}
+      {/* One table per role, with a compact ACQ summary beside each.
+          Lead gens are credited off Created By, closers off Lead Owner. */}
       {[
-        { key: "gen", label: "Lead Gens", sub: "credited on Created By", data: leadGens, accent: "var(--primary)" },
-        { key: "close", label: "Closers", sub: "credited on Lead Owner", data: closers, accent: "var(--blue)" },
+        { key: "gen", label: "Lead Gens", sub: "credited on Created By", data: leadGens, accent: "var(--primary)", verb: "sent" },
+        { key: "close", label: "Closers", sub: "credited on Lead Owner", data: closers, accent: "var(--blue)", verb: "received" },
       ].map((tbl) => (
-        <div key={tbl.key} className="mb-4">
-          <div className="flex items-baseline gap-2 mb-1.5">
-            <span className="sw-display" style={{ fontSize: 14, fontWeight: 700, color: tbl.accent }}>{tbl.label}</span>
+        <div key={tbl.key} className="mb-5">
+          <div className="flex items-baseline gap-2 mb-1.5 flex-wrap">
+            <span className="sw-display" style={{ fontSize: 15, fontWeight: 700, color: tbl.accent }}>{tbl.label}</span>
             <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{tbl.sub}</span>
-            <span className="sw-mono ml-auto" style={{ fontSize: 13, fontWeight: 700, color: "var(--green)" }}>
+            <button onClick={() => copyTable(`leads-tbl-${tbl.key}`, tbl.label)}
+              className="sw-focus text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1"
+              style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>
+              <FileText size={11} /> Copy table
+            </button>
+            <span className="sw-mono ml-auto" style={{ fontSize: 14, fontWeight: 700, color: "var(--green)" }}>
               {tbl.data.all.total}
             </span>
           </div>
 
-          <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-            <div style={{ overflowX: "auto" }}>
-              <table className="w-full" style={{ borderCollapse: "collapse" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 250px", gap: "0.75rem", alignItems: "start" }}>
+
+            <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div style={{ overflowX: "auto" }}>
+                <table id={`leads-tbl-${tbl.key}`} className="w-full" style={{ borderCollapse: "collapse" }}>
+                  <tbody>
+                    {/* Office block */}
+                    <tr style={{ background: "var(--ink)" }}>
+                      <td colSpan={colCount} className="px-2 py-1.5 text-xs font-bold uppercase" style={{ color: "#fff", letterSpacing: "0.06em" }}>
+                        Overall team numbers
+                      </td>
+                    </tr>
+                    <HeadRows accent={tbl.accent} nameLabel={tbl.key === "gen" ? "Team" : "Team"} />
+                    {tbl.data.teams.map((t) => <Row key={t.name} r={t} bold />)}
+                    <Row r={tbl.data.all} dark />
+
+                    {/* Then each team, with the headings repeated so a block
+                        still reads on its own once pasted into an email. */}
+                    {tbl.data.teams.map((t) => (
+                      <React.Fragment key={`${tbl.key}-blk-${t.name}`}>
+                        <tr><td colSpan={colCount} style={{ height: 12, background: "var(--bg)", borderTop: "3px solid var(--ink)" }} /></tr>
+                        <HeadRows accent={tbl.accent} nameLabel={t.name} teamHeading />
+                        {t.agents.map((a) => <Row key={a.name} r={a} indent band={bandOf(a.total)} />)}
+                        <Row r={t} dark />
+                      </React.Fragment>
+                    ))}
+
+                    {tbl.data.people.length === 0 && (
+                      <tr><td colSpan={colCount} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                        {loading ? "Loading..." : "Nothing scored for this month — check the sync has run."}
+                      </td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* ACQ only, one column per product */}
+            <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="px-2.5 py-1.5" style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
+                <div className="text-xs font-bold uppercase" style={{ color: tbl.accent, letterSpacing: "0.05em" }}>ACQ {tbl.verb}</div>
+              </div>
+              <table id={`leads-acq-${tbl.key}`} className="w-full" style={{ borderCollapse: "collapse" }}>
                 <thead>
                   <tr style={{ background: "var(--surface-alt)" }}>
-                    <th rowSpan={2} className="text-left px-2 py-1.5" style={{ fontSize: 10.5, textTransform: "uppercase", color: "var(--ink-soft)", letterSpacing: "0.04em" }}>
-                      {tbl.key === "gen" ? "Creator" : "Owner"}
-                    </th>
-                    {groups.map((g) => (
-                      <th key={g.key} colSpan={1 + (g.showRules ? g.rules.length : 0)} className="px-2 py-2"
-                        style={{ fontSize: 12, fontWeight: 700, color: tbl.accent, borderLeft: GROUP_EDGE, textAlign: "center" }}>
-                        {g.label}
-                      </th>
-                    ))}
-                    <th rowSpan={2} className="px-2 py-2" style={{ fontSize: 12, fontWeight: 700, color: "var(--green)", borderLeft: GROUP_EDGE }}>Total</th>
-                    <th rowSpan={2} className="px-2 py-1.5" style={{ fontSize: 10.5, color: "var(--ink-soft)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Accounts</th>
-                  </tr>
-                  <tr style={{ background: "var(--surface-alt)" }}>
-                    {groups.map((g) => (
-                      <React.Fragment key={g.key}>
-                        <th className="px-2 py-1" style={{ fontSize: 10, color: "var(--ink-faint)", borderLeft: GROUP_EDGE, fontWeight: 600 }}>Total</th>
-                        {g.showRules && g.rules.map((r) => (
-                          <th key={r.key} className="px-2 py-1" style={{ fontSize: 10, color: "var(--ink-faint)", fontWeight: 500, whiteSpace: "nowrap" }}
-                            title={`${(r.match_all || []).join(" + ")}${(r.match_any || []).length ? ` + one of ${(r.match_any || []).join("/")}` : ""} · worth ${r.value}`}>
-                            {r.label}
-                          </th>
-                        ))}
-                      </React.Fragment>
+                    <th className="text-left px-2 py-1" style={{ fontSize: 10, color: "var(--ink-soft)", textTransform: "uppercase" }}>Name</th>
+                    {["Cloud", "BT Net", "Mobile"].map((g) => (
+                      <th key={g} className="px-2 py-1" style={{ fontSize: 10, color: "var(--ink-faint)", borderLeft: "1px solid var(--border)" }}>{g}</th>
                     ))}
                   </tr>
                 </thead>
-
                 <tbody>
-                  <tr style={{ background: "var(--ink)" }}>
-                    <td colSpan={colCount} className="px-2 py-1.5 text-xs font-bold uppercase" style={{ color: "#fff", letterSpacing: "0.06em" }}>
-                      Overall team numbers
-                    </td>
-                  </tr>
-                  {tbl.data.teams.map((t) => <Row key={t.name} r={t} bold />)}
-                  <Row r={tbl.data.all} dark />
-
                   {tbl.data.teams.map((t) => (
-                    <React.Fragment key={`${tbl.key}-blk-${t.name}`}>
-                      {/* A clear break between teams — the old single line
-                          disappeared once this was pasted into an email. */}
-                      <tr><td colSpan={colCount} style={{ height: 10, background: "var(--bg)", borderTop: "3px solid var(--ink)", borderBottom: "1px solid var(--border)" }} /></tr>
-                      <tr style={{ background: "var(--primary-soft)" }}>
-                        <td colSpan={colCount} className="px-2 py-1.5 text-xs font-bold uppercase" style={{ color: tbl.accent, letterSpacing: "0.06em" }}>
-                          {t.name}
-                        </td>
+                    <React.Fragment key={`acq-${tbl.key}-${t.name}`}>
+                      <tr style={{ background: "var(--primary-soft)", borderTop: "2px solid var(--border)" }}>
+                        <td colSpan={4} className="px-2 py-1 text-xs font-bold truncate" style={{ color: tbl.accent }}>{t.name}</td>
                       </tr>
-                      {t.agents.map((a) => <Row key={a.name} r={a} indent band={bandOf(a.total)} />)}
-                      <Row r={t} dark />
+                      {t.agents.map((a) => (
+                        <tr key={a.name} style={{ borderTop: "1px solid var(--border)" }}>
+                          <td className="px-2 py-1" style={{ maxWidth: 120 }}>
+                            <div className="truncate" style={{ fontSize: 11.5 }}>{a.name}</div>
+                          </td>
+                          {["Cloud", "BT Net", "Mobile"].map((g) => (
+                            <td key={g} className="sw-mono" style={{
+                              padding: "3px 6px", textAlign: "center", fontSize: 12,
+                              color: a.acq[g] ? "var(--ink)" : "var(--ink-faint)",
+                              borderLeft: "1px solid var(--border)",
+                            }}>{a.acq[g] || "·"}</td>
+                          ))}
+                        </tr>
+                      ))}
+                      <tr style={{ background: "var(--primary)" }}>
+                        <td className="px-2 py-1" style={{ fontSize: 11.5, fontWeight: 700, color: "#fff" }}>Total</td>
+                        {["Cloud", "BT Net", "Mobile"].map((g) => (
+                          <td key={g} className="sw-mono" style={{ padding: "3px 6px", textAlign: "center", fontSize: 12, fontWeight: 700, color: "#fff" }}>
+                            {t.acq[g] || 0}
+                          </td>
+                        ))}
+                      </tr>
                     </React.Fragment>
                   ))}
-
-                  {tbl.data.people.length === 0 && (
-                    <tr><td colSpan={colCount} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
-                      {loading ? "Loading..." : "Nothing scored for this month — check the sync has run."}
-                    </td></tr>
-                  )}
+                  <tr style={{ background: "var(--ink)" }}>
+                    <td className="px-2 py-1.5" style={{ fontSize: 11.5, fontWeight: 700, color: "#fff" }}>All teams</td>
+                    {["Cloud", "BT Net", "Mobile"].map((g) => (
+                      <td key={g} className="sw-mono" style={{ padding: "5px 6px", textAlign: "center", fontSize: 12.5, fontWeight: 700, color: "#fff" }}>
+                        {tbl.data.all.acq[g] || 0}
+                      </td>
+                    ))}
+                  </tr>
                 </tbody>
               </table>
+              <div className="px-2.5 py-1.5 text-xs" style={{ color: "var(--ink-faint)", borderTop: "1px solid var(--border)" }}>
+                Leads with ACQ in them, counted once per product.
+              </div>
             </div>
           </div>
         </div>
       ))}
 
       <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
-        Conversations are credited from the product string on each lead, and a lead can score several rules at
-        once — an Acq Cloud at 3+ counts as more than one. The same lead credits the <b>lead gen</b> who created
+        Sub-columns count leads; the group and grand totals count points, which is why BT Net ACQ reads as one
+        record but adds two. A lead can score several rules at once — an Acq Cloud at 3+ counts as more than one. The same lead credits the <b>lead gen</b> who created
         it and the <b>closer</b> who owns it, so it appears in both tables. An <b>Unsent</b> lead only drops out
         where creator and owner are the same person. Rows shade by conversations per working day so far this
         month, so someone who joined mid-month isn't penalised for the days before they started.
@@ -13965,7 +14115,7 @@ export default function App() {
         mobileOpen={menuOpen} setMobileOpen={setMenuOpen} />
 
       <div style={{ minWidth: 0 }}>
-      <main className={`sw-main p-6 mx-auto ${["breakdown", "daybyday", "forecast", "landscapes", "dashboard", "distribution", "admin", "statuses", "delivery", "tops"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
+      <main className={`sw-main p-6 mx-auto ${["breakdown", "daybyday", "forecast", "landscapes", "dashboard", "distribution", "admin", "statuses", "delivery", "tops", "leads"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
         {submitted && (
           <div className="sw-rise rounded-2xl p-4 mb-5 flex items-center justify-between gap-4" style={{ background: "var(--green-soft)", border: "1px solid var(--green)" }}>
             <div className="flex items-center gap-3">
