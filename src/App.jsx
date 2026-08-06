@@ -9517,15 +9517,23 @@ function LandscapesView({ profile, staff }) {
 /* Placement states from column P of the Unplaced Rep sheet. Matched on
    pattern rather than exact text, because the sheet's formulas word these
    slightly differently over time. Order matters — first match wins. */
+/* Placement states. Two sources write this column with different
+   conventions — the old sheet sync wrote human text ("Out for Sig"), the
+   direct NetSuite sync writes snake_case ("out_for_sig") — so underscores
+   are normalised to spaces before matching and both shapes work.
+   Order matters: "placed this week" must be tested before "placed", and
+   "unplaced" before anything that merely contains "placed". */
 const PLACEMENT_BUCKETS = [
-  { key: "out_for_sig", label: "Out for Sig", test: /out\s*for\s*sig|awaiting\s*sig|signature/i, tone: "var(--blue)" },
-  { key: "placed_tw",   label: "Placed TW",   test: /placed\s*t\.?w|this\s*week/i,               tone: "var(--green)" },
-  { key: "placed_lw",   label: "Placed LW",   test: /placed\s*l\.?w|last\s*week/i,               tone: "var(--gold)" },
-  { key: "unplaced",    label: "Unplaced",    test: /unplaced|not\s*placed|^$/i,                  tone: "var(--amber)" },
+  { key: "out_for_sig",  label: "Out for Sig",  test: /out\s*for\s*sig|awaiting\s*sig|signature/i, tone: "var(--blue)" },
+  { key: "placed_tw",    label: "Placed TW",    test: /placed\s*(this\s*week|t\.?w\b)|this\s*week/i, tone: "var(--green)" },
+  { key: "placed_lw",    label: "Placed LW",    test: /placed\s*(last\s*week|l\.?w\b)|last\s*week/i, tone: "var(--gold)" },
+  { key: "placed_older", label: "Placed (older)", test: /placed\s*older|older/i,                   tone: "var(--ink-faint)" },
+  { key: "unplaced",     label: "Unplaced",     test: /unplaced|not\s*placed|^$/i,                  tone: "var(--amber)" },
 ];
 
 function placementOf(status) {
-  const s = String(status || "").trim();
+  // Underscores to spaces, so out_for_sig and "Out for Sig" both match
+  const s = String(status || "").replace(/[_-]+/g, " ").trim();
   const hit = PLACEMENT_BUCKETS.find((b) => b.test.test(s));
   return hit ? hit.key : "other";
 }
@@ -10153,9 +10161,12 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
             })}
           </div>
 
-          {/* Placement states — 2×2, scaled down to sit beside the products */}
+          {/* Placement states — 2×2, scaled down to sit beside the products.
+              placed_older is deliberately not shown: it's a catch-all for
+              anything placed more than a fortnight ago, and a fifth card
+              would break the grid. It's still counted in All statuses. */}
           <div className="sw-cols-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: "0.75rem" }}>
-            {PLACEMENT_BUCKETS.map((b) => {
+            {PLACEMENT_BUCKETS.filter((b) => b.key !== "placed_older").map((b) => {
               const d = placement.buckets[b.key];
               const active = placementView === b.key;
               return (
