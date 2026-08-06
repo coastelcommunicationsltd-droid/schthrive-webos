@@ -6710,7 +6710,7 @@ function AddStaffForm({ onAdd, onCancel }) {
 
 /* Staff who aren't fully set up yet, and NetSuite names nothing matches.
    Both are silent problems — figures quietly land nowhere. */
-function AdminIssues({ staff, netsuite, aliases, onAddAlias, onDeleteAlias, plans }) {
+function AdminIssues({ staff, netsuite, leads, aliases, onAddAlias, onDeleteAlias, plans }) {
   const [newAlias, setNewAlias] = useState("");
   const [newTarget, setNewTarget] = useState("");
   const [tab, setTab] = useState("staff");
@@ -6726,21 +6726,39 @@ function AdminIssues({ staff, netsuite, aliases, onAddAlias, onDeleteAlias, plan
     return { ...s, problems };
   }).filter((s) => s.problems.length), [staff]);
 
-  // NetSuite names that match neither a staff record nor an existing alias
-  const unmatched = useMemo(() => {
-    const known = new Set((staff || []).map((s) => String(s.full_name || "").toLowerCase()));
-    const aliased = new Set((aliases || []).map((a) => String(a.alias || "").toLowerCase()));
-    const counts = {};
-    (netsuite || []).forEach((n) => {
-      [n.closer_name, n.referrer_name].forEach((nm) => {
-        if (!nm) return;
-        const k = String(nm).trim();
-        if (!k || known.has(k.toLowerCase()) || aliased.has(k.toLowerCase())) return;
-        counts[k] = (counts[k] || 0) + 1;
+  /* Names appearing in NetSuite or the leads sheet that match neither a
+     staff record nor an existing alias. Both feeds are checked here so
+     there's one place to fix a spelling rather than two — an alias set
+     here resolves the name everywhere it appears. */
+  const unmatchedBySource = useMemo(() => {
+    const known = new Set((staff || []).map((s) => nameKey(s.full_name)));
+    (staff || []).forEach((s) => { if (s.alt_name) known.add(nameKey(s.alt_name)); });
+    const aliased = new Set((aliases || []).map((a) => nameKey(a.alias)));
+
+    const tally = (rows, pick) => {
+      const counts = {};
+      (rows || []).forEach((r) => {
+        pick(r).forEach((nm) => {
+          if (!nm) return;
+          const k = String(nm).trim();
+          if (!k) return;
+          const key = nameKey(k);
+          if (known.has(key) || aliased.has(key)) return;
+          counts[k] = (counts[k] || 0) + 1;
+        });
       });
-    });
-    return Object.keys(counts).map((name) => ({ name, count: counts[name] })).sort((a, b) => b.count - a.count);
-  }, [netsuite, staff, aliases]);
+      return Object.keys(counts).map((name) => ({ name, count: counts[name] }))
+        .sort((a, b) => b.count - a.count);
+    };
+
+    return {
+      netsuite: tally(netsuite, (n) => [n.closer_name, n.referrer_name]),
+      leads: tally(leads, (l) => [l.creator, l.lead_owner]),
+    };
+  }, [netsuite, leads, staff, aliases]);
+
+  const unmatched = unmatchedBySource.netsuite;
+  const unmatchedLeads = unmatchedBySource.leads;
 
   const sellers = (staff || []).filter((s) => s.sells !== false);
 
@@ -6749,15 +6767,17 @@ function AdminIssues({ staff, netsuite, aliases, onAddAlias, onDeleteAlias, plan
       <div className="flex items-center gap-2 px-3 py-2" style={{ borderBottom: open ? "1px solid var(--border)" : "none" }}>
         <button onClick={() => setOpen((v) => !v)} className="sw-focus flex items-center gap-2 flex-1 text-left">
           <ChevronDown size={13} style={{ color: "var(--ink-faint)", transform: open ? "rotate(0)" : "rotate(-90deg)", transition: "transform .15s" }} />
-          <AlertTriangle size={14} style={{ color: unmatched.length || issues.length ? "var(--amber)" : "var(--green)" }} />
+          <AlertTriangle size={14} style={{ color: unmatched.length || unmatchedLeads.length || issues.length ? "var(--amber)" : "var(--green)" }} />
           <span className="text-sm font-semibold">Needs attention</span>
           <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
-            {issues.length + unmatched.length === 0 ? "all clear" : `${issues.length + unmatched.length} to review`}
+            {issues.length + unmatched.length + unmatchedLeads.length === 0
+              ? "all clear"
+              : `${issues.length + unmatched.length + unmatchedLeads.length} to review`}
           </span>
         </button>
         {open && (
           <div className="flex items-center gap-1.5">
-            {[["staff", `Setup (${issues.length})`], ["names", `Unmatched names (${unmatched.length})`]].map(([k, lbl]) => (
+            {[["staff", `Setup (${issues.length})`], ["names", `Unassigned names (${unmatched.length + unmatchedLeads.length})`]].map(([k, lbl]) => (
               <button key={k} onClick={() => setTab(k)} className="sw-focus px-3 py-1.5 rounded-full text-xs font-semibold"
                 style={tab === k ? { background: "var(--primary)", color: "#fff" } : { background: "var(--surface-alt)", color: "var(--ink-soft)" }}>
                 {lbl}
@@ -6812,10 +6832,39 @@ function AdminIssues({ staff, netsuite, aliases, onAddAlias, onDeleteAlias, plan
             </button>
           </div>
 
+          {unmatchedLeads.length > 0 && (
+            <div className="px-3 py-2" style={{ borderTop: "1px solid var(--border)" }}>
+              <div className="text-xs font-semibold uppercase mb-1.5" style={{ color: "var(--amber)" }}>
+                On the leads sheet but not in the staff list ({unmatchedLeads.length})
+              </div>
+              <p className="text-xs mb-2" style={{ color: "var(--ink-faint)" }}>
+                These names are creating or owning leads but aren't matching anyone, so their conversations
+                land under "Unassigned". Pick who each one is and they'll be credited from then on.
+              </p>
+              <div className="flex flex-col gap-1.5" style={{ maxHeight: 260, overflowY: "auto" }}>
+                {unmatchedLeads.map((u) => (
+                  <div key={u.name} className="flex items-center gap-2 rounded-lg px-2 py-1.5" style={{ background: "var(--amber-soft)" }}>
+                    <span className="text-xs flex-1 truncate" style={{ fontWeight: 600 }}>{u.name}</span>
+                    <span className="text-xs shrink-0" style={{ color: "var(--ink-faint)" }}>{u.count} lead{u.count === 1 ? "" : "s"}</span>
+                    <select className="sw-input sw-focus shrink-0" style={{ width: 168, height: 28, fontSize: 12 }}
+                      defaultValue=""
+                      onChange={async (e) => {
+                        if (!e.target.value) return;
+                        await onAddAlias(u.name, e.target.value);
+                      }}>
+                      <option value="">Assign to…</option>
+                      {sellers.map((s) => <option key={s.id} value={s.full_name}>{s.full_name}</option>)}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {unmatched.length > 0 && (
             <div className="px-3 py-2" style={{ borderTop: "1px solid var(--border)" }}>
               <div className="text-xs font-semibold uppercase mb-1.5" style={{ color: "var(--amber)" }}>
-                In NetSuite but not in the staff list
+                In NetSuite but not in the staff list ({unmatched.length})
               </div>
               <div className="flex gap-1.5 flex-wrap">
                 {unmatched.map((u) => (
@@ -6858,7 +6907,7 @@ function AdminIssues({ staff, netsuite, aliases, onAddAlias, onDeleteAlias, plan
 }
 
 function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, onResetPassword, onSetActive, plans,
-                    netsuite, aliases, onAddAlias, onDeleteAlias, planHistory, onAssignPlan, onDeleteAssignment,
+                    netsuite, leads, aliases, onAddAlias, onDeleteAlias, planHistory, onAssignPlan, onDeleteAssignment,
                     planTiers, planMetrics, planTablesMissing, planError,
                     onSavePlan, onAddPlan, onDeletePlan, onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric }) {
   const teamOptions = useMemo(() => Array.from(new Set(staff.map((s) => s.team).filter(Boolean))), [staff]);
@@ -6907,7 +6956,7 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
         <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Office only · changes take effect immediately</span>
       </div>
 
-      <AdminIssues staff={staff} netsuite={netsuite} aliases={aliases}
+      <AdminIssues staff={staff} netsuite={netsuite} leads={leads} aliases={aliases}
         onAddAlias={onAddAlias} onDeleteAlias={onDeleteAlias} plans={plans} />
 
       {/* Two big columns: agents on the left, pay plans on the right — set
@@ -10140,6 +10189,7 @@ function scoreLead(productRaw, rules) {
 }
 
 function LeadsView({ staff, profile }) {
+  const aliases = useAliases();
   const [leads, setLeads] = useState([]);
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -10194,6 +10244,17 @@ function LeadsView({ staff, profile }) {
     });
   }, [rules]);
 
+  /* Sheet spellings resolve to the staff list through the same alias map
+     NetSuite uses, so a name mapped on the Sales Agents page is credited
+     here immediately — no re-sync needed. */
+  const resolve = useCallback((name) => {
+    if (!name) return null;
+    const viaAlias = resolveName(String(name).trim(), aliases);
+    if (viaAlias && nameKey(viaAlias) !== nameKey(name)) return viaAlias;
+    const s = (staff || []).find((x) => x.alt_name && nameKey(x.alt_name) === nameKey(name));
+    return s ? s.full_name : String(name).trim();
+  }, [aliases, staff]);
+
   /* Score every lead created in the month.
 
      The Unsent rule only bites where the creator and the owner are the
@@ -10209,15 +10270,17 @@ function LeadsView({ staff, profile }) {
       const d = l.lead_date ? new Date(l.lead_date) : null;
       if (!d || d < from || d >= to) return false;
       const unsent = /unsent/i.test(String(l.sent_status || ""));
+      // Compare resolved names, so two spellings of the same person still
+      // count as self-owned
       const selfOwned = l.creator && l.lead_owner
-        && nameKey(l.creator) === nameKey(l.lead_owner);
+        && nameKey(resolve(l.creator)) === nameKey(resolve(l.lead_owner));
       if (unsent && selfOwned) return false;
       return true;
     }).map((l) => ({ ...l, hits: scoreLead(l.product_raw, rules) }))
       .filter((l) => l.hits.length > 0);
-  }, [leads, rules, month]);
+  }, [leads, rules, month, resolve]);
 
-  // Which team each creator belongs to, resolved from the staff list
+  // Which team each person belongs to, once their name is resolved
   const teamOf = useCallback((name) => {
     const s = (staff || []).find((x) => nameKey(x.full_name) === nameKey(name)
       || (x.alt_name && nameKey(x.alt_name) === nameKey(name)));
@@ -10225,8 +10288,10 @@ function LeadsView({ staff, profile }) {
   }, [staff]);
 
   const blankRow = useCallback((name) => {
-    // byRule counts LEADS, byGroup and total sum POINTS — that's why BT Net
-    // ACQ shows as one record but adds two to the total.
+    /* Every product column — sub-columns and group totals alike — shows the
+       NUMBER OF LEADS. Only the final Total column carries points. That's
+       what makes a DV4B lead read as one record while still adding four at
+       the end, and the same for BT Net ACQ adding two. */
     const o = { name, team: teamOf(name), total: 0, accounts: new Set(), byRule: {}, byGroup: {}, acq: {} };
     (rules || []).forEach((r) => { o.byRule[r.key] = 0; });
     groups.forEach((g) => { o.byGroup[g.key] = 0; });
@@ -10245,9 +10310,9 @@ function LeadsView({ staff, profile }) {
       const row = byName[name];
       l.hits.forEach((r) => {
         const v = num(r.value) || 1;
-        row.byRule[r.key] = (row.byRule[r.key] || 0) + 1;   // records
-        row.byGroup[r.product_group] = (row.byGroup[r.product_group] || 0) + v;
-        row.total += v;
+        row.byRule[r.key] = (row.byRule[r.key] || 0) + 1;                          // records
+        row.byGroup[r.product_group] = (row.byGroup[r.product_group] || 0) + 1;    // records
+        row.total += v;                                                            // points
       });
       // Straight ACQ count per product, for the summary table
       const isAcq = /\bacq\b/i.test(String(l.product_raw || ""));
@@ -10288,8 +10353,8 @@ function LeadsView({ staff, profile }) {
     return { people, teams, all };
   }, [scored, blankRow]);
 
-  const leadGens = useMemo(() => aggregate((l) => l.creator), [aggregate]);
-  const closers = useMemo(() => aggregate((l) => l.lead_owner), [aggregate]);
+  const leadGens = useMemo(() => aggregate((l) => resolve(l.creator)), [aggregate, resolve]);
+  const closers = useMemo(() => aggregate((l) => resolve(l.lead_owner)), [aggregate, resolve]);
 
   /* Banding is on conversations per working day so far this month, not on
      the raw total — someone who started mid-month isn't behind. */
@@ -10611,8 +10676,9 @@ function LeadsView({ staff, profile }) {
       ))}
 
       <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
-        Sub-columns count leads; the group and grand totals count points, which is why BT Net ACQ reads as one
-        record but adds two. A lead can score several rules at once — an Acq Cloud at 3+ counts as more than one. The same lead credits the <b>lead gen</b> who created
+        Product columns count <b>leads</b>; the <b>Total</b> at the end counts points. That's why a DV4B lead
+        reads as one record but adds four, and a BT Net ACQ adds two. A lead can score several rules at once —
+        an Acq Cloud at 3+ appears under both Cloud and ACQ 3+. The same lead credits the <b>lead gen</b> who created
         it and the <b>closer</b> who owns it, so it appears in both tables. An <b>Unsent</b> lead only drops out
         where creator and owner are the same person. Rows shade by conversations per working day so far this
         month, so someone who joined mid-month isn't penalised for the days before they started.
@@ -13428,6 +13494,18 @@ export default function App() {
   }, [session, tab, loadUnplaced, loadWhenNeeded]);
 
   // Name aliases — NetSuite spellings mapped back to the staff list
+  /* Only the name columns, and only when the admin page needs them —
+     pulling the whole leads table in just to spot unassigned names would
+     be wasteful. */
+  const [leadsForAdmin, setLeadsForAdmin] = useState([]);
+  const loadLeadsForAdmin = useCallback(async () => {
+    const { data } = await supabase.from("leads").select("creator,lead_owner").limit(20000);
+    setLeadsForAdmin(data || []);
+  }, []);
+  useEffect(() => {
+    loadWhenNeeded("leadsForAdmin", session?.user && tab === "admin", loadLeadsForAdmin);
+  }, [session, tab, loadLeadsForAdmin, loadWhenNeeded]);
+
   const loadAliases = useCallback(async () => {
     const { data } = await supabase.from("staff_aliases").select("*").order("alias");
     setAliases(data || []);
@@ -14013,7 +14091,7 @@ export default function App() {
         {tab === "quote" && <QuoteBuilderView profile={profile} staff={staff} />}
         {tab === "coach" && <SalesCoachView />}
         {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onResetPassword={resetPassword} onSetActive={setStaffActive} plans={payPlans}
-          netsuite={netsuiteResolved} aliases={aliases} onAddAlias={addAlias} onDeleteAlias={deleteAlias}
+          netsuite={netsuiteResolved} leads={leadsForAdmin} aliases={aliases} onAddAlias={addAlias} onDeleteAlias={deleteAlias}
           planHistory={planHistory} onAssignPlan={assignPlan} onDeleteAssignment={deleteAssignment}
           planTiers={planTiers} planMetrics={planMetrics} planTablesMissing={planTablesMissing} planError={planError}
           onSavePlan={savePayPlan} onAddPlan={addPayPlan} onDeletePlan={deletePayPlan}
