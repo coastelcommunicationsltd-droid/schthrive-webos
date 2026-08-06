@@ -8519,8 +8519,6 @@ function ForecastView({ netsuite, profile, staff }) {
       || num(b.gp) - num(a.gp));
   }, [rows, dWeek, dTeam, dAgent, dPillar, dSold, dQuery]);
 
-  const sellers = useMemo(() => (staff || []).filter((s) => s.sells !== false && s.active !== false), [staff]);
-
   const weekOptions = useMemo(() => {
     const s = new Set(rows.map((r) => r.forecast_week).filter(Boolean));
     s.add(isoDateStr(mondayOf(new Date())));
