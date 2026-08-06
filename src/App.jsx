@@ -9661,6 +9661,199 @@ const LEAD_TIMES = [
   ["BTNet Leased Line", "Up to 90 working days"],
 ];
 
+/* Priced quotation, lifted from Chris Pennington's team dashboard.
+   Different job from the order confirmation: that one goes out AFTER a
+   sale to confirm what was bought, this one goes out BEFORE to price it.
+   Both live on the same page under a mode switch. */
+const QUOTE_CATALOG = [
+  { id: "bb1", category: "Broadband", name: "FTTP Hyperfast Acquisition (5yr)", unit: "per site" },
+  { id: "bb2", category: "Broadband", name: "SOGEA Acquisition (3yr)", unit: "per site" },
+  { id: "cl1", category: "Cloud", name: "IP - DV4 Acquisition", unit: "per line" },
+  { id: "cl2", category: "Cloud", name: "IP - CV Licence Upgrade", unit: "per user" },
+  { id: "dt1", category: "Data Networks & Services", name: "BT Net Acquisition - Level 1", unit: "per circuit" },
+  { id: "mb1", category: "Mobile", name: "EE SME Acquisition", unit: "per SIM" },
+  { id: "sc1", category: "Security", name: "Endpoint Threat Protect", unit: "per device" },
+];
+
+const QUOTE_NEXT_STEPS = [
+  ["Sales Delivery Contact", "Confirms order details, arranges any engineer visit, and validates installation information. If anything looks wrong, let us know straight away."],
+  ["Credit & Validation", "Your order passes through our Credit Referral team for validation."],
+  ["Aftersales & Installation", "Confirms activation dates and engineer time slots by email, including any Openreach appointment window."],
+  ["Cloud Setup (if applicable)", "You'll receive a Customer Requirement Form to complete and a Welcome Call invite with our Cloud Onboarding Team — setup won't proceed until both are done."],
+  ["Order Completion", "A new account number is generated per product (prefix WW, WM, ST, GP or VP)."],
+];
+
+function QuotationDoc({ quoteNumber, dateStr, customerName, companyName, repName, repPhone, items, subtotal, vat, total, notes }) {
+  const validUntil = (() => {
+    try {
+      const d = new Date(dateStr);
+      d.setDate(d.getDate() + 30);
+      return d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+    } catch { return ""; }
+  })();
+
+  const INK = "#1B1533", SLATE = "#6B6584", BORDER = "#E8E4F2";
+  const PURPLE = "#4C1D8F", PURPLE_DARK = "#3A0C87", TINT = "#F4F0FC", GOLD = "#B8860B";
+
+  return (
+    <div id="sw-quotation-doc" style={{ background: "#fff", fontFamily: "'Inter', Arial, sans-serif" }}>
+      {/* Page 1 — the quotation */}
+      <div style={{ borderRadius: 16, overflow: "hidden", maxWidth: 780, margin: "0 auto", border: `1px solid ${BORDER}` }}>
+        <div style={{ background: `linear-gradient(120deg, ${PURPLE_DARK}, ${PURPLE})`, padding: "34px 40px", color: "#fff", position: "relative", overflow: "hidden" }}>
+          <div style={{ position: "absolute", top: -60, right: -60, width: 200, height: 200, borderRadius: "50%", background: "rgba(255,255,255,0.06)" }} />
+          <div style={{ position: "absolute", bottom: -80, right: 60, width: 160, height: 160, borderRadius: "50%", background: "rgba(255,255,255,0.05)" }} />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", position: "relative" }}>
+            <div>
+              <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-0.5px" }}>BT Local Business</div>
+              <div style={{ fontSize: 12.5, opacity: 0.92, marginTop: 4, fontStyle: "italic" }}>Big business power. Local business care.</div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 12, letterSpacing: "2.5px", opacity: 0.8, fontWeight: 700 }}>QUOTATION</div>
+              <div style={{ fontSize: 20, fontWeight: 800, marginTop: 4 }}>{quoteNumber}</div>
+              <div style={{ fontSize: 12, opacity: 0.85, marginTop: 2 }}>
+                {dateStr ? new Date(dateStr).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }) : ""}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ padding: "32px 40px 40px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 32 }}>
+            <div style={{ background: TINT, borderLeft: `3px solid ${PURPLE}`, borderRadius: 8, padding: "14px 16px" }}>
+              <div style={{ fontSize: 10.5, color: PURPLE, textTransform: "uppercase", letterSpacing: "0.8px", fontWeight: 700, marginBottom: 6 }}>Prepared For</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: INK }}>{companyName || "Company name"}</div>
+              <div style={{ fontSize: 13, color: SLATE, marginTop: 2 }}>{customerName || "Contact name"}</div>
+            </div>
+            <div style={{ background: TINT, borderLeft: `3px solid ${GOLD}`, borderRadius: 8, padding: "14px 16px" }}>
+              <div style={{ fontSize: 10.5, color: PURPLE, textTransform: "uppercase", letterSpacing: "0.8px", fontWeight: 700, marginBottom: 6 }}>Prepared By</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: INK }}>{repName || "—"}</div>
+              <div style={{ fontSize: 13, color: SLATE, marginTop: 2 }}>BT Local Business Sales</div>
+            </div>
+          </div>
+
+          <table style={{ width: "100%", marginBottom: 4, borderCollapse: "separate", borderSpacing: 0 }}>
+            <thead>
+              <tr>
+                {[["Item", "left", true, false], ["Qty", "right", false, false], ["Unit Price", "right", false, false], ["Total", "right", false, true]].map(([label, align, tl, tr], i) => (
+                  <th key={i} style={{
+                    background: PURPLE_DARK, color: "#fff", textAlign: align, padding: "11px 14px",
+                    fontSize: 10.5, letterSpacing: "0.6px", textTransform: "uppercase",
+                    borderTopLeftRadius: tl ? 8 : 0, borderTopRightRadius: tr ? 8 : 0,
+                  }}>{label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {(items || []).map((it, i) => (
+                <tr key={i} style={{ background: i % 2 === 0 ? "#fff" : "#FBFAFE" }}>
+                  <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}` }}>
+                    <div style={{ fontWeight: 600, color: INK, fontSize: 13.5 }}>{it.name || "—"}</div>
+                    {it.category && <div style={{ fontSize: 11, color: SLATE, marginTop: 1 }}>{it.category}{it.unit ? ` · ${it.unit}` : ""}</div>}
+                  </td>
+                  <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: INK }}>{it.qty}</td>
+                  <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: INK }}>{fmtGBP(num(it.unitPrice))}</td>
+                  <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", fontWeight: 700, color: PURPLE_DARK }}>
+                    {fmtGBP(num(it.qty) * num(it.unitPrice))}
+                  </td>
+                </tr>
+              ))}
+              {(!items || !items.length) && (
+                <tr><td colSpan={4} style={{ textAlign: "center", color: SLATE, padding: 30, borderBottom: `1px solid ${BORDER}` }}>No items added yet</td></tr>
+              )}
+            </tbody>
+          </table>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 20, marginBottom: 30 }}>
+            <div style={{ width: 260, background: TINT, borderRadius: 10, padding: "16px 18px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 13, color: INK }}>
+                <span>Subtotal</span><span>{fmtGBP(subtotal)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 13, color: SLATE }}>
+                <span>VAT (20%)</span><span>{fmtGBP(vat)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "10px 0 0", marginTop: 8, borderTop: `2px solid ${PURPLE}` }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: PURPLE_DARK }}>Total</span>
+                <span style={{ fontSize: 22, fontWeight: 800, color: PURPLE_DARK }}>{fmtGBP(total)}</span>
+              </div>
+            </div>
+          </div>
+
+          {notes && (
+            <div style={{ fontSize: 12, color: SLATE, background: "#FBFAFE", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "12px 14px", marginBottom: 20, lineHeight: 1.5 }}>
+              {notes}
+            </div>
+          )}
+
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: `1px solid ${BORDER}`, paddingTop: 18, fontSize: 11.5, color: SLATE }}>
+            <div>Quote valid until <strong style={{ color: INK }}>{validUntil}</strong></div>
+            <div style={{ textAlign: "right" }}>Thank you for the opportunity to work with you.</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Page 2 — what happens next */}
+      <div style={{ borderRadius: 16, overflow: "hidden", maxWidth: 780, margin: "24px auto 0", border: `1px solid ${BORDER}`, pageBreakBefore: "always", breakBefore: "page" }}>
+        <div style={{ background: TINT, padding: "22px 40px", borderBottom: `3px solid ${PURPLE}` }}>
+          <div style={{ fontSize: 18, fontWeight: 800, color: PURPLE_DARK }}>Thank You &amp; Next Steps</div>
+        </div>
+        <div style={{ padding: "30px 40px 40px", fontSize: 13, color: INK, lineHeight: 1.65 }}>
+          <p>Dear {customerName || "Customer"},</p>
+          <p>Thank you for choosing {repName || "your BT Local Business representative"} and BT Local Business for your order. I appreciate your trust in us and look forward to supporting you through installation and beyond.</p>
+          <p>Below is a summary of what happens next — please keep this for reference. If you have any questions at any stage, contact me directly on <strong>{repPhone || "[phone number]"}</strong>.</p>
+
+          <div style={{ fontSize: 14, fontWeight: 700, color: PURPLE_DARK, marginTop: 26, marginBottom: 10 }}>Your Agreed Package</div>
+          {items && items.length ? (
+            <ul style={{ paddingLeft: 20, margin: 0 }}>
+              {items.map((it, i) => (
+                <li key={i} style={{ marginBottom: 4 }}>{it.name}{num(it.qty) > 1 ? ` × ${it.qty}` : ""}</li>
+              ))}
+            </ul>
+          ) : <div style={{ color: SLATE, fontSize: 12.5 }}>No items on this quote.</div>}
+
+          <div style={{ fontSize: 14, fontWeight: 700, color: PURPLE_DARK, marginTop: 26, marginBottom: 10 }}>
+            Estimated Timescales <span style={{ fontWeight: 400, fontSize: 11.5, color: SLATE }}>(subject to survey)</span>
+          </div>
+          <table style={{ width: "100%", marginBottom: 4 }}>
+            <tbody>
+              {LEAD_TIMES.map(([label, time], i) => (
+                <tr key={i}>
+                  <td style={{ padding: "5px 10px 5px 0", borderBottom: `1px solid ${BORDER}`, fontSize: 12.5 }}>{label}</td>
+                  <td style={{ padding: "5px 0", borderBottom: `1px solid ${BORDER}`, fontSize: 12.5, color: SLATE, textAlign: "right" }}>{time}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <div style={{ fontSize: 14, fontWeight: 700, color: PURPLE_DARK, marginTop: 26, marginBottom: 10 }}>What Happens Next</div>
+          <ol style={{ paddingLeft: 20, margin: 0 }}>
+            {QUOTE_NEXT_STEPS.map(([title, desc], i) => (
+              <li key={i} style={{ marginBottom: 10 }}>
+                <strong>{title}</strong> — <span style={{ color: SLATE }}>{desc}</span>
+              </li>
+            ))}
+          </ol>
+
+          <div style={{ fontSize: 14, fontWeight: 700, color: PURPLE_DARK, marginTop: 26, marginBottom: 10 }}>Important to Know</div>
+          <div style={{ background: TINT, borderRadius: 8, padding: "12px 14px", marginBottom: 8, fontSize: 12.5 }}>
+            <strong>Subject to Survey:</strong> <span style={{ color: SLATE }}>any date given is provisional pending engineering checks — we'll notify you of any change by email, text or phone.</span>
+          </div>
+          <div style={{ background: TINT, borderRadius: 8, padding: "12px 14px", marginBottom: 20, fontSize: 12.5 }}>
+            <strong>Minimum Guaranteed Access Line Speed:</strong> <span style={{ color: SLATE }}>if your broadband consistently falls below the guaranteed speed after a 30-day stabilisation period and it can't be resolved, you may be able to leave without Early Termination Charges via our Faults Process.</span>
+          </div>
+
+          <div style={{ fontSize: 14, fontWeight: 700, color: PURPLE_DARK, marginTop: 26, marginBottom: 10 }}>Ongoing Support</div>
+          <p style={{ color: SLATE, fontSize: 12.5 }}>
+            I'm available Monday–Friday, 9:00am–5:00pm (typically out on customer appointments 11:30am–3:00pm).
+            Voicemails and emails are answered the same working day where possible, or by 12:00pm the next working day at the latest.
+          </p>
+
+          <p style={{ marginTop: 20 }}>Thank you again — I look forward to seeing your services go live.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function QuoteBuilderView({ profile, staff }) {
   const me = useMemo(
     () => (staff || []).find((s) => s.user_id && profile && s.user_id === profile.id) || null,
@@ -9679,10 +9872,34 @@ function QuoteBuilderView({ profile, staff }) {
   });
   const [copied, setCopied] = useState("");
 
+  /* Two documents, one page. "confirmation" is the post-sale letter this
+     app already had; "quotation" is the priced version with line items. */
+  const [mode, setMode] = useState("confirmation");
+  const [quote, setQuote] = useState({
+    customer: "", company: "", repName: "", repPhone: "",
+    notes: "Prices exclude VAT. Subject to standard BT Local Business terms and conditions.",
+  });
+  const [items, setItems] = useState([]);
+
+  const addItem = (cat) => setItems((p) => [...p, {
+    id: Date.now() + Math.random(),
+    name: cat ? cat.name : "", category: cat ? cat.category : "",
+    unit: cat ? cat.unit : "", qty: 1, unitPrice: 0,
+  }]);
+  const updateItem = (id, field, value) => setItems((p) => p.map((it) => (it.id === id ? { ...it, [field]: value } : it)));
+  const removeItem = (id) => setItems((p) => p.filter((it) => it.id !== id));
+
+  const subtotal = useMemo(() => items.reduce((s, it) => s + num(it.qty) * num(it.unitPrice), 0), [items]);
+  const vat = subtotal * 0.2;
+  const total = subtotal + vat;
+  const quoteDate = useMemo(() => new Date().toISOString(), []);
+  const quoteNumber = "Q-" + quoteDate.slice(0, 10).replace(/-/g, "");
+
   // Prefill from whoever's signed in
   useEffect(() => {
     if (me && !q.senderName) setQ((p) => ({ ...p, senderName: me.full_name || "" }));
-  }, [me]);
+    if (me && !quote.repName) setQuote((p) => ({ ...p, repName: me.full_name || "" }));
+  }, [me]);   // eslint-disable-line
 
   const set = (k) => (e) => setQ((p) => ({ ...p, [k]: e.target.value }));
   const serviceLines = q.services.split("\n").map((s) => s.trim()).filter(Boolean);
@@ -9698,6 +9915,23 @@ function QuoteBuilderView({ profile, staff }) {
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
         body { margin:0; font-family:'Inter',Arial,sans-serif; }
         @page { margin: 12mm; }
+      </style></head><body>${node.outerHTML}</body></html>`);
+    w.document.close();
+    setTimeout(() => { w.focus(); w.print(); }, 400);
+  };
+
+  const printQuotation = () => {
+    const node = document.getElementById("sw-quotation-doc");
+    if (!node) return;
+    const w = window.open("", "_blank");
+    if (!w) return;
+    w.document.write(`<!doctype html><html><head><title>Quotation ${quoteNumber} — ${quote.company || "Customer"}</title>
+      <meta charset="utf-8" />
+      <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+        body { margin:0; font-family:'Inter',Arial,sans-serif; }
+        table { width:100%; border-collapse:separate; border-spacing:0; }
+        @page { margin: 10mm; }
       </style></head><body>${node.outerHTML}</body></html>`);
     w.document.close();
     setTimeout(() => { w.focus(); w.print(); }, 400);
@@ -9726,15 +9960,133 @@ function QuoteBuilderView({ profile, staff }) {
       <div className="flex items-center gap-3 mb-4 flex-wrap">
         <FileText size={18} style={{ color: "var(--primary)" }} />
         <h2 className="sw-display text-lg font-bold">Quote Builder</h2>
-        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Order confirmation to send to the customer</span>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+          {mode === "quotation" ? "Priced quotation to send before the sale" : "Order confirmation to send after the sale"}
+        </span>
+
+        <div className="flex items-center rounded-lg overflow-hidden ml-2" style={{ border: "1px solid var(--border)", height: 34 }}>
+          {[["confirmation", "Order confirmation"], ["quotation", "Priced quotation"]].map(([k, lbl]) => (
+            <button key={k} onClick={() => setMode(k)}
+              className="sw-focus px-3 text-xs whitespace-nowrap"
+              style={mode === k
+                ? { background: "var(--primary)", color: "#fff", fontWeight: 600, height: "100%" }
+                : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
+              {lbl}
+            </button>
+          ))}
+        </div>
+
         <div className="ml-auto flex items-center gap-2">
           {copied && <span className="text-xs font-semibold" style={{ color: "var(--green)" }}>{copied}</span>}
-          <button onClick={copyText} className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold"
-            style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>Copy text</button>
-          <button onClick={printQuote} className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold text-white"
-            style={{ background: "var(--primary)" }}>Print / Save PDF</button>
+          {mode === "confirmation" ? (
+            <>
+              <button onClick={copyText} className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold"
+                style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>Copy text</button>
+              <button onClick={printQuote} className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold text-white"
+                style={{ background: "var(--primary)" }}>Print / Save PDF</button>
+            </>
+          ) : (
+            <button onClick={printQuotation} disabled={!items.length}
+              className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold text-white"
+              style={{ background: items.length ? "var(--primary)" : "var(--ink-faint)" }}>
+              Print / Save PDF (2 pages)
+            </button>
+          )}
         </div>
       </div>
+
+      {/* PRICED QUOTATION */}
+      {mode === "quotation" && (
+        <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(280px, 360px) minmax(0, 1fr)", gap: "1rem", alignItems: "start" }}>
+
+          <div className="rounded-xl p-4 sw-sticky-col" style={{ background: "var(--surface)", border: "1px solid var(--border)", position: "sticky", top: 66, maxHeight: "calc(100vh - 84px)", overflowY: "auto" }}>
+            <div className="sw-display text-sm mb-3" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>QUOTE DETAILS</div>
+
+            <label className="sw-label">Sales rep</label>
+            <select className="sw-input sw-focus mb-2" value={quote.repName}
+              onChange={(e) => setQuote((p) => ({ ...p, repName: e.target.value }))}>
+              <option value="">—</option>
+              {(staff || []).filter((s) => s.sells !== false && s.active !== false)
+                .map((s) => <option key={s.id} value={s.full_name}>{s.full_name}</option>)}
+            </select>
+
+            <label className="sw-label">Your contact phone</label>
+            <input className="sw-input sw-focus mb-2" value={quote.repPhone} placeholder="e.g. 01752 123456"
+              onChange={(e) => setQuote((p) => ({ ...p, repPhone: e.target.value }))} />
+
+            <label className="sw-label">Customer contact name</label>
+            <input className="sw-input sw-focus mb-2" value={quote.customer} placeholder="e.g. Jane Smith"
+              onChange={(e) => setQuote((p) => ({ ...p, customer: e.target.value }))} />
+
+            <label className="sw-label">Company name</label>
+            <input className="sw-input sw-focus mb-2" value={quote.company} placeholder="e.g. Acme Ltd"
+              onChange={(e) => setQuote((p) => ({ ...p, company: e.target.value }))} />
+
+            <label className="sw-label">Notes / terms</label>
+            <textarea className="sw-input sw-focus" rows={3} value={quote.notes}
+              onChange={(e) => setQuote((p) => ({ ...p, notes: e.target.value }))} />
+
+            <div className="sw-display text-sm mt-4 mb-2" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>ADD PRODUCTS</div>
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {QUOTE_CATALOG.map((c) => (
+                <button key={c.id} onClick={() => addItem(c)}
+                  className="sw-focus rounded-lg px-2 py-1 text-xs font-semibold"
+                  title={`${c.category} · ${c.unit}`}
+                  style={{ background: "var(--primary-soft)", color: "var(--primary)", border: "1px solid var(--border)" }}>
+                  + {c.name}
+                </button>
+              ))}
+              <button onClick={() => addItem(null)}
+                className="sw-focus rounded-lg px-2 py-1 text-xs font-semibold"
+                style={{ background: "var(--surface)", color: "var(--ink-faint)", border: "1px dashed var(--border)" }}>
+                + Custom line
+              </button>
+            </div>
+
+            {items.map((it) => (
+              <div key={it.id} style={{ display: "grid", gridTemplateColumns: "1fr 52px 74px 22px", gap: 6, marginBottom: 6, alignItems: "center" }}>
+                <input className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }} value={it.name} placeholder="Product name"
+                  onChange={(e) => updateItem(it.id, "name", e.target.value)} />
+                <input className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }} type="number" min="1" value={it.qty}
+                  onChange={(e) => updateItem(it.id, "qty", e.target.value)} />
+                <input className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }} type="number" value={it.unitPrice} placeholder="Unit £"
+                  onChange={(e) => updateItem(it.id, "unitPrice", e.target.value)} />
+                <button onClick={() => removeItem(it.id)} className="sw-focus" style={{ color: "var(--red)", fontSize: 14 }}>✕</button>
+              </div>
+            ))}
+            {!items.length && (
+              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>No line items yet — add products above.</div>
+            )}
+
+            {items.length > 0 && (
+              <div className="rounded-lg p-2.5 mt-3" style={{ background: "var(--surface-alt)" }}>
+                <div className="flex justify-between text-xs" style={{ color: "var(--ink-soft)" }}>
+                  <span>Subtotal</span><span className="sw-mono">{fmtGBP(subtotal)}</span>
+                </div>
+                <div className="flex justify-between text-xs" style={{ color: "var(--ink-faint)" }}>
+                  <span>VAT (20%)</span><span className="sw-mono">{fmtGBP(vat)}</span>
+                </div>
+                <div className="flex justify-between mt-1 pt-1" style={{ borderTop: "1px solid var(--border)" }}>
+                  <span className="text-xs font-bold">Total</span>
+                  <span className="sw-mono font-bold" style={{ color: "var(--primary)" }}>{fmtGBP(total)}</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div>
+            <div className="text-xs font-semibold uppercase mb-2" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Live preview</div>
+            <QuotationDoc
+              quoteNumber={quoteNumber} dateStr={quoteDate}
+              customerName={quote.customer} companyName={quote.company}
+              repName={quote.repName} repPhone={quote.repPhone}
+              items={items} subtotal={subtotal} vat={vat} total={total} notes={quote.notes} />
+          </div>
+        </div>
+      )}
+
+      {mode === "confirmation" && (
+      <>
 
       <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(260px, 320px) minmax(0, 1fr)", gap: "1rem", alignItems: "start" }}>
 
@@ -9855,6 +10207,8 @@ function QuoteBuilderView({ profile, staff }) {
           </div>
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }
