@@ -5990,23 +5990,24 @@ const DATA_SOURCES = [
     key: "netsuite_orders", table: "netsuite_orders", label: "NetSuite orders",
     source: "NetSuite workbook → Apps Script", cadence: "Hourly trigger",
     freshField: "synced_at", dateField: "order_date",
-    note: "The GP and SOV authority. Lilac claims are matched to these by document number.",
+    note: "The GP and SOV authority. Forecasts and Lilac claims are matched against these.",
   },
   {
     key: "unplaced_orders", table: "unplaced_orders", label: "Unplaced / to be placed",
-    source: "NetSuite saved search customsearch723 → RESTlet", cadence: "Hourly (pg_cron)",
+    source: "Saved search customsearch723 → RESTlet → Edge Function", cadence: "Hourly (pg_cron)",
     freshField: "synced_at", dateField: "order_date",
-    note: "Direct API pull. Rows that leave the search are deleted, so this table is a live snapshot, not a log.",
+    rawField: "data",
+    note: "Direct API pull, no spreadsheet. Rows that leave the search are deleted, so this is a live snapshot rather than a log. Every column the search returns is kept in `data`.",
   },
   {
     key: "forecasts", table: "forecasts", label: "Forecasts",
     source: "Submitted in this app", cadence: "Live (Realtime)",
     freshField: "created_at", dateField: "forecast_week",
-    note: "Weekly agent submissions.",
+    note: "Weekly agent submissions. match_forecasts() links them to NetSuite by Opp ID, then by fuzzy company name.",
   },
   {
     key: "staff", table: "staff", label: "Staff",
-    source: "Admin page", cadence: "On change",
+    source: "Sales Agents page", cadence: "On change",
     freshField: null, dateField: null,
     note: "Names, teams, pay plans, leavers. Alt names resolve NetSuite spellings back to a person.",
   },
@@ -6015,6 +6016,18 @@ const DATA_SOURCES = [
     source: "Sales Coach", cadence: "On completion",
     freshField: "created_at", dateField: "created_at",
     note: "Practice call transcripts and scores.",
+  },
+  {
+    key: "coach_stages", table: "coach_stages", label: "Coach stages",
+    source: "Settings → Coach Setup", cadence: "On change",
+    freshField: null, dateField: null,
+    note: "The call spine the roleplay follows. Editing these changes how the coach behaves.",
+  },
+  {
+    key: "pay_plan_tiers", table: "pay_plan_tiers", label: "Pay plan tiers",
+    source: "Sales Agents → Pay Plans", cadence: "On change",
+    freshField: null, dateField: null,
+    note: "Commission thresholds behind the ranked list bars on Claimed.",
   },
 ];
 
@@ -6068,7 +6081,22 @@ function DeveloperView() {
       // Column order from the widest row, so sparse rows don't hide fields
       const seen = [];
       list.forEach((r) => Object.keys(r).forEach((k) => { if (!seen.includes(k)) seen.push(k); }));
-      setSample((p) => ({ ...p, [s.key]: { rows: list, cols: seen, loading: false, error: "" } }));
+
+      /* Where a table keeps a raw blob (unplaced_orders.data holds every
+         column the saved search returns), list what's inside it — that's
+         the fastest way to answer "did my new column actually arrive?" */
+      const rawKeys = [];
+      if (s.rawField) {
+        list.forEach((r) => {
+          const blob = r[s.rawField];
+          if (blob && typeof blob === "object") {
+            Object.keys(blob).forEach((k) => { if (!rawKeys.includes(k)) rawKeys.push(k); });
+          }
+        });
+        rawKeys.sort();
+      }
+
+      setSample((p) => ({ ...p, [s.key]: { rows: list, cols: seen, rawKeys, loading: false, error: "" } }));
     } catch (e) {
       setSample((p) => ({ ...p, [s.key]: { rows: [], cols: [], loading: false, error: String(e?.message || e) } }));
     }
@@ -6102,14 +6130,25 @@ function DeveloperView() {
         if (all.length >= 50000) break;   // sanity cap
       }
 
+      /* Flatten any raw blob into real columns. Exporting unplaced_orders
+         with `data` as one JSON cell is nearly useless in a spreadsheet —
+         this gives every source column its own column instead. */
+      const flat = all.map((r) => {
+        if (!s.rawField || !r[s.rawField] || typeof r[s.rawField] !== "object") return r;
+        const { [s.rawField]: blob, ...rest } = r;
+        const prefixed = {};
+        Object.keys(blob).forEach((k) => { prefixed[`src: ${k}`] = blob[k]; });
+        return { ...rest, ...prefixed };
+      });
+
       const cols = [];
-      all.forEach((r) => Object.keys(r).forEach((k) => { if (!cols.includes(k)) cols.push(k); }));
+      flat.forEach((r) => Object.keys(r).forEach((k) => { if (!cols.includes(k)) cols.push(k); }));
       const cell = (v) => {
         if (v == null) return "";
         const str = typeof v === "object" ? JSON.stringify(v) : String(v);
         return `"${str.replace(/"/g, '""')}"`;
       };
-      const csv = [cols.join(","), ...all.map((r) => cols.map((c) => cell(r[c])).join(","))].join("\n");
+      const csv = [cols.join(","), ...flat.map((r) => cols.map((c) => cell(r[c])).join(","))].join("\n");
 
       const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
@@ -6290,6 +6329,23 @@ function DeveloperView() {
                           <div className="rounded-lg p-2 mb-2 text-xs" style={{ background: "var(--red-soft)", color: "var(--ink)" }}>{sm.error}</div>
                         )}
 
+                        {(sm.rawKeys || []).length > 0 && (
+                          <div className="rounded-lg p-2.5 mb-2" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+                            <div className="text-xs font-semibold uppercase mb-1.5" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>
+                              Columns arriving from the source ({sm.rawKeys.length})
+                            </div>
+                            <div className="flex items-center gap-1 flex-wrap">
+                              {sm.rawKeys.map((k) => (
+                                <span key={k} className="sw-mono rounded px-1.5 py-0.5"
+                                  style={{ fontSize: 10.5, background: "var(--surface-alt)", color: "var(--ink-soft)" }}>{k}</span>
+                              ))}
+                            </div>
+                            <div className="text-xs mt-1.5" style={{ color: "var(--ink-faint)" }}>
+                              If a column you added upstream isn't here, the sync hasn't picked it up — check the label matches exactly.
+                            </div>
+                          </div>
+                        )}
+
                         <div className="rounded-lg" style={{ background: "var(--surface)", border: "1px solid var(--border)", maxHeight: 420, overflow: "auto" }}>
                           {sm.loading ? (
                             <div className="text-xs text-center py-8" style={{ color: "var(--ink-faint)" }}>Loading rows…</div>
@@ -6329,6 +6385,7 @@ function DeveloperView() {
                         </div>
                         <div className="text-xs mt-1.5" style={{ color: "var(--ink-faint)" }}>
                           The export sends the whole table, not just the rows on screen.
+                          {s.rawField ? " Source columns are flattened out of the JSON blob and prefixed \"src:\", so each gets its own column." : ""}
                         </div>
                       </td>
                     </tr>
@@ -10592,7 +10649,12 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
     };
     (unplaced || []).forEach((u) => {
       const r = touch(u.admin_agent || null);
-      const rk = colKeyFor(parseDate(u.order_date));
+      // "New Order Date" from the saved search is the real order date.
+      // Read it straight from the raw blob so this works whether or not
+      // the sync has promoted it into order_date yet, then fall back.
+      const rk = colKeyFor(parseDate(
+        (u.data && (u.data["New Order Date"] || u.data["Order Date"])) || u.order_date
+      ));
       if (rk) { r.recv[rk] = (r.recv[rk] || 0) + 1; r.recvTotal += 1; }
       const pd = u.order_placed_at ? parseDate(u.order_placed_at) : parseDate(u.order_placed);
       if (pd) {
