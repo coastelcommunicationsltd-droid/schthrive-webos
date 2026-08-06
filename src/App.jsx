@@ -10903,7 +10903,8 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                   <table className="w-full" style={{ fontSize: 11.5, borderCollapse: "collapse" }}>
                     <thead>
                       <tr>
-                        <th className="text-left" style={{ padding: "3px 6px 5px 0", color: "var(--ink-faint)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em" }}>Agent</th>
+                        <th className="text-left" style={{ padding: "3px 4px 5px 0", color: "var(--ink-faint)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em" }}>Agent</th>
+                        <th style={{ padding: "3px 5px 5px 0" }} />
                         {flow.cols.map((c) => (
                           <th key={c.key} style={{ padding: "3px 3px 5px", color: "var(--ink-faint)", fontWeight: 600, fontSize: 10, textAlign: "center", minWidth: 30 }}>
                             {c.label}
@@ -10918,8 +10919,13 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                           {/* Received on top, placed underneath, so the gap
                               between the two reads down each column */}
                           <tr>
-                            <td rowSpan={2} style={{ padding: "4px 6px 4px 0", borderTop: "1px solid var(--border)", verticalAlign: "middle", maxWidth: 110 }}>
+                            <td rowSpan={2} style={{ padding: "4px 4px 4px 0", borderTop: "1px solid var(--border)", verticalAlign: "middle", maxWidth: 104 }}>
                               <div className="truncate" style={{ fontSize: 12, fontWeight: 500 }}>{r.name}</div>
+                            </td>
+                            {/* Which line is which — the two rows were only
+                                told apart by colour before. */}
+                            <td style={{ padding: "2px 5px 0 0", borderTop: "1px solid var(--border)", textAlign: "right", color: "var(--blue)", fontSize: 10, fontWeight: 600, whiteSpace: "nowrap" }}>
+                              Received
                             </td>
                             {flow.cols.map((c) => (
                               <td key={c.key} className="sw-mono" style={{ padding: "2px 3px 0", textAlign: "center", borderTop: "1px solid var(--border)", color: (r.recv[c.key] || 0) ? "var(--blue)" : "var(--ink-faint)" }}>
@@ -10929,6 +10935,9 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                             <td className="sw-mono" style={{ padding: "2px 0 0 6px", textAlign: "right", borderTop: "1px solid var(--border)", color: "var(--blue)", fontWeight: 600 }}>{r.recvTotal}</td>
                           </tr>
                           <tr>
+                            <td style={{ padding: "0 5px 4px 0", textAlign: "right", color: "var(--green)", fontSize: 10, fontWeight: 600, whiteSpace: "nowrap" }}>
+                              Placed
+                            </td>
                             {flow.cols.map((c) => (
                               <td key={c.key} className="sw-mono" style={{ padding: "0 3px 4px", textAlign: "center", color: (r.placed[c.key] || 0) ? "var(--green)" : "var(--ink-faint)" }}>
                                 {r.placed[c.key] || "·"}
@@ -10939,7 +10948,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                         </React.Fragment>
                       ))}
                       {flow.rows.length === 0 && (
-                        <tr><td colSpan={flow.cols.length + 2} className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>
+                        <tr><td colSpan={flow.cols.length + 3} className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>
                           Nothing in this window.
                         </td></tr>
                       )}
@@ -10947,7 +10956,8 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                     {flow.rows.length > 0 && (
                       <tfoot>
                         <tr>
-                          <td style={{ padding: "5px 6px 1px 0", borderTop: "2px solid var(--border)", fontSize: 10, textTransform: "uppercase", color: "var(--ink-faint)", fontWeight: 600 }}>Received</td>
+                          <td style={{ padding: "5px 4px 1px 0", borderTop: "2px solid var(--border)", fontSize: 10, textTransform: "uppercase", color: "var(--ink-faint)", fontWeight: 600 }}>All</td>
+                          <td style={{ padding: "5px 5px 1px 0", borderTop: "2px solid var(--border)", textAlign: "right", color: "var(--blue)", fontSize: 10, fontWeight: 600, whiteSpace: "nowrap" }}>Received</td>
                           {flow.cols.map((c) => (
                             <td key={c.key} className="sw-mono" style={{ padding: "5px 3px 1px", textAlign: "center", borderTop: "2px solid var(--border)", color: "var(--blue)", fontWeight: 700 }}>{flow.colTotals[c.key].recv || "·"}</td>
                           ))}
@@ -10956,7 +10966,8 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                           </td>
                         </tr>
                         <tr>
-                          <td style={{ padding: "1px 6px 4px 0", fontSize: 10, textTransform: "uppercase", color: "var(--ink-faint)", fontWeight: 600 }}>Placed</td>
+                          <td style={{ padding: "1px 4px 4px 0" }} />
+                          <td style={{ padding: "1px 5px 4px 0", textAlign: "right", color: "var(--green)", fontSize: 10, fontWeight: 600, whiteSpace: "nowrap" }}>Placed</td>
                           {flow.cols.map((c) => (
                             <td key={c.key} className="sw-mono" style={{ padding: "1px 3px 4px", textAlign: "center", color: "var(--green)", fontWeight: 700 }}>{flow.colTotals[c.key].placed || "·"}</td>
                           ))}
