@@ -5990,7 +5990,7 @@ const DATA_SOURCES = [
     key: "netsuite_orders", table: "netsuite_orders", label: "NetSuite orders",
     source: "NetSuite workbook → Apps Script", cadence: "Hourly trigger",
     freshField: "synced_at", dateField: "order_date",
-    note: "The GP and SOV authority. Forecasts and Lilac claims are matched against these.",
+    note: "The GP and SOV authority. Forecasts match against these by Opp ID then fuzzy company name; Lilac claims match by document number.",
   },
   {
     key: "unplaced_orders", table: "unplaced_orders", label: "Unplaced / to be placed",
@@ -5998,6 +5998,19 @@ const DATA_SOURCES = [
     freshField: "synced_at", dateField: "order_date",
     rawField: "data",
     note: "Direct API pull, no spreadsheet. Rows that leave the search are deleted, so this is a live snapshot rather than a log. Every column the search returns is kept in `data`.",
+  },
+  {
+    key: "leads", table: "leads", label: "Leads",
+    source: "Leads 25-26 tab → Apps Script", cadence: "Hourly trigger",
+    freshField: "synced_at", dateField: "lead_date",
+    rawField: "data",
+    note: "Creator conversations. The sync skips rows with no scorable product and anything older than 14 months, so this holds far fewer rows than the sheet. Scoring lives in lead_rules.",
+  },
+  {
+    key: "lead_rules", table: "lead_rules", label: "Lead scoring rules",
+    source: "Set in SQL", cadence: "On change",
+    freshField: null, dateField: null,
+    note: "What credits a conversation and by how much. Changing a row here changes the Leads table immediately — no deploy.",
   },
   {
     key: "forecasts", table: "forecasts", label: "Forecasts",
@@ -10229,10 +10242,14 @@ function scoreLead(productRaw, rules) {
   const hits = [];
   (rules || []).forEach((r) => {
     if (r.active === false) return;
-    const all = (r.match_all || []).every((t) => hay.includes(String(t).toLowerCase()));
-    if (!all) return;
-    const none = (r.match_none || []).some((t) => hay.includes(String(t).toLowerCase()));
-    if (none) return;
+    // every one of these
+    if (!(r.match_all || []).every((t) => hay.includes(String(t).toLowerCase()))) return;
+    // at least one of these, when any are set — this is what lets a single
+    // rule cover "3+ or 5+ or 10+"
+    const any = r.match_any || [];
+    if (any.length && !any.some((t) => hay.includes(String(t).toLowerCase()))) return;
+    // none of these
+    if ((r.match_none || []).some((t) => hay.includes(String(t).toLowerCase()))) return;
     hits.push(r);
   });
   return hits;
@@ -10281,11 +10298,16 @@ function LeadsView({ staff, profile }) {
       if (!byGroup[r.product_group]) byGroup[r.product_group] = [];
       byGroup[r.product_group].push(r);
     });
-    return order.filter((g) => byGroup[g]).map((g) => ({
-      key: g,
-      label: g === "Appt" ? "Appts" : g,
-      rules: byGroup[g].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)),
-    }));
+    return order.filter((g) => byGroup[g]).map((g) => {
+      const rs = byGroup[g].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+      return {
+        key: g,
+        label: g === "Appt" ? "Appts" : g,
+        rules: rs,
+        // One rule means the total IS the breakdown, so no sub-columns
+        showRules: rs.length > 1,
+      };
+    });
   }, [rules]);
 
   /* Score every lead created in the month.
@@ -10394,30 +10416,42 @@ function LeadsView({ staff, profile }) {
   };
   const bandBg = { red: "rgba(214,69,65,0.13)", amber: "rgba(184,134,11,0.15)" };
 
-  const colCount = 1 + groups.reduce((n, g) => n + 1 + g.rules.length, 0) + 2;
+  const colCount = 1 + groups.reduce((n, g) => n + 1 + (g.showRules ? g.rules.length : 0), 0) + 2;
 
-  const Cell = ({ v, bold, tone, faint }) => (
+  const GROUP_EDGE = "2px solid var(--border-strong, var(--ink-faint))";
+
+  const Cell = ({ v, bold, tone, edge, dark }) => (
     <td className="sw-mono" style={{
-      padding: "4px 6px", textAlign: "center", fontSize: 12.5,
+      padding: "5px 7px", textAlign: "center", fontSize: 12.5,
       fontWeight: bold ? 700 : 500,
-      color: v ? (tone || "var(--ink)") : "var(--ink-faint)",
-      borderLeft: faint ? "none" : "1px solid var(--border)",
-    }}>{v || "·"}</td>
+      color: dark ? "#fff" : (v ? (tone || "var(--ink)") : "var(--ink-faint)"),
+      borderLeft: edge ? GROUP_EDGE : "1px solid var(--border)",
+    }}>{v || (dark ? 0 : "·")}</td>
   );
 
-  const Row = ({ r, bold, indent, band }) => (
-    <tr style={{ borderTop: "1px solid var(--border)", background: band ? bandBg[band] : "transparent" }}>
-      <td style={{ padding: "4px 8px", paddingLeft: indent ? 20 : 8, whiteSpace: "nowrap", maxWidth: 190 }}>
-        <div className="truncate" style={{ fontSize: 12.5, fontWeight: bold ? 700 : 500 }}>{r.name}</div>
+  /* `dark` renders the office and team totals as a solid purple bar, which
+     is what makes the table readable once it's pasted into an email. */
+  const Row = ({ r, bold, indent, band, dark }) => (
+    <tr style={{
+      borderTop: dark ? "none" : "1px solid var(--border)",
+      background: dark ? "var(--primary)" : band ? bandBg[band] : "transparent",
+    }}>
+      <td style={{
+        padding: "5px 8px", paddingLeft: indent ? 22 : 8, whiteSpace: "nowrap", maxWidth: 190,
+        color: dark ? "#fff" : undefined,
+      }}>
+        <div className="truncate" style={{ fontSize: 12.5, fontWeight: bold || dark ? 700 : 500 }}>{r.name}</div>
       </td>
       {groups.map((g) => (
         <React.Fragment key={g.key}>
-          <Cell v={r.byGroup[g.key]} bold tone="var(--primary)" />
-          {g.rules.map((rule) => <Cell key={rule.key} v={r.byRule[rule.key]} faint />)}
+          <Cell v={r.byGroup[g.key]} bold tone="var(--primary)" edge dark={dark} />
+          {g.showRules && g.rules.map((rule) => (
+            <Cell key={rule.key} v={r.byRule[rule.key]} dark={dark} />
+          ))}
         </React.Fragment>
       ))}
-      <Cell v={r.total} bold tone="var(--green)" />
-      <Cell v={r.accounts.size} />
+      <Cell v={r.total} bold tone="var(--green)" edge dark={dark} />
+      <Cell v={r.accounts.size} dark={dark} />
     </tr>
   );
 
@@ -10503,22 +10537,22 @@ function LeadsView({ staff, profile }) {
                       {tbl.key === "gen" ? "Creator" : "Owner"}
                     </th>
                     {groups.map((g) => (
-                      <th key={g.key} colSpan={1 + g.rules.length} className="px-2 py-1.5"
-                        style={{ fontSize: 11.5, fontWeight: 700, color: tbl.accent, borderLeft: "2px solid var(--border)", textAlign: "center" }}>
+                      <th key={g.key} colSpan={1 + (g.showRules ? g.rules.length : 0)} className="px-2 py-2"
+                        style={{ fontSize: 12, fontWeight: 700, color: tbl.accent, borderLeft: GROUP_EDGE, textAlign: "center" }}>
                         {g.label}
                       </th>
                     ))}
-                    <th rowSpan={2} className="px-2 py-1.5" style={{ fontSize: 11.5, fontWeight: 700, color: "var(--green)", borderLeft: "2px solid var(--border)" }}>Total</th>
+                    <th rowSpan={2} className="px-2 py-2" style={{ fontSize: 12, fontWeight: 700, color: "var(--green)", borderLeft: GROUP_EDGE }}>Total</th>
                     <th rowSpan={2} className="px-2 py-1.5" style={{ fontSize: 10.5, color: "var(--ink-soft)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Accounts</th>
                   </tr>
                   <tr style={{ background: "var(--surface-alt)" }}>
                     {groups.map((g) => (
                       <React.Fragment key={g.key}>
-                        <th className="px-2 py-1" style={{ fontSize: 10, color: "var(--ink-faint)", borderLeft: "2px solid var(--border)" }}>Total</th>
-                        {g.rules.map((r) => (
+                        <th className="px-2 py-1" style={{ fontSize: 10, color: "var(--ink-faint)", borderLeft: GROUP_EDGE, fontWeight: 600 }}>Total</th>
+                        {g.showRules && g.rules.map((r) => (
                           <th key={r.key} className="px-2 py-1" style={{ fontSize: 10, color: "var(--ink-faint)", fontWeight: 500, whiteSpace: "nowrap" }}
-                            title={`${(r.match_all || []).join(" + ")} · worth ${r.value}`}>
-                            {r.label.replace(/^Acq /, "")}
+                            title={`${(r.match_all || []).join(" + ")}${(r.match_any || []).length ? ` + one of ${(r.match_any || []).join("/")}` : ""} · worth ${r.value}`}>
+                            {r.label}
                           </th>
                         ))}
                       </React.Fragment>
@@ -10528,22 +10562,25 @@ function LeadsView({ staff, profile }) {
 
                 <tbody>
                   <tr style={{ background: "var(--ink)" }}>
-                    <td colSpan={colCount} className="px-2 py-1 text-xs font-bold uppercase" style={{ color: "#fff", letterSpacing: "0.04em" }}>
+                    <td colSpan={colCount} className="px-2 py-1.5 text-xs font-bold uppercase" style={{ color: "#fff", letterSpacing: "0.06em" }}>
                       Overall team numbers
                     </td>
                   </tr>
                   {tbl.data.teams.map((t) => <Row key={t.name} r={t} bold />)}
-                  <Row r={tbl.data.all} bold />
+                  <Row r={tbl.data.all} dark />
 
                   {tbl.data.teams.map((t) => (
                     <React.Fragment key={`${tbl.key}-blk-${t.name}`}>
-                      <tr style={{ background: "var(--primary-soft)", borderTop: "2px solid var(--border)" }}>
-                        <td colSpan={colCount} className="px-2 py-1 text-xs font-bold uppercase" style={{ color: tbl.accent, letterSpacing: "0.04em" }}>
+                      {/* A clear break between teams — the old single line
+                          disappeared once this was pasted into an email. */}
+                      <tr><td colSpan={colCount} style={{ height: 10, background: "var(--bg)", borderTop: "3px solid var(--ink)", borderBottom: "1px solid var(--border)" }} /></tr>
+                      <tr style={{ background: "var(--primary-soft)" }}>
+                        <td colSpan={colCount} className="px-2 py-1.5 text-xs font-bold uppercase" style={{ color: tbl.accent, letterSpacing: "0.06em" }}>
                           {t.name}
                         </td>
                       </tr>
                       {t.agents.map((a) => <Row key={a.name} r={a} indent band={bandOf(a.total)} />)}
-                      <Row r={t} bold />
+                      <Row r={t} dark />
                     </React.Fragment>
                   ))}
 
