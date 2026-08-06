@@ -8176,46 +8176,255 @@ function sameCompanyish(a, b) {
 /* One forecast, opened up. Shows what was forecast, what NetSuite actually
    has where a match was found, and the gap between them. Managers can
    correct or remove a line from here rather than only from the row. */
-function ForecastDrawer({ row, canManage, onSave, onDelete, onClose }) {
-  const [f, setF] = useState({
-    business_name: row.business_name || "", opp_id: row.opp_id || "",
-    pillar: row.pillar || "", sov: row.sov ?? 0, gp: row.gp ?? 0, units: row.units ?? 0,
-    next_step: row.next_step || "", notes: row.notes || "", status: row.status || "Open",
-  });
-  const [saving, setSaving] = useState(false);
-  const [confirmDel, setConfirmDel] = useState(false);
+/* One forecast, opened up. Shows what was forecast, what NetSuite actually
+   has where a match was found, and the gap between them. Managers can edit
+   every field here — including the week, so a slipping deal can be moved
+   rather than deleted and re-entered. */
+function ForecastDrawer({ row, canManage, weeks, sellers, embedded, onSave, onDelete, onClose }) {
+  const blank = {
+    business_name: "", opp_id: "", pillar: "", agent_name: "", lead_gen_name: "",
+    forecast_week: "", forecast_date: "", sov: 0, gp: 0, units: 0,
+    status: "Open", next_step: "", signpost_date: "", proposal: "", notes: "",
+    previously_forecasted: false, sr_raised: false, visit_or_teams: false, contract_out: false,
+  };
+  const from = (r) => {
+    const o = {};
+    Object.keys(blank).forEach((k) => {
+      o[k] = r[k] ?? blank[k];
+      if (typeof blank[k] === "boolean") o[k] = !!r[k];
+    });
+    return o;
+  };
 
-  const dirty = Object.keys(f).some((k) => String(f[k] ?? "") !== String(row[k] ?? ""));
+  const [f, setF] = useState(() => from(row));
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+  useEffect(() => { setF(from(row)); setConfirmDel(false); }, [row.id]);   // eslint-disable-line
+
+  const dirty = Object.keys(blank).some((k) => String(f[k] ?? "") !== String(from(row)[k] ?? ""));
   const gpDiff = row.matched_at ? num(row.actual_gp) - num(row.gp) : null;
   const sovDiff = row.matched_at ? num(row.actual_sov) - num(row.sov) : null;
   const conf = num(row.matched_confidence);
   const weak = row.matched_at && conf > 0 && conf < 0.6;
 
+  const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }));
+  const setBool = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.checked }));
+
+  const Field = ({ label, k, type = "text", hint, options }) => (
+    <div className="mb-2">
+      <label className="sw-label">{label}</label>
+      {options ? (
+        <select className="sw-input sw-focus" value={f[k]} onChange={set(k)} disabled={!canManage}>
+          {options.map((o) => (
+            typeof o === "string"
+              ? <option key={o} value={o}>{o}</option>
+              : <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      ) : (
+        <input className="sw-input sw-focus" type={type} value={f[k] || ""} onChange={set(k)} disabled={!canManage} />
+      )}
+      {hint && <div className="text-xs mt-0.5" style={{ color: "var(--ink-faint)" }}>{hint}</div>}
+    </div>
+  );
+
+  const Check = ({ label, k }) => (
+    <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--ink-soft)", cursor: canManage ? "pointer" : "default" }}>
+      <input type="checkbox" checked={!!f[k]} onChange={setBool(k)} disabled={!canManage} /> {label}
+    </label>
+  );
+
   const Diff = ({ label, forecast, actual, diff }) => (
     <div className="rounded-lg p-2.5" style={{ background: "var(--surface-alt)" }}>
       <div className="text-xs mb-1" style={{ color: "var(--ink-faint)" }}>{label}</div>
-      <div className="flex items-baseline gap-2 flex-wrap">
-        <span className="sw-mono" style={{ fontSize: 13 }}>{fmtGBP(forecast)}</span>
-        <span style={{ color: "var(--ink-faint)", fontSize: 11 }}>forecast</span>
+      <div className="flex items-baseline gap-1.5 flex-wrap">
+        <span className="sw-mono" style={{ fontSize: 12.5 }}>{fmtGBP(forecast)}</span>
         <span style={{ color: "var(--ink-faint)" }}>→</span>
-        <span className="sw-mono" style={{ fontSize: 13, fontWeight: 700 }}>{fmtGBP(actual)}</span>
-        <span style={{ color: "var(--ink-faint)", fontSize: 11 }}>actual</span>
+        <span className="sw-mono" style={{ fontSize: 12.5, fontWeight: 700 }}>{fmtGBP(actual)}</span>
       </div>
       <div className="sw-mono mt-0.5" style={{
-        fontSize: 12, fontWeight: 600,
+        fontSize: 11.5, fontWeight: 600,
         color: Math.abs(diff) < 1 ? "var(--green)" : diff < 0 ? "var(--red)" : "var(--amber)",
       }}>
-        {Math.abs(diff) < 1 ? "matches forecast" : `${diff > 0 ? "+" : ""}${fmtGBP(diff)}`}
+        {Math.abs(diff) < 1 ? "on forecast" : `${diff > 0 ? "+" : ""}${fmtGBP(diff)}`}
       </div>
     </div>
   );
+
+  const body = (
+    <div className="flex flex-col gap-3">
+
+      {/* Did it land? */}
+      {row.matched_at ? (
+        <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: `1px solid ${weak ? "var(--amber)" : "var(--green)"}` }}>
+          <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+            <CheckCircle2 size={14} style={{ color: weak ? "var(--amber)" : "var(--green)" }} />
+            <span className="text-xs font-bold uppercase" style={{ color: weak ? "var(--amber)" : "var(--green)", letterSpacing: "0.04em" }}>
+              Found in NetSuite
+            </span>
+            <span className="text-xs ml-auto" style={{ color: "var(--ink-faint)" }}>
+              {(row.matched_by || row.match_method) === "opp_id" ? "on Opp ID" : "on name"}
+              {conf > 0 && conf < 1 ? ` · ${Math.round(conf * 100)}% alike` : ""}
+            </span>
+          </div>
+
+          {row.matched_company && !sameCompanyish(row.matched_company, row.business_name) && (
+            <div className="rounded-lg p-2 mb-2" style={{ background: weak ? "var(--amber-soft)" : "var(--surface-alt)" }}>
+              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>NetSuite has this as</div>
+              <div className="text-xs font-semibold">{row.matched_company}</div>
+              {weak && <div className="text-xs mt-1" style={{ color: "var(--amber)" }}>Loose match — worth checking it's the same deal.</div>}
+            </div>
+          )}
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
+            <Diff label="GP" forecast={row.gp} actual={row.actual_gp} diff={gpDiff} />
+            <Diff label="SOV" forecast={row.sov} actual={row.actual_sov} diff={sovDiff} />
+          </div>
+
+          <div className="flex items-center gap-3 mt-2 text-xs" style={{ color: "var(--ink-faint)" }}>
+            {row.matched_document && <span className="sw-mono">Doc {row.matched_document}</span>}
+            {row.matched_order_date && <span>Ordered {fmtDate(row.matched_order_date)}</span>}
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          <div className="text-xs font-bold uppercase mb-1" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Not found in NetSuite</div>
+          <div className="text-xs" style={{ color: "var(--ink-soft)" }}>
+            {row.status === "Won"
+              ? "Marked won, but nothing matching has appeared. Either it hasn't been placed yet, or the name is too different to match — filling in the Opp ID would settle it."
+              : "Nothing matching yet. Expected until the order is placed."}
+          </div>
+        </div>
+      )}
+
+      {/* The deal */}
+      <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="text-xs font-bold uppercase mb-2" style={{ color: "var(--ink-soft)", letterSpacing: "0.04em" }}>The deal</div>
+        <Field label="Business" k="business_name" />
+        <Field label="Opp ID" k="opp_id" hint="Fill this in and the NetSuite match becomes exact rather than by name." />
+        <Field label="Product" k="pillar" options={["", ...PILLARS]} />
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0.5rem" }}>
+          <Field label="GP" k="gp" />
+          <Field label="SOV" k="sov" />
+          <Field label="Units" k="units" />
+        </div>
+      </div>
+
+      {/* Who and when */}
+      <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="text-xs font-bold uppercase mb-2" style={{ color: "var(--ink-soft)", letterSpacing: "0.04em" }}>Who and when</div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
+          <Field label="Agent" k="agent_name" options={["", ...(sellers || []).map((s) => s.full_name)]} />
+          <Field label="Lead gen" k="lead_gen_name" options={["", ...(sellers || []).map((s) => s.full_name)]} />
+        </div>
+
+        <Field label="Forecast week" k="forecast_week"
+          options={["", ...(weeks || [])].map((w) => (w ? { value: w, label: `w/c ${fmtDate(w)}` } : { value: "", label: "—" }))}
+          hint="Move a slipping deal to a later week rather than deleting and re-entering it — the history stays with the same record." />
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
+          <Field label="Expected date" k="forecast_date" type="date" />
+          <Field label="Signpost date" k="signpost_date" type="date" />
+        </div>
+      </div>
+
+      {/* Progress */}
+      <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div className="text-xs font-bold uppercase mb-2" style={{ color: "var(--ink-soft)", letterSpacing: "0.04em" }}>Progress</div>
+        <Field label="Status" k="status" options={FORECAST_STATUSES} />
+        <Field label="Next step" k="next_step" />
+        <Field label="Proposal" k="proposal" />
+
+        <div className="flex items-center gap-3 flex-wrap mt-1 mb-2">
+          <Check label="Previously forecast" k="previously_forecasted" />
+          <Check label="SR raised" k="sr_raised" />
+          <Check label="Visit or Teams" k="visit_or_teams" />
+          <Check label="Contract out" k="contract_out" />
+        </div>
+
+        <label className="sw-label">Notes</label>
+        <textarea className="sw-input sw-focus" rows={3} value={f.notes || ""} onChange={set("notes")} disabled={!canManage} />
+      </div>
+
+      {canManage && (
+        <div className="flex items-center gap-2">
+          <button disabled={!dirty || saving}
+            onClick={async () => {
+              setSaving(true);
+              await onSave(row.id, {
+                business_name: String(f.business_name || "").trim(),
+                opp_id: String(f.opp_id || "").trim() || null,
+                pillar: f.pillar || null,
+                agent_name: f.agent_name || null,
+                lead_gen_name: f.lead_gen_name || null,
+                forecast_week: f.forecast_week || null,
+                forecast_date: f.forecast_date || null,
+                signpost_date: f.signpost_date || null,
+                gp: parseFloat(f.gp) || 0,
+                sov: parseFloat(f.sov) || 0,
+                units: parseFloat(f.units) || 0,
+                status: f.status || "Open",
+                next_step: f.next_step || null,
+                proposal: f.proposal || null,
+                notes: f.notes || null,
+                previously_forecasted: !!f.previously_forecasted,
+                sr_raised: !!f.sr_raised,
+                visit_or_teams: !!f.visit_or_teams,
+                contract_out: !!f.contract_out,
+              });
+              setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 1600);
+            }}
+            className="sw-focus flex-1 py-2 rounded-lg text-sm font-semibold"
+            style={{ background: dirty ? "var(--primary)" : "var(--surface)", color: dirty ? "#fff" : "var(--ink-faint)", border: "1px solid var(--border)" }}>
+            {saving ? "Saving..." : saved ? "Saved" : "Save changes"}
+          </button>
+
+          {confirmDel ? (
+            <>
+              <button onClick={async () => { await onDelete(row.id); if (onClose) onClose(); }}
+                className="sw-focus py-2 px-3 rounded-lg text-sm font-semibold text-white" style={{ background: "var(--red)" }}>
+                Really delete
+              </button>
+              <button onClick={() => setConfirmDel(false)} className="sw-focus text-xs" style={{ color: "var(--ink-faint)" }}>Cancel</button>
+            </>
+          ) : (
+            <button onClick={() => setConfirmDel(true)}
+              className="sw-focus py-2 px-3 rounded-lg text-sm" style={{ color: "var(--red)", border: "1px solid var(--border)" }}>
+              Delete
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+  // Inline on the All forecasts page; a slide-over everywhere else
+  if (embedded) {
+    return (
+      <div>
+        <div className="flex items-start gap-2 mb-3">
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="sw-display font-bold text-base truncate">{row.business_name}</div>
+            <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+              {row.agent_name}{row.agent_team ? ` · ${row.agent_team}` : ""}
+              {row.forecast_week ? ` · w/c ${fmtDate(row.forecast_week)}` : ""}
+            </div>
+          </div>
+          {onClose && <button onClick={onClose} className="sw-focus" style={{ color: "var(--ink-faint)" }}><X size={16} /></button>}
+        </div>
+        {body}
+      </div>
+    );
+  }
 
   return (
     <div onClick={onClose}
       style={{ position: "fixed", inset: 0, background: "rgba(20,16,40,0.35)", zIndex: 60, display: "flex", justifyContent: "flex-end" }}>
       <div onClick={(e) => e.stopPropagation()}
         style={{ width: "min(520px, 100%)", height: "100%", background: "var(--bg)", overflowY: "auto", boxShadow: "-8px 0 24px rgba(0,0,0,0.12)" }}>
-
         <div className="flex items-start gap-2 px-4 py-3" style={{ borderBottom: "1px solid var(--border)", background: "var(--surface)" }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="sw-display font-bold text-base truncate">{row.business_name}</div>
@@ -8226,146 +8435,7 @@ function ForecastDrawer({ row, canManage, onSave, onDelete, onClose }) {
           </div>
           <button onClick={onClose} className="sw-focus" style={{ color: "var(--ink-faint)" }}><X size={18} /></button>
         </div>
-
-        <div className="p-4 flex flex-col gap-3">
-
-          {/* Did it land? */}
-          {row.matched_at ? (
-            <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: `1px solid ${weak ? "var(--amber)" : "var(--green)"}` }}>
-              <div className="flex items-center gap-1.5 mb-2">
-                <CheckCircle2 size={14} style={{ color: weak ? "var(--amber)" : "var(--green)" }} />
-                <span className="text-xs font-bold uppercase" style={{ color: weak ? "var(--amber)" : "var(--green)", letterSpacing: "0.04em" }}>
-                  Found in NetSuite
-                </span>
-                <span className="text-xs ml-auto" style={{ color: "var(--ink-faint)" }}>
-                  {(row.matched_by || row.match_method) === "opp_id" ? "matched on Opp ID" : "matched on name"}
-                  {conf > 0 && conf < 1 ? ` · ${Math.round(conf * 100)}% alike` : ""}
-                </span>
-              </div>
-
-              {row.matched_company && !sameCompanyish(row.matched_company, row.business_name) && (
-                <div className="rounded-lg p-2 mb-2" style={{ background: weak ? "var(--amber-soft)" : "var(--surface-alt)" }}>
-                  <div className="text-xs" style={{ color: "var(--ink-faint)" }}>NetSuite has this as</div>
-                  <div className="text-xs font-semibold">{row.matched_company}</div>
-                  {weak && (
-                    <div className="text-xs mt-1" style={{ color: "var(--amber)" }}>
-                      Loose match — worth checking it's the same deal.
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
-                <Diff label="GP" forecast={row.gp} actual={row.actual_gp} diff={gpDiff} />
-                <Diff label="SOV" forecast={row.sov} actual={row.actual_sov} diff={sovDiff} />
-              </div>
-
-              <div className="flex items-center gap-3 mt-2 text-xs" style={{ color: "var(--ink-faint)" }}>
-                {row.matched_document && <span className="sw-mono">Doc {row.matched_document}</span>}
-                {row.matched_order_date && <span>Ordered {fmtDate(row.matched_order_date)}</span>}
-              </div>
-            </div>
-          ) : (
-            <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              <div className="text-xs font-bold uppercase mb-1" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Not found in NetSuite</div>
-              <div className="text-xs" style={{ color: "var(--ink-soft)" }}>
-                {row.status === "Won"
-                  ? "Marked won, but nothing matching has appeared. Either it hasn't been placed yet, or the company name is too different to match — adding the Opp ID below would settle it."
-                  : "Nothing matching has appeared yet. That's expected until the order is placed."}
-              </div>
-            </div>
-          )}
-
-          {/* The forecast itself */}
-          <div className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-            <div className="text-xs font-bold uppercase mb-2" style={{ color: "var(--ink-soft)", letterSpacing: "0.04em" }}>The forecast</div>
-
-            {canManage ? (
-              <>
-                <label className="sw-label">Business</label>
-                <input className="sw-input sw-focus mb-2" value={f.business_name}
-                  onChange={(e) => setF((p) => ({ ...p, business_name: e.target.value }))} />
-
-                <label className="sw-label">Opp ID <span style={{ color: "var(--ink-faint)", fontWeight: 400 }}>— fills this in and the match becomes exact</span></label>
-                <input className="sw-input sw-focus mb-2" value={f.opp_id} placeholder="OID-..."
-                  onChange={(e) => setF((p) => ({ ...p, opp_id: e.target.value }))} />
-
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0.5rem" }} className="mb-2">
-                  <div>
-                    <label className="sw-label">GP</label>
-                    <input className="sw-input sw-focus" value={f.gp} onChange={(e) => setF((p) => ({ ...p, gp: e.target.value }))} />
-                  </div>
-                  <div>
-                    <label className="sw-label">SOV</label>
-                    <input className="sw-input sw-focus" value={f.sov} onChange={(e) => setF((p) => ({ ...p, sov: e.target.value }))} />
-                  </div>
-                  <div>
-                    <label className="sw-label">Units</label>
-                    <input className="sw-input sw-focus" value={f.units} onChange={(e) => setF((p) => ({ ...p, units: e.target.value }))} />
-                  </div>
-                </div>
-
-                <label className="sw-label">Next step</label>
-                <input className="sw-input sw-focus mb-2" value={f.next_step}
-                  onChange={(e) => setF((p) => ({ ...p, next_step: e.target.value }))} />
-
-                <label className="sw-label">Notes</label>
-                <textarea className="sw-input sw-focus" rows={3} value={f.notes}
-                  onChange={(e) => setF((p) => ({ ...p, notes: e.target.value }))} />
-              </>
-            ) : (
-              <div className="flex flex-col gap-1.5">
-                {[["Pillar", row.pillar], ["GP", fmtGBP(row.gp)], ["SOV", fmtGBP(row.sov)],
-                  ["Units", num(row.units) || "—"], ["Next step", row.next_step || "—"],
-                  ["Notes", row.notes || "—"]].map(([k, v]) => (
-                  <div key={k} className="flex items-baseline gap-2">
-                    <span className="text-xs shrink-0" style={{ color: "var(--ink-faint)", width: 78 }}>{k}</span>
-                    <span className="text-xs">{v}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {canManage && (
-            <div className="flex items-center gap-2">
-              <button disabled={!dirty || saving}
-                onClick={async () => {
-                  setSaving(true);
-                  await onSave(row.id, {
-                    business_name: f.business_name.trim(),
-                    opp_id: f.opp_id.trim() || null,
-                    gp: parseFloat(f.gp) || 0,
-                    sov: parseFloat(f.sov) || 0,
-                    units: parseFloat(f.units) || 0,
-                    next_step: f.next_step || null,
-                    notes: f.notes || null,
-                  });
-                  setSaving(false);
-                  onClose();
-                }}
-                className="sw-focus flex-1 py-2 rounded-lg text-sm font-semibold"
-                style={{ background: dirty ? "var(--primary)" : "var(--surface)", color: dirty ? "#fff" : "var(--ink-faint)", border: "1px solid var(--border)" }}>
-                {saving ? "Saving..." : "Save changes"}
-              </button>
-
-              {confirmDel ? (
-                <>
-                  <button onClick={async () => { await onDelete(row.id); onClose(); }}
-                    className="sw-focus py-2 px-3 rounded-lg text-sm font-semibold text-white" style={{ background: "var(--red)" }}>
-                    Really delete
-                  </button>
-                  <button onClick={() => setConfirmDel(false)} className="sw-focus text-xs" style={{ color: "var(--ink-faint)" }}>Cancel</button>
-                </>
-              ) : (
-                <button onClick={() => setConfirmDel(true)}
-                  className="sw-focus py-2 px-3 rounded-lg text-sm" style={{ color: "var(--red)", border: "1px solid var(--border)" }}>
-                  Delete
-                </button>
-              )}
-            </div>
-          )}
-        </div>
+        <div className="p-4">{body}</div>
       </div>
     </div>
   );
@@ -8408,6 +8478,49 @@ function ForecastView({ netsuite, profile, staff }) {
 
 
   // Weeks that actually have forecasts, newest first, plus this week
+  /* All-forecasts view has its own filters — it spans every week, so it
+     can't share the summary's single-week picker. */
+  const [dWeek, setDWeek] = useState("All");
+  const [dTeam, setDTeam] = useState("All");
+  const [dAgent, setDAgent] = useState("All");
+  const [dPillar, setDPillar] = useState("All");
+  const [dSold, setDSold] = useState(false);
+  const [dQuery, setDQuery] = useState("");
+
+  const dTeams = useMemo(() => {
+    const s = new Set();
+    (rows || []).forEach((r) => { if (r.agent_team) s.add(r.agent_team); if (r.lead_gen_team) s.add(r.lead_gen_team); });
+    return Array.from(s).sort();
+  }, [rows]);
+
+  // Agents narrow to the chosen team, so the list stays usable
+  const dAgents = useMemo(() => {
+    const s = new Set();
+    (rows || []).forEach((r) => {
+      if (dTeam !== "All" && r.agent_team !== dTeam && r.lead_gen_team !== dTeam) return;
+      if (r.agent_name) s.add(r.agent_name);
+      if (r.lead_gen_name) s.add(r.lead_gen_name);
+    });
+    return Array.from(s).sort();
+  }, [rows, dTeam]);
+
+  const detailRows = useMemo(() => {
+    const q = dQuery.trim().toLowerCase();
+    return (rows || []).filter((r) => {
+      if (dWeek !== "All" && r.forecast_week !== dWeek) return false;
+      if (dTeam !== "All" && r.agent_team !== dTeam && r.lead_gen_team !== dTeam) return false;
+      if (dAgent !== "All" && r.agent_name !== dAgent && r.lead_gen_name !== dAgent) return false;
+      if (dPillar !== "All" && groupForPillar(r.pillar) !== dPillar) return false;
+      if (dSold && !r.matched_at) return false;
+      if (q && !String(r.business_name || "").toLowerCase().includes(q)
+            && !String(r.opp_id || "").toLowerCase().includes(q)) return false;
+      return true;
+    }).sort((a, b) => String(b.forecast_week || "").localeCompare(String(a.forecast_week || ""))
+      || num(b.gp) - num(a.gp));
+  }, [rows, dWeek, dTeam, dAgent, dPillar, dSold, dQuery]);
+
+  const sellers = useMemo(() => (staff || []).filter((s) => s.sells !== false && s.active !== false), [staff]);
+
   const weekOptions = useMemo(() => {
     const s = new Set(rows.map((r) => r.forecast_week).filter(Boolean));
     s.add(isoDateStr(mondayOf(new Date())));
@@ -9032,7 +9145,12 @@ function ForecastView({ netsuite, profile, staff }) {
                   </tr>
                 </thead>
                 <tbody>
-                  <FcRow label="Office total" v={summary.grand} sov={breakdown.all.sov}
+                  {/* summary.grand is the forecast net of DC, so it only
+                      applies in forecast mode — statted GP comes from the
+                      breakdown, which is already built from actuals. */}
+                  <FcRow label="Office total"
+                    v={valueMode === "statted" ? breakdown.all.gp : summary.grand}
+                    sov={breakdown.all.sov}
                     prods={breakdown.all.prods} cols={shownProductCols} bold tone="var(--primary)" />
 
                   {/* Per team */}
@@ -9236,96 +9354,161 @@ function ForecastView({ netsuite, profile, staff }) {
       )}
 
       {/* DETAIL */}
+      {/* ALL FORECASTS — list on the left, the record open on the right */}
       {view === "detail" && (
-        <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm" style={{ borderCollapse: "collapse" }}>
-              <thead>
-                <tr style={{ background: "var(--surface-alt)" }}>
-                  {["Business", "Agent", "Lead Gen", "Pillar", "SOV", "GP", "Units", "Expected", "Next step", "Status", "vs NetSuite"].map((h) => (
-                    <th key={h} className="text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide whitespace-nowrap" style={{ color: "var(--ink-soft)" }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {weekRows.map((r) => {
-                  const gpDiff = r.matched_at ? num(r.actual_gp) - num(r.gp) : null;
-                  // A matched line is tinted green — the whole point of the
-                  // page is seeing at a glance what has actually landed.
-                  const weak = r.matched_at && num(r.matched_confidence) > 0 && num(r.matched_confidence) < 0.6;
-                  return (
-                    <tr key={r.id}
-                      onClick={() => setOpenForecast(r)}
-                      style={{
-                        borderTop: "1px solid var(--border)",
-                        background: r.matched_at ? (weak ? "var(--amber-soft)" : "var(--green-soft)") : "transparent",
-                        cursor: "pointer",
-                      }}>
-                      <td className="px-3 py-2">
-                        <div className="font-medium flex items-center gap-1.5">
-                          {r.matched_at && (
-                            <CheckCircle2 size={12} style={{ color: weak ? "var(--amber)" : "var(--green)", flexShrink: 0 }} />
-                          )}
-                          {r.business_name}
-                        </div>
-                        {r.opp_id && <div className="text-xs sw-mono" style={{ color: "var(--ink-faint)" }}>{r.opp_id}</div>}
-                      </td>
-                      <td className="px-3 py-2 text-xs">{r.agent_name}{r.agent_team ? <span style={{ color: "var(--ink-faint)" }}> · {r.agent_team}</span> : null}</td>
-                      <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-soft)" }}>{r.lead_gen_name || "—"}</td>
-                      <td className="px-3 py-2 text-xs">{r.pillar}</td>
-                      <td className="px-3 py-2 sw-mono text-xs sw-hide-xs">{fmtGBP(r.sov)}</td>
-                      <td className="px-3 py-2 sw-mono text-xs font-semibold">{fmtGBP(r.gp)}</td>
-                      <td className="px-3 py-2 sw-mono text-xs">{num(r.units) || "—"}</td>
-                      <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-faint)" }}>{r.forecast_date ? fmtDate(r.forecast_date) : "—"}</td>
-                      <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-soft)" }}>{r.next_step || "—"}</td>
-                      <td className="px-3 py-2">
-                        <select className="sw-input sw-focus" style={{ width: 96, fontSize: 11, padding: "4px 6px" }}
-                          onClick={(e) => e.stopPropagation()}
-                          value={r.status || "Open"} onChange={(e) => updateRow(r.id, { status: e.target.value })}>
-                          {FORECAST_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-                        </select>
-                      </td>
-                      <td className="px-3 py-2">
-                        {r.matched_at ? (
-                          <div>
-                            <div className="text-xs font-semibold" style={{ color: "var(--green)" }}>
-                              {fmtGBP(r.actual_gp)}{(r.matched_document || r.matched_document_number) ? ` · Doc ${r.matched_document || r.matched_document_number}` : ""}
-                            </div>
-                            <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
-                              {r.matched_order_date ? fmtDate(r.matched_order_date) : ""}
-                              {(r.matched_by || r.match_method) === "opp_id" ? " · by Opp ID" : " · by name"}
-                            </div>
-                            {r.matched_company && r.matched_company.toUpperCase() !== String(r.business_name || "").toUpperCase() && (
-                              <div className="text-xs" style={{ color: "var(--amber)" }}>NS: {r.matched_company}</div>
-                            )}
-                            <div className="text-xs" style={{ color: Math.abs(gpDiff || 0) < 1 ? "var(--ink-faint)" : (gpDiff || 0) < 0 ? "var(--red)" : "var(--amber)" }}>
-                              {Math.abs(gpDiff || 0) < 1 ? "matches forecast" : `${(gpDiff || 0) > 0 ? "+" : ""}${fmtGBP(gpDiff || 0)} vs forecast`}
-                            </div>
-                          </div>
-                        ) : (
-                          <span className="text-xs" style={{ color: r.status === "Won" ? "var(--amber)" : "var(--ink-faint)" }}>
-                            {r.status === "Won" ? "Won, but not found in NetSuite" : "not seen yet"}
-                          </span>
-                        )}
-                      </td>
+        <div>
+          {/* Filters. This view spans every week, so it needs its own set
+              rather than inheriting the summary's single-week picker. */}
+          <div className="rounded-xl mb-2" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="flex items-center gap-2 px-3 py-2.5 flex-wrap">
+              <select className="sw-input sw-focus" style={{ width: 152, height: 32, fontSize: 12.5 }}
+                value={dWeek} onChange={(e) => setDWeek(e.target.value)}>
+                <option value="All">All weeks</option>
+                {weekOptions.map((w) => <option key={w} value={w}>{weekLabel(w)}</option>)}
+              </select>
+
+              <select className="sw-input sw-focus" style={{ width: 152, height: 32, fontSize: 12.5 }}
+                value={dTeam} onChange={(e) => { setDTeam(e.target.value); setDAgent("All"); }}>
+                <option value="All">All teams</option>
+                {dTeams.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+
+              <select className="sw-input sw-focus" style={{ width: 160, height: 32, fontSize: 12.5 }}
+                value={dAgent} onChange={(e) => setDAgent(e.target.value)}>
+                <option value="All">All agents</option>
+                {dAgents.map((a) => <option key={a} value={a}>{a}</option>)}
+              </select>
+
+              <select className="sw-input sw-focus" style={{ width: 160, height: 32, fontSize: 12.5 }}
+                value={dPillar} onChange={(e) => setDPillar(e.target.value)}>
+                <option value="All">All products</option>
+                {PILLAR_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
+                <option value="Other">Other</option>
+              </select>
+
+              <button onClick={() => setDSold((v) => !v)}
+                className="sw-focus px-3 rounded-lg text-xs font-semibold flex items-center gap-1.5"
+                style={{
+                  height: 32,
+                  background: dSold ? "var(--green)" : "transparent",
+                  color: dSold ? "#fff" : "var(--green)",
+                  border: `1px solid ${dSold ? "var(--green)" : "var(--border)"}`,
+                }}>
+                <CheckCircle2 size={12} /> Sold only
+              </button>
+
+              <div className="relative" style={{ flex: 1, minWidth: 160 }}>
+                <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: "var(--ink-faint)" }} />
+                <input className="sw-input sw-focus" style={{ paddingLeft: 28, height: 32, fontSize: 12.5 }}
+                  placeholder="Search business or Opp ID..." value={dQuery} onChange={(e) => setDQuery(e.target.value)} />
+              </div>
+
+              <span className="text-xs shrink-0" style={{ color: "var(--ink-faint)" }}>
+                {detailRows.length} of {rows.length}
+              </span>
+            </div>
+          </div>
+
+          <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" }}>
+
+            {/* LIST */}
+            <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm" style={{ borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ background: "var(--surface-alt)" }}>
+                      {["Business", "Agent", "Product", "GP", "SOV", "Week", "Next step", "Status"].map((h) => (
+                        <th key={h} className="text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide whitespace-nowrap" style={{ color: "var(--ink-soft)" }}>{h}</th>
+                      ))}
                     </tr>
-                  );
-                })}
-                {weekRows.length === 0 && (
-                  <tr><td colSpan={11} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
-                    {loading ? "Loading..." : "No forecasts for this week yet."}
-                  </td></tr>
-                )}
-              </tbody>
-            </table>
+                  </thead>
+                  <tbody>
+                    {detailRows.map((r) => {
+                      const conf = num(r.matched_confidence);
+                      const weak = r.matched_at && conf > 0 && conf < 0.6;
+                      const sel = openForecast?.id === r.id;
+                      return (
+                        <tr key={r.id} onClick={() => setOpenForecast(r)}
+                          style={{
+                            borderTop: "1px solid var(--border)",
+                            cursor: "pointer",
+                            background: sel ? "var(--primary-soft)"
+                              : r.matched_at ? (weak ? "var(--amber-soft)" : "var(--green-soft)") : "transparent",
+                            boxShadow: sel ? "inset 3px 0 0 var(--primary)" : undefined,
+                          }}>
+                          <td className="px-3 py-2" style={{ maxWidth: 220 }}>
+                            <div className="font-medium text-xs flex items-center gap-1 truncate">
+                              {r.matched_at && <CheckCircle2 size={11} style={{ color: weak ? "var(--amber)" : "var(--green)", flexShrink: 0 }} />}
+                              {r.business_name}
+                            </div>
+                            {r.opp_id && <div className="text-xs sw-mono" style={{ color: "var(--ink-faint)", fontSize: 10 }}>{r.opp_id}</div>}
+                          </td>
+                          <td className="px-3 py-2 text-xs" style={{ maxWidth: 130 }}>
+                            <div className="truncate">{r.agent_name}</div>
+                            {r.lead_gen_name && <div className="truncate" style={{ color: "var(--ink-faint)", fontSize: 10 }}>LG {r.lead_gen_name}</div>}
+                          </td>
+                          <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-soft)" }}>{r.pillar}</td>
+                          <td className="px-3 py-2 sw-mono text-xs font-semibold">{fmtGBP(r.gp)}</td>
+                          <td className="px-3 py-2 sw-mono text-xs sw-hide-xs" style={{ color: "var(--ink-soft)" }}>{fmtGBP(r.sov)}</td>
+                          <td className="px-3 py-2 text-xs whitespace-nowrap" style={{ color: "var(--ink-faint)" }}>
+                            {r.forecast_week ? fmtDate(r.forecast_week) : "—"}
+                          </td>
+                          {/* Condensed — the full text is in the panel */}
+                          <td className="px-3 py-2 text-xs sw-hide-sm" style={{ color: "var(--ink-soft)", maxWidth: 150 }}>
+                            <div className="truncate" title={r.next_step || ""}>{r.next_step || "—"}</div>
+                          </td>
+                          <td className="px-3 py-2">
+                            <span className="rounded px-1.5 py-0.5 whitespace-nowrap" style={{
+                              fontSize: 10, fontWeight: 600,
+                              background: r.status === "Won" ? "var(--green-soft)" : r.status === "Lost" ? "var(--red-soft)" : "var(--surface-alt)",
+                              color: r.status === "Won" ? "var(--green)" : r.status === "Lost" ? "var(--red)" : "var(--ink-soft)",
+                            }}>{r.status || "Open"}</span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {detailRows.length === 0 && (
+                      <tr><td colSpan={8} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                        {loading ? "Loading..." : "Nothing matches these filters."}
+                      </td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* EDIT PANEL */}
+            <div className="sw-sticky-col" style={{ position: "sticky", top: 66, maxHeight: "calc(100vh - 84px)", overflowY: "auto" }}>
+              {openForecast ? (
+                <div className="rounded-xl p-3" style={{ background: "var(--surface-alt)", border: "1px solid var(--border)" }}>
+                  <ForecastDrawer
+                    row={rows.find((r) => r.id === openForecast.id) || openForecast}
+                    canManage={profile?.role === "office" || profile?.role === "2ic"}
+                    weeks={weekOptions}
+                    sellers={sellers}
+                    embedded
+                    onSave={updateRow}
+                    onDelete={deleteForecast}
+                    onClose={() => setOpenForecast(null)} />
+                </div>
+              ) : (
+                <div className="rounded-xl p-8 text-center" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+                  <div className="text-sm" style={{ color: "var(--ink-faint)" }}>Pick a forecast to open it.</div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
 
-      {openForecast && (
+      {/* Slide-over on the summary page only — the All forecasts page
+          shows the same component inline in its right-hand column. */}
+      {openForecast && view === "summary" && (
         <ForecastDrawer
-          row={weekRows.find((r) => r.id === openForecast.id) || openForecast}
+          row={rows.find((r) => r.id === openForecast.id) || openForecast}
           canManage={profile?.role === "office" || profile?.role === "2ic"}
+          weeks={weekOptions}
+          sellers={sellers}
           onSave={updateRow}
           onDelete={deleteForecast}
           onClose={() => setOpenForecast(null)} />
