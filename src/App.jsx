@@ -947,6 +947,51 @@ function tierBlend(step, total) {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  CLICK TO DIAL                                                          */
+/* ---------------------------------------------------------------------- */
+
+/* Any number shown on a page becomes dialable. Windows hands `tel:` links
+   to whatever has registered for them, and Cloud Work registers itself on
+   install — so this opens Cloud Work with the number ready, without
+   needing an API or any sign-in. On a phone it opens the dialler instead.
+
+   The first click may prompt "which app?"; Windows remembers the choice. */
+function telHref(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  // Keep a leading +, strip everything else that isn't a digit. Extensions
+  // written as "01752 123456 ext 204" would dial the wrong thing, so
+  // anything after ext/x is dropped.
+  const cut = s.split(/\b(?:ext|extn|x)\.?\s*\d+/i)[0];
+  const digits = cut.replace(/[^\d+]/g, "").replace(/(?!^)\+/g, "");
+  // A UK number is 10-11 digits; anything shorter isn't worth linking
+  return digits.replace(/\D/g, "").length >= 9 ? `tel:${digits}` : null;
+}
+
+/* Renders a number as a dial link, or as plain text when it isn't one. */
+function PhoneLink({ number, label, size = 12.5, muted, showIcon = true, style = {} }) {
+  const href = telHref(number);
+  const text = label || number;
+  if (!number) return <span style={{ color: "var(--ink-faint)", fontSize: size, ...style }}>—</span>;
+  if (!href) return <span style={{ fontSize: size, color: muted ? "var(--ink-faint)" : undefined, ...style }}>{text}</span>;
+  return (
+    <a href={href}
+      className="sw-focus"
+      title={`Call ${number}`}
+      style={{
+        fontSize: size, color: muted ? "var(--ink-soft)" : "var(--primary)",
+        textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4,
+        whiteSpace: "nowrap", ...style,
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.textDecoration = "underline"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.textDecoration = "none"; }}>
+      {showIcon && <Phone size={Math.round(size * 0.85)} style={{ flexShrink: 0, opacity: 0.75 }} />}
+      {text}
+    </a>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /*  CHARTS — small SVG primitives, no chart library needed                 */
 /* ---------------------------------------------------------------------- */
 
@@ -2957,6 +3002,13 @@ function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove }) 
     ["Product Group", order.product_group_2],
     ["Closer", order.closer_name ? `${order.closer_name}${order.closer_team ? ` (${order.closer_team})` : ""}` : null],
     ["Lead Gen", order.lead_gen_name ? `${order.lead_gen_name}${order.lead_gen_team ? ` (${order.lead_gen_team})` : ""}` : null],
+    // Anything dialable is passed through as a link rather than text
+    ["Customer", order.customer_name],
+    ["Landline", order.customer_landline, "tel"],
+    ["Mobile", order.customer_mobile, "tel"],
+    ["Second contact", order.secondary_name],
+    ["Second landline", order.secondary_landline, "tel"],
+    ["Second mobile", order.secondary_mobile, "tel"],
   ];
 
   return (
@@ -3147,9 +3199,12 @@ function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove }) 
 
         <h4 className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--ink-soft)" }}>Order Details</h4>
         <div className="rounded-xl overflow-hidden mb-4" style={{ border: "1px solid var(--border)" }}>
-          {rows.filter(([, v]) => v != null && v !== "").map(([label, val], i) => (
+          {rows.filter(([, v]) => v != null && v !== "").map(([label, val, kind], i) => (
             <div key={label} className="flex justify-between px-3 py-2 text-sm" style={{ background: i % 2 ? "var(--surface-alt)" : "transparent" }}>
-              <span style={{ color: "var(--ink-soft)" }}>{label}</span><span className="font-medium text-right">{val}</span>
+              <span style={{ color: "var(--ink-soft)" }}>{label}</span>
+              <span className="font-medium text-right">
+                {kind === "tel" ? <PhoneLink number={val} size={13.5} /> : val}
+              </span>
             </div>
           ))}
         </div>
@@ -10072,7 +10127,7 @@ function QuoteBuilderView({ profile, staff }) {
 
   /* Everything the quotation needs. Prefilled from whoever's signed in. */
   const [quote, setQuote] = useState({
-    customer: "", company: "", repName: "", repPhone: "",
+    customer: "", company: "", customerEmail: "", repName: "", repPhone: "",
     notes: "Prices exclude VAT. Subject to standard BT Local Business terms and conditions.",
   });
   const [items, setItems] = useState([]);
@@ -10159,6 +10214,34 @@ function QuoteBuilderView({ profile, staff }) {
     setTimeout(() => { w.focus(); w.print(); }, 400);
   };
 
+  /* Opens the customer's default mail client with the covering note ready.
+     `mailto:` genuinely cannot carry an attachment — that's a limitation of
+     the protocol, not the browser — so the PDF is generated and downloaded
+     at the same moment, leaving it at the top of the Downloads list ready
+     to drag in. Doing both from one click is as close as this gets without
+     a Microsoft Graph integration. */
+  const emailQuotation = () => {
+    const to = quote.customerEmail || "";
+    const subject = `Your quotation from BT Local Business — ${quoteNumber}`;
+    const body = [
+      `Hello ${quote.customer || "there"}`,
+      "",
+      "Please see attached your quote as we discussed.",
+      "",
+      `Please contact me on ${quote.repPhone || "[your contact phone]"}`,
+      "",
+      quote.repName || "",
+      "BT Local Business",
+    ].join("\r\n");
+
+    // Print first, so the PDF is sitting in Downloads when they go to attach
+    printQuotation();
+    setTimeout(() => {
+      window.location.href =
+        `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    }, 700);
+  };
+
   return (
     <div>
       <div className="flex items-center gap-3 mb-4 flex-wrap">
@@ -10173,10 +10256,16 @@ function QuoteBuilderView({ profile, staff }) {
             </span>
           )}
           <button onClick={printQuotation} disabled={!items.length}
-            className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold text-white"
+            className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold"
             title="Prints both pages and saves the quote so it can be picked when the order is submitted"
+            style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>
+            Print / Save PDF
+          </button>
+          <button onClick={emailQuotation} disabled={!items.length}
+            className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold text-white flex items-center gap-1.5"
+            title="Saves the PDF and opens Outlook with the covering note ready — attach the file it just downloaded"
             style={{ background: items.length ? "var(--primary)" : "var(--ink-faint)" }}>
-            Print / Save PDF (2 pages)
+            <Mail size={12} /> Email to customer
           </button>
         </div>
       </div>
@@ -10207,6 +10296,11 @@ function QuoteBuilderView({ profile, staff }) {
             <label className="sw-label">Company name</label>
             <input className="sw-input sw-focus mb-2" value={quote.company} placeholder="e.g. Acme Ltd"
               onChange={(e) => setQuote((p) => ({ ...p, company: e.target.value }))} />
+
+            <label className="sw-label">Customer email</label>
+            <input className="sw-input sw-focus mb-2" type="email" value={quote.customerEmail || ""}
+              placeholder="so the email opens addressed"
+              onChange={(e) => setQuote((p) => ({ ...p, customerEmail: e.target.value }))} />
 
             <label className="sw-label">Notes / terms</label>
             <textarea className="sw-input sw-focus" rows={3} value={quote.notes}
