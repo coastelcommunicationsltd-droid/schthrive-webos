@@ -11496,11 +11496,18 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
 
   // Everything below follows the placement filter, so the workload counts
   // and the table always describe the same set of orders.
+  /* The ranked list counts whatever the filters have left, so switching to
+     90+ days shows how many aged orders each agent is sitting on rather
+     than their whole workload. Product and search are deliberately left
+     out — those narrow the table, not the question of who owns what. */
   const scopedForWork = useMemo(() => {
-    if (placementView === "all") return unplacedRows;
-    if (placementView === "to_be_placed") return unplacedRows.filter((r) => r.kind === "lilac" || isToBePlaced(r.placed));
-    return unplacedRows.filter((r) => placementOf(r.placed) === placementView);
-  }, [unplacedRows, placementView]);
+    let rows = unplacedRows;
+    if (placementView === "to_be_placed") rows = rows.filter((r) => r.kind === "lilac" || isToBePlaced(r.placed));
+    else if (placementView !== "all") rows = rows.filter((r) => placementOf(r.placed) === placementView);
+    if (agedOnly) rows = rows.filter((r) => r.aged);
+    if (dirtyOnly) rows = rows.filter((r) => r.dirty);
+    return rows;
+  }, [unplacedRows, placementView, agedOnly, dirtyOnly]);
 
   // Workload by admin agent, from column K
   const unplacedByAgent = useMemo(() => {
@@ -12096,14 +12103,21 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
             <div>
             {view === "unplaced" && (
               <div className="text-xs mb-2" style={{ color: "var(--ink-faint)" }}>
-                {placementView === "to_be_placed" ? "Orders to be placed"
+                {placementView === "to_be_placed" ? "To be placed"
                   : placementView === "all" ? "All orders"
                   : PLACEMENT_BUCKETS.find((b) => b.key === placementView)?.label || ""}
-                {" · "}{scopedForWork.length}
+                {agedOnly ? " · 90+ days" : ""}
+                {dirtyOnly ? " · dirty" : ""}
+                {" · "}<b>{scopedForWork.length}</b>
               </div>
             )}
 
-            {(view === "unplaced" ? unplacedByAgent.none : ranking.unallocated) > 0 && (
+            {/* Only worth showing while looking at work still to place —
+                on an aged or dirty view the question is who owns it, not
+                who to give it to. */}
+            {(view === "unplaced"
+                ? (!agedOnly && !dirtyOnly && unplacedByAgent.none)
+                : ranking.unallocated) > 0 && (
               <button onClick={() => setAgentFilter(agentFilter === "__unallocated" ? "All" : "__unallocated")}
                 className="sw-focus w-full text-left px-2.5 py-2 rounded-lg mb-2"
                 style={{ background: agentFilter === "__unallocated" ? "var(--amber)" : "var(--amber-soft)" }}>
@@ -14177,7 +14191,9 @@ export default function App() {
     return (
       <StatusCfgContext.Provider value={statusCfgMap}>
         <StaffContext.Provider value={staffValue}>
-          <TVBoard orders={orders} netsuite={netsuiteResolved} />
+          <AliasContext.Provider value={aliasMap}>
+            <TVBoard orders={orders} netsuite={netsuiteResolved} />
+          </AliasContext.Provider>
         </StaffContext.Provider>
       </StatusCfgContext.Provider>
     );
@@ -14186,6 +14202,7 @@ export default function App() {
   return (
     <StatusCfgContext.Provider value={statusCfgMap}>
     <StaffContext.Provider value={staffValue}>
+    <AliasContext.Provider value={aliasMap}>
     <div className="sw-root" style={{ minHeight: "100vh" }}>
       <style>{STYLE}</style>
 
@@ -14249,6 +14266,7 @@ export default function App() {
       )}
       </div>
     </div>
+    </AliasContext.Provider>
     </StaffContext.Provider>
     </StatusCfgContext.Provider>
   );
