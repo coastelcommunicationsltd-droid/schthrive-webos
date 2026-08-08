@@ -10860,13 +10860,43 @@ function LeadsView({ staff, profile }) {
 
   const leadGens = useMemo(() => aggregate((l) => resolve(l.creator)), [aggregate, resolve]);
   const closers = useMemo(() => aggregate((l) => resolve(l.lead_owner)), [aggregate, resolve]);
+  const [drillAcq, setDrillAcq] = useState(false);
+  const [drillTotals, setDrillTotals] = useState(false);
+
+  /* Every lead the person raised or owns this month — including ones that
+     scored nothing and ones marked Unsent. The tables above count what
+     credits; this list shows everything, so a gap between the two is
+     visible rather than hidden. */
   const drillLeads = useMemo(() => {
     if (!drill) return [];
+    const [y, m] = month.split("-").map(Number);
+    const from = new Date(y, m - 1, 1);
+    const to = new Date(y, m, 1);
     const pick = drill.role === "gen" ? ((l) => resolve(l.creator)) : ((l) => resolve(l.lead_owner));
-    return scored
-      .filter((l) => nameKey(pick(l)) === nameKey(drill.name))
+
+    return (leads || [])
+      .filter((l) => {
+        const d = l.lead_date ? new Date(l.lead_date) : null;
+        if (!d || d < from || d >= to) return false;
+        return nameKey(pick(l)) === nameKey(drill.name);
+      })
+      .map((l) => ({ ...l, hits: scoreLead(l.product_raw, rules) }))
+      .filter((l) => !drillAcq || /\bacq\b/i.test(String(l.product_raw || "")))
       .sort((a, b) => String(b.lead_date || "").localeCompare(String(a.lead_date || "")));
-  }, [drill, scored, resolve]);
+  }, [drill, leads, rules, month, resolve, drillAcq]);
+
+  // Totals per product across whatever the drill list currently holds
+  const drillProductTotals = useMemo(() => {
+    const by = {};
+    drillLeads.forEach((l) => {
+      l.hits.forEach((r) => {
+        if (!by[r.product_group]) by[r.product_group] = { group: r.product_group, leads: 0, points: 0 };
+        by[r.product_group].leads += 1;
+        by[r.product_group].points += num(r.value) || 1;
+      });
+    });
+    return Object.values(by).sort((a, b) => b.points - a.points);
+  }, [drillLeads]);
 
   /* Banding is on conversations per working day so far this month, not on
      the raw total — someone who started mid-month isn't behind. */
@@ -11071,8 +11101,9 @@ function LeadsView({ staff, profile }) {
         </div>
       )}
 
-      <div style={drill ? { display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1.6fr)", gap: "0.75rem", alignItems: "start" } : undefined}>
-      <div style={drill ? { maxHeight: "calc(100vh - 150px)", overflowY: "auto" } : undefined}>
+      <div>
+      {/* The summary tables step aside while a person's leads are open */}
+      <div style={drill ? { display: "none" } : undefined}>
 
       {/* One table per role, with a compact ACQ summary beside each.
           Lead gens are credited off Created By, closers off Lead Owner. */}
@@ -11094,8 +11125,7 @@ function LeadsView({ staff, profile }) {
             </span>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 250px", gap: "0.75rem", alignItems: "start" }}>
-
+          <div>
             <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
               <div style={{ overflowX: "auto" }}>
                 <table id={`leads-tbl-${tbl.key}`} className="w-full" style={{ borderCollapse: "collapse" }}>
@@ -11135,138 +11165,167 @@ function LeadsView({ staff, profile }) {
               </div>
             </div>
 
-            {/* ACQ only, one column per product */}
-            <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              <div className="px-2.5 py-1.5" style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
-                <div className="text-xs font-bold uppercase" style={{ color: tbl.accent, letterSpacing: "0.05em" }}>ACQ {tbl.verb}</div>
-              </div>
-              <table id={`leads-acq-${tbl.key}`} className="w-full" style={{ borderCollapse: "collapse" }}>
-                <thead>
-                  <tr style={{ background: "var(--surface-alt)" }}>
-                    <th className="text-left px-2 py-1" style={{ fontSize: 10, color: "var(--ink-soft)", textTransform: "uppercase" }}>Name</th>
-                    {["Cloud", "BT Net", "Mobile"].map((g) => (
-                      <th key={g} className="px-2 py-1" style={{ fontSize: 10, color: "var(--ink-faint)", borderLeft: "1px solid var(--border)" }}>{g}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {tbl.data.teams.map((t) => (
-                    <React.Fragment key={`acq-${tbl.key}-${t.name}`}>
-                      <tr style={{ background: "var(--primary-soft)", borderTop: "2px solid var(--border)" }}>
-                        <td colSpan={4} className="px-2 py-1 text-xs font-bold truncate" style={{ color: tbl.accent }}>{t.name}</td>
-                      </tr>
-                      {t.agents.map((a) => (
-                        <tr key={a.name} style={{ borderTop: "1px solid var(--border)" }}>
-                          <td className="px-2 py-1" style={{ maxWidth: 120 }}>
-                            <div className="truncate" style={{ fontSize: 11.5 }}>{a.name}</div>
-                          </td>
-                          {["Cloud", "BT Net", "Mobile"].map((g) => (
-                            <td key={g} className="sw-mono" style={{
-                              padding: "3px 6px", textAlign: "center", fontSize: 12,
-                              color: a.acq[g] ? "var(--ink)" : "var(--ink-faint)",
-                              borderLeft: "1px solid var(--border)",
-                            }}>{a.acq[g] || "·"}</td>
-                          ))}
-                        </tr>
-                      ))}
-                      <tr style={{ background: "var(--primary)" }}>
-                        <td className="px-2 py-1" style={{ fontSize: 11.5, fontWeight: 700, color: "#fff" }}>Total</td>
-                        {["Cloud", "BT Net", "Mobile"].map((g) => (
-                          <td key={g} className="sw-mono" style={{ padding: "3px 6px", textAlign: "center", fontSize: 12, fontWeight: 700, color: "#fff" }}>
-                            {t.acq[g] || 0}
-                          </td>
-                        ))}
-                      </tr>
-                    </React.Fragment>
-                  ))}
-                  <tr style={{ background: "var(--ink)" }}>
-                    <td className="px-2 py-1.5" style={{ fontSize: 11.5, fontWeight: 700, color: "#fff" }}>All teams</td>
-                    {["Cloud", "BT Net", "Mobile"].map((g) => (
-                      <td key={g} className="sw-mono" style={{ padding: "5px 6px", textAlign: "center", fontSize: 12.5, fontWeight: 700, color: "#fff" }}>
-                        {tbl.data.all.acq[g] || 0}
-                      </td>
-                    ))}
-                  </tr>
-                </tbody>
-              </table>
-              <div className="px-2.5 py-1.5 text-xs" style={{ color: "var(--ink-faint)", borderTop: "1px solid var(--border)" }}>
-                Leads with ACQ in them, counted once per product.
-              </div>
-            </div>
           </div>
         </div>
       ))}
 
       </div>
 
-      {/* The person's actual leads, alongside the tables rather than over
-          them — so the numbers stay visible to compare against. */}
+      {/* The person's leads, centred with the page falling away either
+          side — the table sizes to its content rather than stretching. */}
       {drill && (
-        <div className="sw-sticky-col" style={{ position: "sticky", top: 66, maxHeight: "calc(100vh - 150px)", overflowY: "auto" }}>
-          <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--primary)" }}>
-            <div className="px-3 py-2.5 flex items-baseline gap-2" style={{ background: "var(--primary-soft)", borderBottom: "1px solid var(--border)" }}>
+        <div style={{ display: "flex", justifyContent: "center", padding: "0 8px" }}>
+          <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--primary)", maxWidth: "100%" }}>
+
+            <div className="px-3 py-2.5 flex items-center gap-2 flex-wrap" style={{ background: "var(--primary-soft)", borderBottom: "1px solid var(--border)" }}>
               <span className="sw-display" style={{ fontSize: 14, fontWeight: 700, color: "var(--primary)" }}>{drill.name}</span>
               <span className="text-xs" style={{ color: "var(--ink-soft)" }}>
                 {drill.role === "gen" ? "leads created" : "leads owned"} · {drillLeads.length}
               </span>
-              <button onClick={() => setDrill(null)} className="sw-focus ml-auto text-xs font-semibold"
-                style={{ color: "var(--primary)" }}>Back</button>
+
+              <button onClick={() => setDrillAcq((v) => !v)}
+                className="sw-focus text-xs font-semibold px-2.5 py-1 rounded-lg"
+                title="Only leads with ACQ in them"
+                style={{
+                  background: drillAcq ? "var(--primary)" : "var(--surface)",
+                  color: drillAcq ? "#fff" : "var(--primary)",
+                  border: "1px solid var(--border)",
+                }}>ACQ only</button>
+
+              <button onClick={() => setDrillTotals((v) => !v)}
+                className="sw-focus text-xs font-semibold px-2.5 py-1 rounded-lg"
+                title="Totals per product instead of the individual leads"
+                style={{
+                  background: drillTotals ? "var(--primary)" : "var(--surface)",
+                  color: drillTotals ? "#fff" : "var(--primary)",
+                  border: "1px solid var(--border)",
+                }}>Totals only</button>
+
+              <button onClick={() => { setDrill(null); setDrillAcq(false); setDrillTotals(false); }}
+                className="sw-focus ml-auto text-xs font-semibold" style={{ color: "var(--primary)" }}>Back</button>
             </div>
 
             <div style={{ overflowX: "auto" }}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr style={{ background: "var(--surface-alt)" }}>
-                    {["Company", "What it scored", "Status", "Date"].map((h) => (
-                      <th key={h} className="text-left px-2 py-1.5 text-xs font-semibold uppercase"
-                        style={{ color: "var(--ink-soft)", letterSpacing: "0.03em" }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {drillLeads.map((l) => {
-                    const pts = l.hits.reduce((s, r) => s + (num(r.value) || 1), 0);
-                    return (
-                      <tr key={l.id} style={{ borderTop: "1px solid var(--border)" }}>
-                        <td className="px-2 py-2" style={{ maxWidth: 190 }}>
-                          <div className="truncate" style={{ fontSize: 12.5, fontWeight: 600 }}>{l.company_name || "—"}</div>
-                          {/* The raw product string, so it's obvious why it
-                              scored what it did */}
-                          <div className="truncate sw-mono" style={{ fontSize: 10, color: "var(--ink-faint)" }}
-                            title={l.product_raw}>{l.product_raw}</div>
-                        </td>
-                        <td className="px-2 py-2">
-                          <div className="flex items-center gap-1 flex-wrap">
-                            {l.hits.map((r) => (
-                              <span key={r.key} className="rounded px-1.5 py-0.5"
-                                style={{ fontSize: 9.5, fontWeight: 600, background: "var(--primary-soft)", color: "var(--primary)" }}
-                                title={`worth ${r.value}`}>
-                                {r.label}
-                              </span>
-                            ))}
-                            <span className="sw-mono ml-1" style={{ fontSize: 11, fontWeight: 700, color: "var(--green)" }}>{pts}</span>
-                          </div>
-                        </td>
-                        <td className="px-2 py-2 text-xs" style={{ color: "var(--ink-soft)" }}>{l.sent_status || "—"}</td>
-                        <td className="px-2 py-2 text-xs whitespace-nowrap" style={{ color: "var(--ink-faint)" }}>
-                          {l.lead_date ? fmtDate(l.lead_date) : "—"}
-                        </td>
+              {drillTotals ? (
+                <table style={{ borderCollapse: "collapse", width: "auto" }}>
+                  <thead>
+                    <tr style={{ background: "var(--surface-alt)" }}>
+                      {["Product", "Leads", "Points"].map((h, i) => (
+                        <th key={h} className={`px-3 py-2 text-xs font-semibold uppercase ${i ? "text-right" : "text-left"}`}
+                          style={{ color: "var(--ink-soft)", letterSpacing: "0.04em", whiteSpace: "nowrap" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {drillProductTotals.map((t) => (
+                      <tr key={t.group} style={{ borderTop: "1px solid var(--border)" }}>
+                        <td className="px-3 py-2" style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }}>{t.group}</td>
+                        <td className="px-3 py-2 sw-mono text-right" style={{ fontSize: 12.5 }}>{t.leads}</td>
+                        <td className="px-3 py-2 sw-mono text-right" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--green)" }}>{t.points}</td>
                       </tr>
-                    );
-                  })}
-                  {drillLeads.length === 0 && (
-                    <tr><td colSpan={4} className="px-3 py-8 text-center text-xs" style={{ color: "var(--ink-faint)" }}>
-                      No scored leads for this person this month.
-                    </td></tr>
-                  )}
-                </tbody>
-              </table>
+                    ))}
+                    <tr style={{ borderTop: "2px solid var(--border)", background: "var(--primary)" }}>
+                      <td className="px-3 py-2" style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>Total</td>
+                      <td className="px-3 py-2 sw-mono text-right" style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>
+                        {drillProductTotals.reduce((s, t) => s + t.leads, 0)}
+                      </td>
+                      <td className="px-3 py-2 sw-mono text-right" style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>
+                        {drillProductTotals.reduce((s, t) => s + t.points, 0)}
+                      </td>
+                    </tr>
+                    {drillProductTotals.length === 0 && (
+                      <tr><td colSpan={3} className="px-4 py-8 text-center text-xs" style={{ color: "var(--ink-faint)" }}>
+                        Nothing scored in this selection.
+                      </td></tr>
+                    )}
+                  </tbody>
+                </table>
+              ) : (
+                /* width auto so each column sizes to its widest value
+                   rather than stretching to fill the page */
+                <table style={{ borderCollapse: "collapse", width: "auto" }}>
+                  <thead>
+                    <tr style={{ background: "var(--surface-alt)" }}>
+                      {["Account", "Status", "What it scored", "Lead owner", "Date"].map((h) => (
+                        <th key={h} className="text-left px-3 py-2 text-xs font-semibold uppercase"
+                          style={{ color: "var(--ink-soft)", letterSpacing: "0.03em", whiteSpace: "nowrap" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {drillLeads.map((l) => {
+                      const pts = l.hits.reduce((s, r) => s + (num(r.value) || 1), 0);
+                      const unsent = /unsent/i.test(String(l.sent_status || ""));
+                      const rejected = /reject/i.test(String(l.sent_status || ""));
+                      // Unsent gets a yellow hue; nothing scored or rejected
+                      // reads red, since neither earns anything
+                      const dead = rejected || pts === 0;
+                      return (
+                        <tr key={l.id} style={{
+                          borderTop: "1px solid var(--border)",
+                          background: unsent ? "rgba(184,134,11,0.14)" : "transparent",
+                        }}>
+                          <td className="px-3 py-2" style={{ whiteSpace: "nowrap" }}>
+                            <div style={{ fontSize: 12.5, fontWeight: 600 }}>
+                              {(l.data && (l.data["Account"] || l.data["Company / Account"])) || l.company_name || "—"}
+                            </div>
+                            <div className="sw-mono" style={{ fontSize: 10, color: "var(--ink-faint)" }}
+                              title={l.product_raw}>
+                              {String(l.product_raw || "").slice(0, 46)}
+                            </div>
+                          </td>
+
+                          <td className="px-3 py-2" style={{ whiteSpace: "nowrap" }}>
+                            <span className="rounded px-1.5 py-0.5" style={{
+                              fontSize: 10, fontWeight: 700,
+                              background: dead ? "var(--red-soft)" : "var(--surface-alt)",
+                              color: dead ? "var(--red)" : "var(--ink-soft)",
+                            }}>
+                              {l.sent_status || (pts === 0 ? "No score" : "—")}
+                            </span>
+                          </td>
+
+                          <td className="px-3 py-2" style={{ whiteSpace: "nowrap" }}>
+                            <div className="flex items-center gap-1 flex-wrap">
+                              {l.hits.map((r) => (
+                                <span key={r.key} className="rounded px-1.5 py-0.5"
+                                  style={{ fontSize: 9.5, fontWeight: 600, background: "var(--primary-soft)", color: "var(--primary)" }}
+                                  title={`worth ${r.value}`}>{r.label}</span>
+                              ))}
+                              {l.hits.length === 0 && <span style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>—</span>}
+                              {pts > 0 && <span className="sw-mono ml-1" style={{ fontSize: 11, fontWeight: 700, color: "var(--green)" }}>{pts}</span>}
+                            </div>
+                          </td>
+
+                          <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-soft)", whiteSpace: "nowrap" }}>
+                            {resolve(l.lead_owner) || "—"}
+                          </td>
+
+                          <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-faint)", whiteSpace: "nowrap" }}>
+                            {l.lead_date ? fmtDate(l.lead_date) : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {drillLeads.length === 0 && (
+                      <tr><td colSpan={5} className="px-4 py-8 text-center text-xs" style={{ color: "var(--ink-faint)" }}>
+                        No leads for this person this month.
+                      </td></tr>
+                    )}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            <div className="px-3 py-1.5 text-xs" style={{ color: "var(--ink-faint)", borderTop: "1px solid var(--border)" }}>
+              Every lead this month, scored or not. Yellow rows were never sent.
             </div>
           </div>
         </div>
       )}
       </div>
 
+      {!drill && (
       <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
         Click any name to see the leads behind their number.
         Product columns count <b>leads</b>; the <b>Total</b> at the end counts points. That's why a DV4B lead
@@ -11276,6 +11335,7 @@ function LeadsView({ staff, profile }) {
         where creator and owner are the same person. Rows shade by conversations per working day so far this
         month, so someone who joined mid-month isn't penalised for the days before they started.
       </p>
+      )}
     </div>
   );
 }
@@ -12300,7 +12360,6 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
               { key: "__connectivity_parts", label: "" },
               { key: "btnet",    label: "BTNet" },
               { key: "security", label: "Security" },
-              { key: "other",    label: "Other" },
             ].map((p) => {
               // The stacked column of Connectivity's parts
               if (p.key === "__connectivity_parts") {
@@ -12519,7 +12578,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         // widens for it and drops back to a quarter for the ranked list.
         gridTemplateColumns: rankView === "throughput"
           ? "minmax(420px, 1.7fr) minmax(0, 2.3fr)"
-          : "minmax(180px, 1fr) minmax(0, 4fr)",
+          : "minmax(170px, 1fr) minmax(0, 5fr)",
         gap: "0.75rem", alignItems: "start",
       }}>
 
