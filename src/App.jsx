@@ -10732,6 +10732,9 @@ function LeadsView({ staff, profile }) {
   /* Drill-down: { name, role } while a person's leads are open. The tables
      collapse to a rail so the numbers stay visible for comparison. */
   const [drill, setDrill] = useState(null);
+  const [drillAcq, setDrillAcq] = useState(false);
+  const [drillTotals, setDrillTotals] = useState(false);
+  const [drillProduct, setDrillProduct] = useState(null);   // set by clicking a product heading
 
 
   const load = useCallback(async () => {
@@ -10895,9 +10898,6 @@ function LeadsView({ staff, profile }) {
 
   const leadGens = useMemo(() => aggregate((l) => resolve(l.creator)), [aggregate, resolve]);
   const closers = useMemo(() => aggregate((l) => resolve(l.lead_owner)), [aggregate, resolve]);
-  const [drillAcq, setDrillAcq] = useState(false);
-  const [drillTotals, setDrillTotals] = useState(false);
-  const [drillProduct, setDrillProduct] = useState(null);   // set by clicking a product heading
 
   /* Every lead the person raised or owns this month — including ones that
      scored nothing and ones marked Unsent. The tables above count what
