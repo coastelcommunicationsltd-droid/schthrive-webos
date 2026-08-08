@@ -10152,23 +10152,15 @@ function QuotationDoc({ quoteNumber, dateStr, customerName, companyName, repName
                     {it.category && <div style={{ fontSize: 11, color: SLATE, marginTop: 1 }}>{it.category}{it.unit ? ` · ${it.unit}` : ""}</div>}
                   </td>
                   <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: INK }}>{it.qty}</td>
-                  {/* A single unit has no per-unit figure to give, so the
-                      two cells merge rather than showing the same number
-                      twice or an empty column. */}
-                  {num(it.qty) > 1 ? (
-                    <>
-                      <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: INK }}>
-                        {fmtGBP(num(it.unitPrice))}
-                      </td>
-                      <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: SLATE, fontSize: 12.5 }}>
-                        {fmtGBP(num(it.unitPrice) / num(it.qty))}
-                      </td>
-                    </>
-                  ) : (
-                    <td colSpan={2} style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: INK }}>
-                      {fmtGBP(num(it.unitPrice))}
-                    </td>
-                  )}
+                  {/* The price always sits in Monthly Price. A single unit
+                      has no per-unit figure to give, so that cell reads as
+                      a dash rather than repeating the same number. */}
+                  <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: INK }}>
+                    {fmtGBP(num(it.unitPrice))}
+                  </td>
+                  <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: SLATE, fontSize: 12.5 }}>
+                    {num(it.qty) > 1 ? fmtGBP(num(it.unitPrice) / num(it.qty)) : "—"}
+                  </td>
                   {/* Term is shown for the customer's benefit, never totalled */}
                   <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: SLATE, fontSize: 12.5, whiteSpace: "nowrap" }}>
                     {num(it.termMonths) ? `${num(it.termMonths)} months` : "—"}
@@ -10807,6 +10799,7 @@ function LeadsView({ staff, profile }) {
      conversation passed to anyone. An unsent lead that DID go to someone
      else still represents work done, so it counts. */
   const scored = useMemo(() => {
+    const acqOnly = drillAcq;
     const [y, m] = month.split("-").map(Number);
     const from = new Date(y, m - 1, 1);
     const to = new Date(y, m, 1);
@@ -10820,10 +10813,12 @@ function LeadsView({ staff, profile }) {
       const selfOwned = l.creator && l.lead_owner
         && nameKey(resolve(l.creator)) === nameKey(resolve(l.lead_owner));
       if (unsent && selfOwned) return false;
+      // ACQ filter belongs to the tables — the list has its own scope
+      if (acqOnly && !/\bacq\b/i.test(String(l.product_raw || ""))) return false;
       return true;
     }).map((l) => ({ ...l, hits: scoreLead(l.product_raw, rules) }))
       .filter((l) => l.hits.length > 0);
-  }, [leads, rules, month, resolve]);
+  }, [leads, rules, month, resolve, drillAcq]);
 
   // Which team each person belongs to, once their name is resolved
   const teamOf = useCallback((name) => {
@@ -10925,23 +10920,10 @@ function LeadsView({ staff, profile }) {
         return nameKey(who) === nameKey(drill.name);
       })
       .map((l) => ({ ...l, hits: scoreLead(l.product_raw, rules) }))
-      .filter((l) => !drillAcq || /\bacq\b/i.test(String(l.product_raw || "")))
       .filter((l) => !drillProduct || l.hits.some((r) => r.product_group === drillProduct))
       .sort((a, b) => String(b.lead_date || "").localeCompare(String(a.lead_date || "")));
-  }, [drill, leads, rules, month, resolve, teamOf, drillAcq, drillProduct]);
+  }, [drill, leads, rules, month, resolve, teamOf, drillProduct]);
 
-  // Totals per product across whatever the drill list currently holds
-  const drillProductTotals = useMemo(() => {
-    const by = {};
-    drillLeads.forEach((l) => {
-      l.hits.forEach((r) => {
-        if (!by[r.product_group]) by[r.product_group] = { group: r.product_group, leads: 0, points: 0 };
-        by[r.product_group].leads += 1;
-        by[r.product_group].points += num(r.value) || 1;
-      });
-    });
-    return Object.values(by).sort((a, b) => b.points - a.points);
-  }, [drillLeads]);
 
   /* Banding is on conversations per working day so far this month, not on
      the raw total — someone who started mid-month isn't behind. */
@@ -11172,8 +11154,8 @@ function LeadsView({ staff, profile }) {
         { key: "gen", label: "Lead Gens", sub: "credited on Created By", data: leadGens, accent: "var(--primary)", verb: "sent" },
         { key: "close", label: "Closers", sub: "credited on Lead Owner", data: closers, accent: "var(--blue)", verb: "received" },
       ].map((tbl) => (
-        <div key={tbl.key} className="mb-5">
-          <div className="flex items-baseline gap-2 mb-1.5 flex-wrap">
+        <div key={tbl.key} className="mb-5" style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+          <div className="flex items-baseline gap-2 mb-1.5 flex-wrap" style={{ width: "100%", maxWidth: 1100 }}>
             <span className="sw-display" style={{ fontSize: 15, fontWeight: 700, color: tbl.accent }}>{tbl.label}</span>
             <span className="text-xs" style={{ color: "var(--ink-faint)" }}>{tbl.sub}</span>
             <button onClick={() => copyTable(`leads-tbl-${tbl.key}`, tbl.label)}
@@ -11236,10 +11218,10 @@ function LeadsView({ staff, profile }) {
                           onName={() => setDrill({ name: t.name, role: tbl.key, kind: "team" })}
                           onProduct={(g) => setDrillProduct((p) => p === g ? null : g)}
                           activeProduct={drillProduct} />
-                        {t.agents.map((a) => (
+                        {!drillTotals && t.agents.map((a) => (
                         <Row key={a.name} r={a} indent band={bandOf(a.total)}
                           onOpen={() => setDrill({ name: a.name, role: tbl.key })}
-                          selected={drill && drill.role === tbl.key && nameKey(drill.name) === nameKey(a.name)} />
+                          selected={drill && drill.kind !== "team" && drill.role === tbl.key && nameKey(drill.name) === nameKey(a.name)} />
                       ))}
                         <Row r={t} dark />
                       </React.Fragment>
@@ -11288,41 +11270,6 @@ function LeadsView({ staff, profile }) {
             </div>
 
             <div style={{ overflowX: "auto" }}>
-              {drillTotals ? (
-                <table style={{ borderCollapse: "collapse", width: "auto" }}>
-                  <thead>
-                    <tr style={{ background: "var(--surface-alt)" }}>
-                      {["Product", "Leads", "Points"].map((h, i) => (
-                        <th key={h} className={`px-3 py-2 text-xs font-semibold uppercase ${i ? "text-right" : "text-left"}`}
-                          style={{ color: "var(--ink-soft)", letterSpacing: "0.04em", whiteSpace: "nowrap" }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {drillProductTotals.map((t) => (
-                      <tr key={t.group} style={{ borderTop: "1px solid var(--border)" }}>
-                        <td className="px-3 py-2" style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }}>{t.group}</td>
-                        <td className="px-3 py-2 sw-mono text-right" style={{ fontSize: 12.5 }}>{t.leads}</td>
-                        <td className="px-3 py-2 sw-mono text-right" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--green)" }}>{t.points}</td>
-                      </tr>
-                    ))}
-                    <tr style={{ borderTop: "2px solid var(--border)", background: "var(--primary)" }}>
-                      <td className="px-3 py-2" style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>Total</td>
-                      <td className="px-3 py-2 sw-mono text-right" style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>
-                        {drillProductTotals.reduce((s, t) => s + t.leads, 0)}
-                      </td>
-                      <td className="px-3 py-2 sw-mono text-right" style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>
-                        {drillProductTotals.reduce((s, t) => s + t.points, 0)}
-                      </td>
-                    </tr>
-                    {drillProductTotals.length === 0 && (
-                      <tr><td colSpan={3} className="px-4 py-8 text-center text-xs" style={{ color: "var(--ink-faint)" }}>
-                        Nothing scored in this selection.
-                      </td></tr>
-                    )}
-                  </tbody>
-                </table>
-              ) : (
                 /* width auto so each column sizes to its widest value
                    rather than stretching to fill the page */
                 <table style={{ borderCollapse: "collapse", width: "auto" }}>
@@ -11348,13 +11295,15 @@ function LeadsView({ staff, profile }) {
                           borderTop: "1px solid var(--border)",
                           background: unsent ? "rgba(184,134,11,0.14)" : "transparent",
                         }}>
-                          <td className="px-3 py-2" style={{ whiteSpace: "nowrap" }}>
-                            <div style={{ fontSize: 12.5, fontWeight: 600 }}>
+                          {/* Account and the opportunity name wrap — long
+                              company names were pushing the table off screen. */}
+                          <td className="px-3 py-2" style={{ maxWidth: 210 }}>
+                            <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.3, wordBreak: "break-word" }}>
                               {(l.data && (l.data["Account"] || l.data["Company / Account"])) || l.company_name || "—"}
                             </div>
                             {/* The opportunity name is what people recognise;
                                 the raw product string is on the tooltip. */}
-                            <div style={{ fontSize: 10.5, color: "var(--ink-faint)" }}
+                            <div style={{ fontSize: 10.5, color: "var(--ink-faint)", lineHeight: 1.3, wordBreak: "break-word" }}
                               title={l.product_raw}>
                               {(l.data && (l.data["Opportunity Name"] || l.data["Company / Account"]))
                                 || l.company_name || "—"}
@@ -11383,7 +11332,7 @@ function LeadsView({ staff, profile }) {
                             </div>
                           </td>
 
-                          <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-soft)", whiteSpace: "nowrap" }}>
+                          <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-soft)", maxWidth: 120, lineHeight: 1.3, wordBreak: "break-word" }}>
                             {(drill.role === "gen" ? resolve(l.lead_owner) : resolve(l.creator)) || "—"}
                           </td>
 
@@ -11400,7 +11349,6 @@ function LeadsView({ staff, profile }) {
                     )}
                   </tbody>
                 </table>
-              )}
             </div>
 
             <div className="px-3 py-1.5 text-xs" style={{ color: "var(--ink-faint)", borderTop: "1px solid var(--border)" }}>
