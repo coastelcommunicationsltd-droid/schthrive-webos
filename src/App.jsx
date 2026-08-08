@@ -757,39 +757,42 @@ function teamStyle(team, allTeams) {
 
 // A small, consistent way of showing which team someone is on
 /* A claimed figure with what NetSuite actually booked underneath, and the
-   difference alongside it. The claimed number is never replaced — the
-   closer needs to see the gap and query it, not discover it at payroll.
+   difference beside it on the same line. The claimed number is never
+   replaced — the closer needs to see the gap and query it, not discover it
+   at payroll.
 
    Compared to the pound: a few pence of float drift isn't a discrepancy,
    and flagging it would train people to ignore the flag. */
 function ClaimVsNs({ claimed, actual, fallback, kind, bold }) {
   // Forecast rows have no claimed/actual pair — show the single figure
   if (kind !== "claimed" || actual == null) {
-    return <div className={`sw-mono text-xs ${bold ? "font-semibold" : ""}`}>{fmtGBP(fallback)}</div>;
+    return (
+      <div className={`sw-mono text-xs ${bold ? "font-semibold" : ""}`} style={{ textAlign: "center" }}>
+        {fmtGBP(fallback)}
+      </div>
+    );
   }
 
   const diff = Math.round(num(actual)) - Math.round(num(claimed));
   const tone = diff > 0 ? "var(--green)" : diff < 0 ? "var(--red)" : null;
 
   return (
-    <div className="flex items-start gap-1.5">
-      <div style={{ minWidth: 0 }}>
-        <div className={`sw-mono text-xs ${bold ? "font-semibold" : ""}`}>{fmtGBP(claimed)}</div>
-        <div className="sw-mono" style={{ fontSize: 10, color: "var(--ink-faint)" }}
+    <div style={{ textAlign: "center" }}>
+      <div className={`sw-mono text-xs ${bold ? "font-semibold" : ""}`}>{fmtGBP(claimed)}</div>
+      {/* NetSuite and the gap sit on one line so SOV and GP align */}
+      <div className="flex items-baseline justify-center gap-1" style={{ lineHeight: 1.2 }}>
+        <span className="sw-mono" style={{ fontSize: 10, color: "var(--ink-faint)" }}
           title="What NetSuite has booked">
           {fmtGBP(actual)}
-        </div>
-      </div>
-      {diff !== 0 && (
-        <span className="sw-mono shrink-0"
-          title={`NetSuite is ${diff > 0 ? "higher" : "lower"} than claimed by ${fmtGBP(Math.abs(diff))}`}
-          style={{
-            fontSize: 10, fontWeight: 700, color: tone,
-            marginTop: 13,   // sits against the NetSuite line, not the claim
-          }}>
-          {diff > 0 ? "+" : "−"}{fmtGBP(Math.abs(diff))}
         </span>
-      )}
+        {diff !== 0 && (
+          <span className="sw-mono"
+            title={`NetSuite is ${diff > 0 ? "higher" : "lower"} than claimed by ${fmtGBP(Math.abs(diff))}`}
+            style={{ fontSize: 9.5, fontWeight: 700, color: tone }}>
+            {fmtGBP(Math.abs(diff))}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -2797,15 +2800,15 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
                   { label: "Company", key: "company", hide: "" },
                   { label: "People", key: "agent", hide: "" },
                   { label: "Product", key: null, hide: "sw-hide-sm" },
-                  { label: "SOV", key: "sov", hide: "sw-hide-xs" },
-                  { label: "GP", key: "gp", hide: "" },
+                  { label: "SOV", key: "sov", hide: "sw-hide-xs", centre: true },
+                  { label: "GP", key: "gp", hide: "", centre: true },
                   { label: "Status", key: "status", hide: "" },
                   { label: dataView === "forecast" ? "Expected" : "Date", key: "date", hide: "sw-hide-sm" },
-                ].map(({ label, key, hide }) => (
+                ].map(({ label, key, hide, centre }) => (
                   <th
                     key={label}
                     onClick={key ? () => toggleSort(key) : undefined}
-                    className={`text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide ${hide} ${key ? "cursor-pointer select-none" : ""}`}
+                    className={`px-3 py-2 text-xs font-semibold uppercase tracking-wide ${centre ? "text-center" : "text-left"} ${hide} ${key ? "cursor-pointer select-none" : ""}`}
                     style={{ color: "var(--ink-soft)" }}
                   >
                     {label}{key && sortKey === key ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
@@ -2844,11 +2847,21 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
                     <div className="flex items-center gap-1.5">
                       <TeamTag team={r.closer_team} allTeams={teamOptions} />
                       <span className="text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>{obscureName(r.closer_name, leaverNames) || "—"}</span>
+                      {/* Each person's share of the GP, next to their name
+                          rather than stacked under the total */}
+                      {r.closer_share != null && r.closer_share > 0 && (
+                        <span className="sw-mono ml-auto shrink-0" style={{ color: "var(--ink-faint)", fontSize: 10 }}
+                          title="Closer's share of the GP">{fmtGBP(r.closer_share)}</span>
+                      )}
                     </div>
                     {r.lead_gen_name && (
                       <div className="flex items-center gap-1.5 mt-0.5">
                         <TeamTag team={r.lead_gen_team} allTeams={teamOptions} />
                         <span className="sw-clamp2" style={{ color: "var(--ink-faint)", fontSize: 10, lineHeight: 1.3 }}>{obscureName(r.lead_gen_name, leaverNames)}</span>
+                        {r.lead_gen_share != null && r.lead_gen_share > 0 && (
+                          <span className="sw-mono ml-auto shrink-0" style={{ color: "var(--ink-faint)", fontSize: 10 }}
+                            title="Lead gen's share of the GP">{fmtGBP(r.lead_gen_share)}</span>
+                        )}
                       </div>
                     )}
                   </td>
@@ -2864,11 +2877,6 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
 
                   <td className="px-3 py-2">
                     <ClaimVsNs claimed={r.claimedGp} actual={r.nsGp} fallback={r.gp} kind={r.kind} bold />
-                    {r.closer_share != null && r.closer_share > 0 && (
-                      <div style={{ color: "var(--ink-faint)", fontSize: 10 }} className="sw-mono">
-                        {fmtGBP(r.closer_share)}{r.lead_gen_name && r.lead_gen_share ? ` / ${fmtGBP(r.lead_gen_share)}` : ""}
-                      </div>
-                    )}
                   </td>
 
                   {/* Compact status — pill only, no extra lines */}
@@ -10691,6 +10699,10 @@ function LeadsView({ staff, profile }) {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
   const [showRules, setShowRules] = useState(false);
+  /* Drill-down: { name, role } while a person's leads are open. The tables
+     collapse to a rail so the numbers stay visible for comparison. */
+  const [drill, setDrill] = useState(null);
+
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -10848,6 +10860,13 @@ function LeadsView({ staff, profile }) {
 
   const leadGens = useMemo(() => aggregate((l) => resolve(l.creator)), [aggregate, resolve]);
   const closers = useMemo(() => aggregate((l) => resolve(l.lead_owner)), [aggregate, resolve]);
+  const drillLeads = useMemo(() => {
+    if (!drill) return [];
+    const pick = drill.role === "gen" ? ((l) => resolve(l.creator)) : ((l) => resolve(l.lead_owner));
+    return scored
+      .filter((l) => nameKey(pick(l)) === nameKey(drill.name))
+      .sort((a, b) => String(b.lead_date || "").localeCompare(String(a.lead_date || "")));
+  }, [drill, scored, resolve]);
 
   /* Banding is on conversations per working day so far this month, not on
      the raw total — someone who started mid-month isn't behind. */
@@ -10966,11 +10985,14 @@ function LeadsView({ staff, profile }) {
 
   /* `dark` renders the office and team totals as a solid purple bar, which
      is what makes the table readable once it's pasted into an email. */
-  const Row = ({ r, bold, indent, band, dark }) => (
-    <tr style={{
-      borderTop: dark ? "none" : "1px solid var(--border)",
-      background: dark ? "var(--primary)" : band ? bandBg[band] : "transparent",
-    }}>
+  const Row = ({ r, bold, indent, band, dark, onOpen, selected }) => (
+    <tr onClick={onOpen}
+      style={{
+        borderTop: dark ? "none" : "1px solid var(--border)",
+        background: dark ? "var(--primary)" : selected ? "var(--primary-soft)" : band ? bandBg[band] : "transparent",
+        cursor: onOpen ? "pointer" : undefined,
+        boxShadow: selected ? "inset 3px 0 0 var(--primary)" : undefined,
+      }}>
       <td style={{
         padding: "5px 8px", paddingLeft: indent ? 22 : 8, whiteSpace: "nowrap", maxWidth: 190,
         color: dark ? "#fff" : undefined,
@@ -11049,6 +11071,9 @@ function LeadsView({ staff, profile }) {
         </div>
       )}
 
+      <div style={drill ? { display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1.6fr)", gap: "0.75rem", alignItems: "start" } : undefined}>
+      <div style={drill ? { maxHeight: "calc(100vh - 150px)", overflowY: "auto" } : undefined}>
+
       {/* One table per role, with a compact ACQ summary beside each.
           Lead gens are credited off Created By, closers off Lead Owner. */}
       {[
@@ -11091,7 +11116,11 @@ function LeadsView({ staff, profile }) {
                       <React.Fragment key={`${tbl.key}-blk-${t.name}`}>
                         <tr><td colSpan={colCount} style={{ height: 12, background: "var(--bg)", borderTop: "3px solid var(--ink)" }} /></tr>
                         <HeadRows accent={tbl.accent} nameLabel={t.name} teamHeading />
-                        {t.agents.map((a) => <Row key={a.name} r={a} indent band={bandOf(a.total)} />)}
+                        {t.agents.map((a) => (
+                        <Row key={a.name} r={a} indent band={bandOf(a.total)}
+                          onOpen={() => setDrill({ name: a.name, role: tbl.key })}
+                          selected={drill && drill.role === tbl.key && nameKey(drill.name) === nameKey(a.name)} />
+                      ))}
                         <Row r={t} dark />
                       </React.Fragment>
                     ))}
@@ -11168,7 +11197,78 @@ function LeadsView({ staff, profile }) {
         </div>
       ))}
 
+      </div>
+
+      {/* The person's actual leads, alongside the tables rather than over
+          them — so the numbers stay visible to compare against. */}
+      {drill && (
+        <div className="sw-sticky-col" style={{ position: "sticky", top: 66, maxHeight: "calc(100vh - 150px)", overflowY: "auto" }}>
+          <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--primary)" }}>
+            <div className="px-3 py-2.5 flex items-baseline gap-2" style={{ background: "var(--primary-soft)", borderBottom: "1px solid var(--border)" }}>
+              <span className="sw-display" style={{ fontSize: 14, fontWeight: 700, color: "var(--primary)" }}>{drill.name}</span>
+              <span className="text-xs" style={{ color: "var(--ink-soft)" }}>
+                {drill.role === "gen" ? "leads created" : "leads owned"} · {drillLeads.length}
+              </span>
+              <button onClick={() => setDrill(null)} className="sw-focus ml-auto text-xs font-semibold"
+                style={{ color: "var(--primary)" }}>Back</button>
+            </div>
+
+            <div style={{ overflowX: "auto" }}>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr style={{ background: "var(--surface-alt)" }}>
+                    {["Company", "What it scored", "Status", "Date"].map((h) => (
+                      <th key={h} className="text-left px-2 py-1.5 text-xs font-semibold uppercase"
+                        style={{ color: "var(--ink-soft)", letterSpacing: "0.03em" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {drillLeads.map((l) => {
+                    const pts = l.hits.reduce((s, r) => s + (num(r.value) || 1), 0);
+                    return (
+                      <tr key={l.id} style={{ borderTop: "1px solid var(--border)" }}>
+                        <td className="px-2 py-2" style={{ maxWidth: 190 }}>
+                          <div className="truncate" style={{ fontSize: 12.5, fontWeight: 600 }}>{l.company_name || "—"}</div>
+                          {/* The raw product string, so it's obvious why it
+                              scored what it did */}
+                          <div className="truncate sw-mono" style={{ fontSize: 10, color: "var(--ink-faint)" }}
+                            title={l.product_raw}>{l.product_raw}</div>
+                        </td>
+                        <td className="px-2 py-2">
+                          <div className="flex items-center gap-1 flex-wrap">
+                            {l.hits.map((r) => (
+                              <span key={r.key} className="rounded px-1.5 py-0.5"
+                                style={{ fontSize: 9.5, fontWeight: 600, background: "var(--primary-soft)", color: "var(--primary)" }}
+                                title={`worth ${r.value}`}>
+                                {r.label}
+                              </span>
+                            ))}
+                            <span className="sw-mono ml-1" style={{ fontSize: 11, fontWeight: 700, color: "var(--green)" }}>{pts}</span>
+                          </div>
+                        </td>
+                        <td className="px-2 py-2 text-xs" style={{ color: "var(--ink-soft)" }}>{l.sent_status || "—"}</td>
+                        <td className="px-2 py-2 text-xs whitespace-nowrap" style={{ color: "var(--ink-faint)" }}>
+                          {l.lead_date ? fmtDate(l.lead_date) : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {drillLeads.length === 0 && (
+                    <tr><td colSpan={4} className="px-3 py-8 text-center text-xs" style={{ color: "var(--ink-faint)" }}>
+                      No scored leads for this person this month.
+                    </td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+      </div>
+
       <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
+        Click any name to see the leads behind their number.
         Product columns count <b>leads</b>; the <b>Total</b> at the end counts points. That's why a DV4B lead
         reads as one record but adds four, and a BT Net ACQ adds two. A lead can score several rules at once —
         an Acq Cloud at 3+ appears under both Cloud and ACQ 3+. The same lead credits the <b>lead gen</b> who created
@@ -12025,15 +12125,19 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
     const perMonth = flowMode === "month";
     let cols = [];
     if (perMonth) {
-      // Each day of the chosen month, so a whole month's activity reads at
-      // once rather than a week at a time.
-      const [my, mm] = flowMonth.split("-").map(Number);
-      const days = new Date(my, mm, 0).getDate();
-      for (let i = 1; i <= days; i++) {
-        const d = new Date(my, mm - 1, i);
-        const dow = d.getDay();
-        if (dow === 0 || dow === 6) continue;   // working days only
-        cols.push({ key: `m${i}`, label: String(i), date: d });
+      // One column per month of the financial year, April to March, up to
+      // wherever we've got to. Received against placed at a glance.
+      const upto = new Date(Math.min(Date.now(), new Date(y + 1, 2, 31).getTime()));
+      const last = (upto.getFullYear() === y ? upto.getMonth() - 3 : upto.getMonth() + 9);
+      for (let i = 0; i <= Math.min(11, Math.max(0, last)); i++) {
+        const mIdx = (3 + i) % 12;
+        const mYear = y + (3 + i > 11 ? 1 : 0);
+        cols.push({
+          key: `fm${i}`,
+          label: FY_MONTHS[i],
+          month: mIdx,
+          year: mYear,
+        });
       }
     } else if (perDay) {
       // Monday to Friday only — nobody places orders at the weekend, and two
@@ -12054,16 +12158,13 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
     const colKeyFor = (d) => {
       if (!d) return null;
       if (perMonth) {
-        const [my, mm] = flowMonth.split("-").map(Number);
-        if (d.getFullYear() !== my || d.getMonth() !== mm - 1) return null;
-        const dow = d.getDay();
-        // Weekend work rolls into the Friday before, as in the week view
-        if (dow === 0 || dow === 6) {
-          const back = dow === 0 ? 2 : 1;
-          const f = new Date(d.getFullYear(), d.getMonth(), d.getDate() - back);
-          return f.getMonth() === mm - 1 ? `m${f.getDate()}` : null;
-        }
-        return `m${d.getDate()}`;
+        // Financial year runs April to March, so April is index 0
+        const mo = d.getMonth();
+        const yr = d.getFullYear();
+        const idx = mo >= 3 ? mo - 3 : mo + 9;
+        const belongsTo = mo >= 3 ? yr : yr - 1;
+        if (belongsTo !== y) return null;
+        return `fm${idx}`;
       }
       if (perDay) {
         const ws = shownWeekStart;
@@ -12418,7 +12519,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         // widens for it and drops back to a quarter for the ranked list.
         gridTemplateColumns: rankView === "throughput"
           ? "minmax(420px, 1.7fr) minmax(0, 2.3fr)"
-          : "minmax(190px, 1fr) minmax(0, 3fr)",
+          : "minmax(180px, 1fr) minmax(0, 4fr)",
         gap: "0.75rem", alignItems: "start",
       }}>
 
@@ -12463,13 +12564,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                       {weekBackOptions.map((w) => <option key={w.value} value={w.value}>{w.label}</option>)}
                     </select>
                   )}
-                  {flowMode === "month" && (
-                    <select className="sw-input sw-focus" style={{ width: 132, height: 26, fontSize: 11.5 }}
-                      value={flowMonth} onChange={(e) => setFlowMonth(e.target.value)}>
-                      {flowMonthOptions.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
-                    </select>
-                  )}
-                  {flowMode === "weeks" && (
+                  {(flowMode === "weeks" || flowMode === "month") && (
                     <select className="sw-input sw-focus" style={{ width: 96, height: 26, fontSize: 11.5 }}
                       value={flowFy} onChange={(e) => setFlowFy(e.target.value)}>
                       {fyList().map((y) => <option key={y} value={y}>{fyLabel(y)}</option>)}
@@ -13032,14 +13127,14 @@ function PodiumCard({ board, big = false }) {
 
   const Runner = ({ r, i }) => (
     <div className="rounded-lg" style={{ background: "var(--surface-alt)", padding: "8px 9px", minWidth: 0 }}>
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center justify-center gap-1.5">
         <span className="shrink-0" style={{
           width: 16, height: 16, borderRadius: 99, display: "flex", alignItems: "center", justifyContent: "center",
           fontSize: 9.5, fontWeight: 700, color: MEDAL[i].ink, background: MEDAL[i].bg,
         }}>{i + 1}</span>
         <span className="truncate" style={{ fontSize: 11.5, fontWeight: 500, minWidth: 0 }}>{r.name}</span>
       </div>
-      <div className="sw-mono" style={{ fontSize: 12.5, fontWeight: 600, marginTop: 3 }}>{fmtGBP(r.value)}</div>
+      <div className="sw-mono text-center" style={{ fontSize: 13, fontWeight: 600, marginTop: 3 }}>{fmtGBP(r.value)}</div>
       <div className="rounded-full" style={{ height: 2.5, background: "var(--border)", marginTop: 5, overflow: "hidden" }}>
         <div className="rounded-full sw-bar-anim"
           style={{ width: `${Math.max(6, (r.value / max) * 100)}%`, height: "100%", background: board.accent, opacity: 0.6 }} />
@@ -13053,7 +13148,7 @@ function PodiumCard({ board, big = false }) {
       <div style={{ position: "relative", padding: "11px 14px 10px", borderBottom: "1px solid var(--border)" }}>
         <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: board.accent }} />
         <div className="flex items-baseline justify-between gap-2">
-          <span className="sw-display truncate" style={{ fontSize: big ? 14 : 13, fontWeight: 600, color: board.accent, letterSpacing: "-0.01em" }}>
+          <span className="sw-display truncate" style={{ fontSize: big ? 14.5 : 13.5, fontWeight: 700, color: board.accent, letterSpacing: "-0.01em" }}>
             {board.parent ? <span style={{ opacity: 0.55 }}>↳ </span> : null}{board.label}
           </span>
           <span className="sw-mono shrink-0" style={{ fontSize: big ? 15 : 14, fontWeight: 600 }}>{fmtGBP(board.total)}</span>
@@ -13066,7 +13161,7 @@ function PodiumCard({ board, big = false }) {
       {!first ? (
         <div className="text-xs text-center py-7" style={{ color: "var(--ink-faint)" }}>Nothing this period.</div>
       ) : (
-        <div style={{ padding: "12px 14px 14px" }}>
+        <div style={{ padding: "13px 14px 15px" }}>
           {/* Winner — full width, ringed, larger figure */}
           <div className="rounded-xl" style={{
             background: MEDAL[0].bg, border: `1px solid ${MEDAL[0].ring}`,
@@ -13249,9 +13344,13 @@ function TopsView({ netsuite, staff }) {
   const showTable = split === "both" || split === "table";
   const showCards = split === "both" || split === "cards";
 
-  const SortHead = ({ k, label, align = "right", accent }) => (
-    <th className="px-2 py-2 text-xs font-semibold uppercase tracking-wide"
-      style={{ textAlign: align, color: sortBy === k ? (accent || "var(--primary)") : "var(--ink-soft)", cursor: "pointer", whiteSpace: "nowrap" }}
+  const SortHead = ({ k, label, align = "center", accent }) => (
+    <th className="px-2 py-2.5 text-xs font-semibold uppercase"
+      style={{
+        textAlign: align, letterSpacing: "0.05em", whiteSpace: "nowrap", cursor: "pointer",
+        color: sortBy === k ? (accent || "var(--primary)") : "var(--ink-soft)",
+        background: sortBy === k ? "var(--surface-alt)" : "transparent",
+      }}
       onClick={() => setSortBy(k)} title={`Sort by ${label}`}>
       {label}{sortBy === k ? " ▾" : ""}
     </th>
@@ -13384,7 +13483,7 @@ function TopsView({ netsuite, staff }) {
               <table className="w-full text-sm sw-orders">
                 <thead>
                   <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
-                    <th className="text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>Agent</th>
+                    <th className="text-left px-3 py-2.5 text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)", letterSpacing: "0.05em" }}>Agent</th>
                     {activeCols.map((c) => <SortHead key={c.key} k={c.key} label={c.label} accent={c.accent} />)}
                   </tr>
                 </thead>
@@ -13428,8 +13527,9 @@ function TopsView({ netsuite, staff }) {
                           const v = c.value(p);
                           const isSorted = sortBy === c.key;
                           return (
-                            <td key={c.key} className="px-2 py-2 sw-mono text-xs text-right"
+                            <td key={c.key} className="px-2 py-2.5 sw-mono text-center"
                               style={{
+                                fontSize: 13,
                                 color: v > 0 ? (isSorted ? "var(--ink)" : "var(--ink-soft)") : "var(--ink-faint)",
                                 fontWeight: isSorted ? 700 : (c.key === "gp" || c.key === "sov" ? 600 : 400),
                                 background: isSorted ? "var(--surface-alt)" : "transparent",
@@ -13452,7 +13552,7 @@ function TopsView({ netsuite, staff }) {
                     <tr style={{ borderTop: "2px solid var(--border)", background: "var(--surface-alt)" }}>
                       <td className="px-3 py-2 text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)", letterSpacing: "0.04em" }}>Total</td>
                       {activeCols.map((c) => (
-                        <td key={c.key} className="px-2 py-2 sw-mono text-xs text-right" style={{ fontWeight: 700, color: c.accent }}>
+                        <td key={c.key} className="px-2 py-2.5 sw-mono text-center" style={{ fontSize: 13, fontWeight: 700, color: c.accent }}>
                           {fmtGBP(people.reduce((s, p) => s + c.value(p), 0))}
                         </td>
                       ))}
