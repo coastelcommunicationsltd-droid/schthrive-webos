@@ -10902,6 +10902,7 @@ function LeadsView({ staff, profile }) {
   const closers = useMemo(() => aggregate((l) => resolve(l.lead_owner)), [aggregate, resolve]);
   const [drillAcq, setDrillAcq] = useState(false);
   const [drillTotals, setDrillTotals] = useState(false);
+  const [drillProduct, setDrillProduct] = useState(null);   // set by clicking a product heading
 
   /* Every lead the person raised or owns this month — including ones that
      scored nothing and ones marked Unsent. The tables above count what
@@ -10918,12 +10919,16 @@ function LeadsView({ staff, profile }) {
       .filter((l) => {
         const d = l.lead_date ? new Date(l.lead_date) : null;
         if (!d || d < from || d >= to) return false;
-        return nameKey(pick(l)) === nameKey(drill.name);
+        const who = pick(l);
+        // A team opens everyone reporting to that manager
+        if (drill.kind === "team") return nameKey(teamOf(who) || "") === nameKey(drill.name);
+        return nameKey(who) === nameKey(drill.name);
       })
       .map((l) => ({ ...l, hits: scoreLead(l.product_raw, rules) }))
       .filter((l) => !drillAcq || /\bacq\b/i.test(String(l.product_raw || "")))
+      .filter((l) => !drillProduct || l.hits.some((r) => r.product_group === drillProduct))
       .sort((a, b) => String(b.lead_date || "").localeCompare(String(a.lead_date || "")));
-  }, [drill, leads, rules, month, resolve, drillAcq]);
+  }, [drill, leads, rules, month, resolve, teamOf, drillAcq, drillProduct]);
 
   // Totals per product across whatever the drill list currently holds
   const drillProductTotals = useMemo(() => {
@@ -11016,23 +11021,37 @@ function LeadsView({ staff, profile }) {
 
   /* The column headings, repeated above every team block. Without this a
      block pasted on its own is just a grid of numbers. */
-  const HeadRows = ({ accent, nameLabel, teamHeading }) => (
+  const HeadRows = ({ accent, nameLabel, teamHeading, onName, onProduct, activeProduct }) => (
     <>
       <tr style={{ background: teamHeading ? "var(--primary-soft)" : "var(--surface-alt)" }}>
         <th rowSpan={2} className="text-left px-2 py-1.5"
+          onClick={onName}
           style={{
             fontSize: teamHeading ? 12 : 10.5, textTransform: "uppercase",
             color: teamHeading ? accent : "var(--ink-soft)",
             letterSpacing: "0.05em", fontWeight: 700, whiteSpace: "nowrap",
-          }}>
+            cursor: onName ? "pointer" : undefined,
+          }}
+          title={onName ? `Show every lead for ${nameLabel}` : undefined}>
           {nameLabel}
         </th>
-        {groups.map((g) => (
-          <th key={g.key} colSpan={1 + (g.showRules ? g.rules.length : 0)} className="px-2 py-1.5"
-            style={{ fontSize: 11.5, fontWeight: 700, color: accent, borderLeft: GROUP_EDGE, textAlign: "center" }}>
-            {g.label}
-          </th>
-        ))}
+        {groups.map((g) => {
+          const on = activeProduct === g.key;
+          return (
+            <th key={g.key} colSpan={1 + (g.showRules ? g.rules.length : 0)} className="px-2 py-1.5"
+              onClick={onProduct ? () => onProduct(g.key) : undefined}
+              title={onProduct ? (on ? "Show all products" : `Show ${g.label} leads only`) : undefined}
+              style={{
+                fontSize: 11.5, fontWeight: 700, textAlign: "center",
+                color: on ? "#fff" : accent,
+                background: on ? accent : undefined,
+                borderLeft: GROUP_EDGE,
+                cursor: onProduct ? "pointer" : undefined,
+              }}>
+              {g.label}
+            </th>
+          );
+        })}
         <th rowSpan={2} className="px-2 py-1.5" style={{ fontSize: 11.5, fontWeight: 700, color: "var(--green)", borderLeft: GROUP_EDGE }}>Total</th>
         <th rowSpan={2} className="px-2 py-1.5" style={{ fontSize: 10, color: "var(--ink-soft)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Accts</th>
       </tr>
@@ -11162,15 +11181,35 @@ function LeadsView({ staff, profile }) {
               style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>
               <FileText size={11} /> Copy table
             </button>
+
+            <button onClick={() => setDrillAcq((v) => !v)}
+              className="sw-focus text-xs font-semibold px-2.5 py-1 rounded-lg"
+              title="Only leads with ACQ in them"
+              style={{
+                background: drillAcq ? "var(--primary)" : "var(--surface)",
+                color: drillAcq ? "#fff" : "var(--primary)",
+                border: "1px solid var(--border)",
+              }}>ACQ only</button>
+
+            <button onClick={() => setDrillTotals((v) => !v)}
+              className="sw-focus text-xs font-semibold px-2.5 py-1 rounded-lg"
+              title="Totals per product instead of the individual leads"
+              style={{
+                background: drillTotals ? "var(--primary)" : "var(--surface)",
+                color: drillTotals ? "#fff" : "var(--primary)",
+                border: "1px solid var(--border)",
+              }}>Totals only</button>
             <span className="sw-mono ml-auto" style={{ fontSize: 14, fontWeight: 700, color: "var(--green)" }}>
               {tbl.data.all.total}
             </span>
           </div>
 
           <div>
-            <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)", display: "inline-block", maxWidth: "100%" }}>
               <div style={{ overflowX: "auto" }}>
-                <table id={`leads-tbl-${tbl.key}`} className="w-full" style={{ borderCollapse: "collapse" }}>
+                {/* width auto so the table is only as wide as its headings
+                    need, rather than stretching across the page */}
+                <table id={`leads-tbl-${tbl.key}`} style={{ borderCollapse: "collapse", width: "auto" }}>
                   <tbody>
                     {/* Office block */}
                     <tr style={{ background: "var(--ink)" }}>
@@ -11178,8 +11217,14 @@ function LeadsView({ staff, profile }) {
                         Overall team numbers
                       </td>
                     </tr>
-                    <HeadRows accent={tbl.accent} nameLabel={tbl.key === "gen" ? "Team" : "Team"} />
-                    {tbl.data.teams.map((t) => <Row key={t.name} r={t} bold />)}
+                    <HeadRows accent={tbl.accent} nameLabel="Team"
+                      onProduct={(g) => setDrillProduct((p) => p === g ? null : g)}
+                      activeProduct={drillProduct} />
+                    {tbl.data.teams.map((t) => (
+                      <Row key={t.name} r={t} bold
+                        onOpen={() => setDrill({ name: t.name, role: tbl.key, kind: "team" })}
+                        selected={drill && drill.kind === "team" && drill.role === tbl.key && nameKey(drill.name) === nameKey(t.name)} />
+                    ))}
                     <Row r={tbl.data.all} dark />
 
                     {/* Then each team, with the headings repeated so a block
@@ -11187,7 +11232,10 @@ function LeadsView({ staff, profile }) {
                     {tbl.data.teams.map((t) => (
                       <React.Fragment key={`${tbl.key}-blk-${t.name}`}>
                         <tr><td colSpan={colCount} style={{ height: 12, background: "var(--bg)", borderTop: "3px solid var(--ink)" }} /></tr>
-                        <HeadRows accent={tbl.accent} nameLabel={t.name} teamHeading />
+                        <HeadRows accent={tbl.accent} nameLabel={t.name} teamHeading
+                          onName={() => setDrill({ name: t.name, role: tbl.key, kind: "team" })}
+                          onProduct={(g) => setDrillProduct((p) => p === g ? null : g)}
+                          activeProduct={drillProduct} />
                         {t.agents.map((a) => (
                         <Row key={a.name} r={a} indent band={bandOf(a.total)}
                           onOpen={() => setDrill({ name: a.name, role: tbl.key })}
@@ -11222,28 +11270,20 @@ function LeadsView({ staff, profile }) {
             <div className="px-3 py-2.5 flex items-center gap-2 flex-wrap" style={{ background: "var(--primary-soft)", borderBottom: "1px solid var(--border)" }}>
               <span className="sw-display" style={{ fontSize: 14, fontWeight: 700, color: "var(--primary)" }}>{drill.name}</span>
               <span className="text-xs" style={{ color: "var(--ink-soft)" }}>
+                {drill.kind === "team" ? "team · " : ""}
                 {drill.role === "gen" ? "leads created" : "leads owned"} · {drillLeads.length}
               </span>
 
-              <button onClick={() => setDrillAcq((v) => !v)}
-                className="sw-focus text-xs font-semibold px-2.5 py-1 rounded-lg"
-                title="Only leads with ACQ in them"
-                style={{
-                  background: drillAcq ? "var(--primary)" : "var(--surface)",
-                  color: drillAcq ? "#fff" : "var(--primary)",
-                  border: "1px solid var(--border)",
-                }}>ACQ only</button>
+              {drillProduct && (
+                <button onClick={() => setDrillProduct(null)}
+                  className="sw-focus text-xs font-semibold px-2 py-0.5 rounded"
+                  title="Show all products"
+                  style={{ background: "var(--primary)", color: "#fff" }}>
+                  {drillProduct} ✕
+                </button>
+              )}
 
-              <button onClick={() => setDrillTotals((v) => !v)}
-                className="sw-focus text-xs font-semibold px-2.5 py-1 rounded-lg"
-                title="Totals per product instead of the individual leads"
-                style={{
-                  background: drillTotals ? "var(--primary)" : "var(--surface)",
-                  color: drillTotals ? "#fff" : "var(--primary)",
-                  border: "1px solid var(--border)",
-                }}>Totals only</button>
-
-              <button onClick={() => { setDrill(null); setDrillAcq(false); setDrillTotals(false); }}
+              <button onClick={() => { setDrill(null); setDrillProduct(null); }}
                 className="sw-focus ml-auto text-xs font-semibold" style={{ color: "var(--primary)" }}>Back</button>
             </div>
 
@@ -11288,7 +11328,8 @@ function LeadsView({ staff, profile }) {
                 <table style={{ borderCollapse: "collapse", width: "auto" }}>
                   <thead>
                     <tr style={{ background: "var(--surface-alt)" }}>
-                      {["Account", "Status", "What it scored", "Lead owner", "Date"].map((h) => (
+                      {["Account", "Status", "What it scored",
+                        drill.role === "gen" ? "Lead owner" : "Lead creator", "Date"].map((h) => (
                         <th key={h} className="text-left px-3 py-2 text-xs font-semibold uppercase"
                           style={{ color: "var(--ink-soft)", letterSpacing: "0.03em", whiteSpace: "nowrap" }}>{h}</th>
                       ))}
@@ -11311,9 +11352,12 @@ function LeadsView({ staff, profile }) {
                             <div style={{ fontSize: 12.5, fontWeight: 600 }}>
                               {(l.data && (l.data["Account"] || l.data["Company / Account"])) || l.company_name || "—"}
                             </div>
-                            <div className="sw-mono" style={{ fontSize: 10, color: "var(--ink-faint)" }}
+                            {/* The opportunity name is what people recognise;
+                                the raw product string is on the tooltip. */}
+                            <div style={{ fontSize: 10.5, color: "var(--ink-faint)" }}
                               title={l.product_raw}>
-                              {String(l.product_raw || "").slice(0, 46)}
+                              {(l.data && (l.data["Opportunity Name"] || l.data["Company / Account"]))
+                                || l.company_name || "—"}
                             </div>
                           </td>
 
@@ -11340,7 +11384,7 @@ function LeadsView({ staff, profile }) {
                           </td>
 
                           <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-soft)", whiteSpace: "nowrap" }}>
-                            {resolve(l.lead_owner) || "—"}
+                            {(drill.role === "gen" ? resolve(l.lead_owner) : resolve(l.creator)) || "—"}
                           </td>
 
                           <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-faint)", whiteSpace: "nowrap" }}>
