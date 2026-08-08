@@ -2510,7 +2510,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
       </div>
 
       {/* Ranked team on the left, orders on the right */}
-      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(320px, 1fr) minmax(0, 2fr)", gap: "0.75rem", alignItems: "start" }}>
+      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(250px, 1fr) minmax(0, 3fr)", gap: "0.75rem", alignItems: "start" }}>
 
         {/* LEFT */}
         <div className="sw-sticky-col flex flex-col gap-3 pr-0.5" style={{ position: "sticky", top: 66, maxHeight: "calc(100vh - 78px)", overflowY: "auto" }}>
@@ -10061,7 +10061,7 @@ const QUOTE_NEXT_STEPS = [
   ["Order Completion", "A new account number is generated per product (prefix WW, WM, ST, GP or VP)."],
 ];
 
-function QuotationDoc({ quoteNumber, dateStr, customerName, companyName, repName, repPhone, items, subtotal, vat, total, notes }) {
+function QuotationDoc({ quoteNumber, dateStr, customerName, companyName, repName, repPhone, items, subtotal, vat, total, contractTotal, notes }) {
   const validUntil = (() => {
     try {
       const d = new Date(dateStr);
@@ -10096,7 +10096,7 @@ function QuotationDoc({ quoteNumber, dateStr, customerName, companyName, repName
         </div>
 
         <div style={{ padding: "32px 40px 40px" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 32 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.05fr", gap: 14, marginBottom: 32 }}>
             <div style={{ background: TINT, borderLeft: `3px solid ${PURPLE}`, borderRadius: 8, padding: "14px 16px" }}>
               <div style={{ fontSize: 10.5, color: PURPLE, textTransform: "uppercase", letterSpacing: "0.8px", fontWeight: 700, marginBottom: 6 }}>Prepared For</div>
               <div style={{ fontSize: 16, fontWeight: 700, color: INK }}>{companyName || "Company name"}</div>
@@ -10107,12 +10107,35 @@ function QuotationDoc({ quoteNumber, dateStr, customerName, companyName, repName
               <div style={{ fontSize: 16, fontWeight: 700, color: INK }}>{repName || "—"}</div>
               <div style={{ fontSize: 13, color: SLATE, marginTop: 2 }}>BT Local Business Sales</div>
             </div>
+
+            {/* Sits with the other two rather than under the table — it's
+                the first thing a customer looks for. */}
+            <div style={{ background: PURPLE_DARK, borderRadius: 8, padding: "14px 16px", color: "#fff" }}>
+              <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.8px", fontWeight: 700, marginBottom: 6, opacity: 0.85 }}>
+                Contract Summary
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "2px 0", fontSize: 12.5, opacity: 0.9 }}>
+                <span>Subtotal</span><span>{fmtGBP(subtotal)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "2px 0", fontSize: 12.5, opacity: 0.75 }}>
+                <span>VAT (20%)</span><span>{fmtGBP(vat)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "8px 0 0", marginTop: 6, borderTop: "1px solid rgba(255,255,255,0.28)" }}>
+                <span style={{ fontSize: 12.5, fontWeight: 700 }}>Total Monthly</span>
+                <span style={{ fontSize: 20, fontWeight: 800 }}>{fmtGBP(total)}</span>
+              </div>
+              {contractTotal > 0 && (
+                <div style={{ fontSize: 11, opacity: 0.75, marginTop: 4 }}>
+                  {fmtGBP(contractTotal)} over the full term
+                </div>
+              )}
+            </div>
           </div>
 
           <table style={{ width: "100%", marginBottom: 4, borderCollapse: "separate", borderSpacing: 0 }}>
             <thead>
               <tr>
-                {[["Item", "left", true, false], ["Qty", "right", false, false], ["Unit Price", "right", false, false], ["Term", "right", false, false], ["Total", "right", false, true]].map(([label, align, tl, tr], i) => (
+                {[["Item", "left", true, false], ["Qty", "right", false, false], ["Monthly Price", "right", false, false], ["Per Unit", "right", false, false], ["Term", "right", false, false], ["Total", "right", false, true]].map(([label, align, tl, tr], i) => (
                   <th key={i} style={{
                     background: PURPLE_DARK, color: "#fff", textAlign: align, padding: "11px 14px",
                     fontSize: 10.5, letterSpacing: "0.6px", textTransform: "uppercase",
@@ -10129,36 +10152,37 @@ function QuotationDoc({ quoteNumber, dateStr, customerName, companyName, repName
                     {it.category && <div style={{ fontSize: 11, color: SLATE, marginTop: 1 }}>{it.category}{it.unit ? ` · ${it.unit}` : ""}</div>}
                   </td>
                   <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: INK }}>{it.qty}</td>
-                  <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: INK }}>{fmtGBP(num(it.unitPrice))}</td>
+                  {/* A single unit has no per-unit figure to give, so the
+                      two cells merge rather than showing the same number
+                      twice or an empty column. */}
+                  {num(it.qty) > 1 ? (
+                    <>
+                      <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: INK }}>
+                        {fmtGBP(num(it.unitPrice))}
+                      </td>
+                      <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: SLATE, fontSize: 12.5 }}>
+                        {fmtGBP(num(it.unitPrice) / num(it.qty))}
+                      </td>
+                    </>
+                  ) : (
+                    <td colSpan={2} style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: INK }}>
+                      {fmtGBP(num(it.unitPrice))}
+                    </td>
+                  )}
                   {/* Term is shown for the customer's benefit, never totalled */}
                   <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: SLATE, fontSize: 12.5, whiteSpace: "nowrap" }}>
                     {num(it.termMonths) ? `${num(it.termMonths)} months` : "—"}
                   </td>
                   <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", fontWeight: 700, color: PURPLE_DARK }}>
-                    {fmtGBP(num(it.qty) * num(it.unitPrice))}
+                    {fmtGBP(num(it.unitPrice) * (num(it.termMonths) || 0))}
                   </td>
                 </tr>
               ))}
               {(!items || !items.length) && (
-                <tr><td colSpan={5} style={{ textAlign: "center", color: SLATE, padding: 30, borderBottom: `1px solid ${BORDER}` }}>No items added yet</td></tr>
+                <tr><td colSpan={6} style={{ textAlign: "center", color: SLATE, padding: 30, borderBottom: `1px solid ${BORDER}` }}>No items added yet</td></tr>
               )}
             </tbody>
           </table>
-
-          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 20, marginBottom: 30 }}>
-            <div style={{ width: 260, background: TINT, borderRadius: 10, padding: "16px 18px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 13, color: INK }}>
-                <span>Subtotal</span><span>{fmtGBP(subtotal)}</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 13, color: SLATE }}>
-                <span>VAT (20%)</span><span>{fmtGBP(vat)}</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "10px 0 0", marginTop: 8, borderTop: `2px solid ${PURPLE}` }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: PURPLE_DARK }}>Total</span>
-                <span style={{ fontSize: 22, fontWeight: 800, color: PURPLE_DARK }}>{fmtGBP(total)}</span>
-              </div>
-            </div>
-          </div>
 
           {notes && (
             <div style={{ fontSize: 12, color: SLATE, background: "#FBFAFE", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "12px 14px", marginBottom: 20, lineHeight: 1.5 }}>
@@ -10432,7 +10456,16 @@ function QuoteBuilderView({ profile, staff }) {
   const updateItem = (id, field, value) => setItems((p) => p.map((it) => (it.id === id ? { ...it, [field]: value } : it)));
   const removeItem = (id) => setItems((p) => p.filter((it) => it.id !== id));
 
-  const subtotal = useMemo(() => items.reduce((s, it) => s + num(it.qty) * num(it.unitPrice), 0), [items]);
+  /* unitPrice is now the MONTHLY figure for the line. The contract value
+     is that monthly times the term, which is what the customer signs up to
+     in total; the summary box shows the monthly commitment instead, since
+     that's the number they actually care about each month. */
+  const monthlySubtotal = useMemo(() => items.reduce((s, it) => s + num(it.unitPrice), 0), [items]);
+  const contractTotal = useMemo(
+    () => items.reduce((s, it) => s + num(it.unitPrice) * (num(it.termMonths) || 0), 0),
+    [items]
+  );
+  const subtotal = monthlySubtotal;
   const vat = subtotal * 0.2;
   const total = subtotal + vat;
   const quoteDate = useMemo(() => new Date().toISOString(), []);
@@ -10615,7 +10648,7 @@ function QuoteBuilderView({ profile, staff }) {
                   onChange={(e) => updateItem(it.id, "name", e.target.value)} />
                 <input className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }} type="number" min="1" value={it.qty} title="Quantity"
                   onChange={(e) => updateItem(it.id, "qty", e.target.value)} />
-                <input className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }} type="number" value={it.unitPrice} placeholder="Unit £" title="Unit price"
+                <input className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }} type="number" value={it.unitPrice} placeholder="£/mo" title="Monthly price for this line"
                   onChange={(e) => updateItem(it.id, "unitPrice", e.target.value)} />
                 <select className="sw-input sw-focus" style={{ height: 30, fontSize: 12 }} value={it.termMonths || ""} title="Contract length"
                   onChange={(e) => updateItem(it.id, "termMonths", e.target.value)}>
@@ -10638,9 +10671,14 @@ function QuoteBuilderView({ profile, staff }) {
                   <span>VAT (20%)</span><span className="sw-mono">{fmtGBP(vat)}</span>
                 </div>
                 <div className="flex justify-between mt-1 pt-1" style={{ borderTop: "1px solid var(--border)" }}>
-                  <span className="text-xs font-bold">Total</span>
+                  <span className="text-xs font-bold">Total monthly</span>
                   <span className="sw-mono font-bold" style={{ color: "var(--primary)" }}>{fmtGBP(total)}</span>
                 </div>
+                {contractTotal > 0 && (
+                  <div className="flex justify-between text-xs mt-0.5" style={{ color: "var(--ink-faint)" }}>
+                    <span>Over full term</span><span className="sw-mono">{fmtGBP(contractTotal)}</span>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -10651,7 +10689,7 @@ function QuoteBuilderView({ profile, staff }) {
               quoteNumber={quoteNumber} dateStr={quoteDate}
               customerName={quote.customer} companyName={quote.company}
               repName={quote.repName} repPhone={quote.repPhone}
-              items={items} subtotal={subtotal} vat={vat} total={total} notes={quote.notes} />
+              items={items} subtotal={subtotal} vat={vat} total={total} contractTotal={contractTotal} notes={quote.notes} />
           </div>
         </div>
       )}
@@ -10743,11 +10781,13 @@ function LeadsView({ staff, profile }) {
         key: g,
         label: g === "Appt" ? "Appts" : g,
         rules: rs,
-        // One rule means the total IS the breakdown, so no sub-columns
-        showRules: rs.length > 1,
+        /* One rule means the total IS the breakdown. The sub-columns also
+           fold away while a person's leads are open, since the table is
+           half the width and the detail is on screen anyway. */
+        showRules: rs.length > 1 && !drill,
       };
     });
-  }, [rules]);
+  }, [rules, drill]);
 
   /* Sheet spellings resolve to the staff list through the same alias map
      NetSuite uses, so a name mapped on the Sales Agents page is credited
@@ -10967,7 +11007,7 @@ function LeadsView({ staff, profile }) {
 
   const Cell = ({ v, bold, tone, edge, dark }) => (
     <td className="sw-mono" style={{
-      padding: "5px 7px", textAlign: "center", fontSize: 12.5,
+      padding: drill ? "3px 4px" : "5px 7px", textAlign: "center", fontSize: drill ? 11.5 : 12.5,
       fontWeight: bold ? 700 : 500,
       color: dark ? "#fff" : (v ? (tone || "var(--ink)") : "var(--ink-faint)"),
       borderLeft: edge ? GROUP_EDGE : "1px solid var(--border)",
@@ -11024,10 +11064,11 @@ function LeadsView({ staff, profile }) {
         boxShadow: selected ? "inset 3px 0 0 var(--primary)" : undefined,
       }}>
       <td style={{
-        padding: "5px 8px", paddingLeft: indent ? 22 : 8, whiteSpace: "nowrap", maxWidth: 190,
+        padding: drill ? "3px 5px" : "5px 8px", paddingLeft: indent ? (drill ? 14 : 22) : (drill ? 5 : 8),
+        whiteSpace: "nowrap", maxWidth: drill ? 130 : 190,
         color: dark ? "#fff" : undefined,
       }}>
-        <div className="truncate" style={{ fontSize: 12.5, fontWeight: bold || dark ? 700 : 500 }}>{r.name}</div>
+        <div className="truncate" style={{ fontSize: drill ? 11.5 : 12.5, fontWeight: bold || dark ? 700 : 500 }}>{r.name}</div>
       </td>
       {groups.map((g) => (
         <React.Fragment key={g.key}>
@@ -11101,9 +11142,10 @@ function LeadsView({ staff, profile }) {
         </div>
       )}
 
-      <div>
-      {/* The summary tables step aside while a person's leads are open */}
-      <div style={drill ? { display: "none" } : undefined}>
+      {/* Tables stay put; the person's leads open beside them. The tables
+          condense rather than disappear, so the numbers remain comparable. */}
+      <div style={drill ? { display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" } : undefined}>
+      <div style={drill ? { maxHeight: "calc(100vh - 150px)", overflowY: "auto" } : undefined}>
 
       {/* One table per role, with a compact ACQ summary beside each.
           Lead gens are credited off Created By, closers off Lead Owner. */}
@@ -11174,8 +11216,8 @@ function LeadsView({ staff, profile }) {
       {/* The person's leads, centred with the page falling away either
           side — the table sizes to its content rather than stretching. */}
       {drill && (
-        <div style={{ display: "flex", justifyContent: "center", padding: "0 8px" }}>
-          <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--primary)", maxWidth: "100%" }}>
+        <div className="sw-sticky-col" style={{ position: "sticky", top: 66, maxHeight: "calc(100vh - 150px)", overflowY: "auto" }}>
+          <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--primary)" }}>
 
             <div className="px-3 py-2.5 flex items-center gap-2 flex-wrap" style={{ background: "var(--primary-soft)", borderBottom: "1px solid var(--border)" }}>
               <span className="sw-display" style={{ fontSize: 14, fontWeight: 700, color: "var(--primary)" }}>{drill.name}</span>
@@ -12578,7 +12620,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         // widens for it and drops back to a quarter for the ranked list.
         gridTemplateColumns: rankView === "throughput"
           ? "minmax(420px, 1.7fr) minmax(0, 2.3fr)"
-          : "minmax(170px, 1fr) minmax(0, 5fr)",
+          : "minmax(190px, 1fr) minmax(0, 3fr)",
         gap: "0.75rem", alignItems: "start",
       }}>
 
