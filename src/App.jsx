@@ -756,6 +756,44 @@ function teamStyle(team, allTeams) {
 }
 
 // A small, consistent way of showing which team someone is on
+/* A claimed figure with what NetSuite actually booked underneath, and the
+   difference alongside it. The claimed number is never replaced — the
+   closer needs to see the gap and query it, not discover it at payroll.
+
+   Compared to the pound: a few pence of float drift isn't a discrepancy,
+   and flagging it would train people to ignore the flag. */
+function ClaimVsNs({ claimed, actual, fallback, kind, bold }) {
+  // Forecast rows have no claimed/actual pair — show the single figure
+  if (kind !== "claimed" || actual == null) {
+    return <div className={`sw-mono text-xs ${bold ? "font-semibold" : ""}`}>{fmtGBP(fallback)}</div>;
+  }
+
+  const diff = Math.round(num(actual)) - Math.round(num(claimed));
+  const tone = diff > 0 ? "var(--green)" : diff < 0 ? "var(--red)" : null;
+
+  return (
+    <div className="flex items-start gap-1.5">
+      <div style={{ minWidth: 0 }}>
+        <div className={`sw-mono text-xs ${bold ? "font-semibold" : ""}`}>{fmtGBP(claimed)}</div>
+        <div className="sw-mono" style={{ fontSize: 10, color: "var(--ink-faint)" }}
+          title="What NetSuite has booked">
+          {fmtGBP(actual)}
+        </div>
+      </div>
+      {diff !== 0 && (
+        <span className="sw-mono shrink-0"
+          title={`NetSuite is ${diff > 0 ? "higher" : "lower"} than claimed by ${fmtGBP(Math.abs(diff))}`}
+          style={{
+            fontSize: 10, fontWeight: 700, color: tone,
+            marginTop: 13,   // sits against the NetSuite line, not the claim
+          }}>
+          {diff > 0 ? "+" : "−"}{fmtGBP(Math.abs(diff))}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function TeamTag({ team, allTeams }) {
   const s = teamStyle(team, allTeams);
   return (
@@ -1615,6 +1653,14 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
         product: o.item_name_grouped || o.product_group_2 || "—",
         sov: num(o.contract_value),
         gp: num(o.gp_office != null ? o.gp_office : o.sales_agent_gp),
+        /* Both sides kept separately so the row can show them together.
+           A claimed figure is never overwritten by NetSuite — the closer
+           needs to see the gap and be able to query it, rather than find
+           out at payroll. */
+        claimedSov: num(o.contract_value),
+        claimedGp: num(o.sales_agent_gp),
+        nsSov: n && n.contract_value != null ? num(n.contract_value) : null,
+        nsGp: n && n.gp_office != null ? num(n.gp_office) : null,
         closer_share: num(o.closer_share), lead_gen_share: num(o.lead_gen_share),
         closer_pct: o.closer_pct, lead_gen_pct: o.lead_gen_pct,
         status: (n && n.order_status) ? n.order_status : o.order_status,
@@ -2809,11 +2855,15 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
 
                   <td className="px-3 py-2 text-xs sw-clamp2 sw-hide-sm" style={{ color: "var(--ink-soft)", lineHeight: 1.3 }}>{r.product}</td>
 
-                  <td className="px-3 py-2 sw-mono text-xs sw-hide-xs">{fmtGBP(r.sov)}</td>
+                  {/* Claimed on top, what NetSuite actually booked below, and
+                      the gap alongside. Rounded to the pound — a few pence of
+                      float drift isn't a discrepancy worth flagging. */}
+                  <td className="px-3 py-2 sw-hide-xs">
+                    <ClaimVsNs claimed={r.claimedSov} actual={r.nsSov} fallback={r.sov} kind={r.kind} />
+                  </td>
 
-                  {/* 3: GP with the split underneath */}
                   <td className="px-3 py-2">
-                    <div className="sw-mono text-xs font-semibold">{fmtGBP(r.gp)}</div>
+                    <ClaimVsNs claimed={r.claimedGp} actual={r.nsGp} fallback={r.gp} kind={r.kind} bold />
                     {r.closer_share != null && r.closer_share > 0 && (
                       <div style={{ color: "var(--ink-faint)", fontSize: 10 }} className="sw-mono">
                         {fmtGBP(r.closer_share)}{r.lead_gen_name && r.lead_gen_share ? ` / ${fmtGBP(r.lead_gen_share)}` : ""}
@@ -5409,6 +5459,11 @@ function PayPlansView({ plans, staff, tiers, metrics, tablesMissing, error, onSa
   const [newName, setNewName] = useState("");
   const [adding, setAdding] = useState(false);
   const [openForecast, setOpenForecast] = useState(null);
+  /* One customer can be forecast across several products. Each line becomes
+     its own row on save, sharing the customer, agent and dates. */
+  const [draftLines, setDraftLines] = useState([
+    { id: 1, pillar: PILLARS[0], sov: "", gp: "", units: "" },
+  ]);
   // Forecast figures vs what NetSuite actually statted, and a filter to
   // only the deals that have landed.
   const [valueMode, setValueMode] = useState("forecast");   // forecast | statted
@@ -7097,6 +7152,11 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
   const [openForecast, setOpenForecast] = useState(null);
+  /* One customer can be forecast across several products. Each line becomes
+     its own row on save, sharing the customer, agent and dates. */
+  const [draftLines, setDraftLines] = useState([
+    { id: 1, pillar: PILLARS[0], sov: "", gp: "", units: "" },
+  ]);
   // Forecast figures vs what NetSuite actually statted, and a filter to
   // only the deals that have landed.
   const [valueMode, setValueMode] = useState("forecast");   // forecast | statted
@@ -8767,6 +8827,11 @@ function ForecastView({ netsuite, profile, staff }) {
   const [openCols, setOpenCols] = useState({});             // product columns broken into parts
   const [adding, setAdding] = useState(false);
   const [openForecast, setOpenForecast] = useState(null);
+  /* One customer can be forecast across several products. Each line becomes
+     its own row on save, sharing the customer, agent and dates. */
+  const [draftLines, setDraftLines] = useState([
+    { id: 1, pillar: PILLARS[0], sov: "", gp: "", units: "" },
+  ]);
   // Forecast figures vs what NetSuite actually statted, and a filter to
   // only the deals that have landed.
   const [valueMode, setValueMode] = useState("forecast");   // forecast | statted
@@ -9165,51 +9230,57 @@ function ForecastView({ netsuite, profile, staff }) {
       setTimeout(() => setToastLocal(""), 3000);
       return;
     }
+    // Only lines with something in them; a blank extra row is just a
+    // half-finished thought, not a forecast.
+    const lines = draftLines.filter((l) => num(l.sov) || num(l.gp) || num(l.units));
+    if (!lines.length) {
+      setToastLocal("Add at least one product with a value.");
+      setTimeout(() => setToastLocal(""), 3000);
+      return;
+    }
+
     setSaving(true);
+    const { data: sess } = await supabase.auth.getSession();
     const agentStaff = findStaff(sellers, draft.agent_name);
     const lgStaff = draft.lead_gen_name ? findStaff(sellers, draft.lead_gen_name) : null;
-    const wk = new Date(week);
-    const { error } = await supabase.from("forecasts").insert({
+
+    const rows = lines.map((l) => ({
       forecast_week: week,
-      weeknum: weekNumber(wk),
-      agent_name: draft.agent_name,
-      agent_id: agentStaff?.user_id || null,
-      agent_team: agentStaff?.team || null,
-      lead_gen_name: draft.lead_gen_name || null,
-      lead_gen_id: lgStaff?.user_id || null,
-      lead_gen_team: lgStaff?.team || null,
-      forecast_date: draft.forecast_date || null,
-      pillar: draft.pillar,
+      created_by: sess?.session?.user?.id || null,
       business_name: draft.business_name.trim(),
       opp_id: draft.opp_id.trim() || null,
-      sov: parseFloat(draft.sov) || 0,
-      units: parseFloat(draft.units) || 0,
-      gp: parseFloat(draft.gp) || 0,
-      previously_forecasted: draft.previously_forecasted,
-      next_step: draft.next_step || null,
+      pillar: l.pillar,
+      sov: parseFloat(l.sov) || 0,
+      gp: parseFloat(l.gp) || 0,
+      units: parseFloat(l.units) || 0,
+      agent_name: draft.agent_name,
+      agent_team: agentStaff?.team || null,
+      lead_gen_name: draft.lead_gen_name || null,
+      lead_gen_team: lgStaff?.team || null,
+      forecast_date: draft.forecast_date || null,
       signpost_date: draft.signpost_date || null,
+      visit_or_teams: draft.visit_or_teams === "Visit" || draft.visit_or_teams === "Teams",
+      next_step: draft.next_step || null,
+      previously_forecasted: draft.previously_forecasted,
       sr_raised: draft.sr_raised,
-      visit_or_teams: draft.visit_or_teams,
       contract_out: draft.contract_out,
       proposal: draft.proposal || null,
       notes: draft.notes || null,
-    });
+    }));
+
+    const { error } = await supabase.from("forecasts").insert(rows);
     setSaving(false);
     if (error) {
       setToastLocal(`Couldn't save: ${error.message}`);
       setTimeout(() => setToastLocal(""), 5000);
       return;
     }
-    // Stay open — agents usually add several in a row, and reopening the
-    // form each time is the slow part. The agent and week carry over so
-    // only the deal details need retyping.
-    setDraft((p) => ({
-      ...blankRow,
-      agent_name: p.agent_name,
-      lead_gen_name: p.lead_gen_name,
-      pillar: p.pillar,
-    }));
-    setToastLocal("Order forecasted");
+
+    // Stay open — agents usually add several in a row. Agent and lead gen
+    // carry over, the products reset.
+    setDraft((p) => ({ ...blankRow, agent_name: p.agent_name, lead_gen_name: p.lead_gen_name }));
+    setDraftLines([{ id: Date.now(), pillar: PILLARS[0], sov: "", gp: "", units: "" }]);
+    setToastLocal(rows.length === 1 ? "Order forecasted" : `${rows.length} products forecasted`);
     setTimeout(() => setToastLocal(""), 2500);
     load();
   };
@@ -9307,16 +9378,6 @@ function ForecastView({ netsuite, profile, staff }) {
                 <option value="">None</option>
                 {sellers.map((s) => <option key={s.full_name} value={s.full_name}>{s.full_name}</option>)}
               </select></div>
-            <div><label className="sw-label">Pillar</label>
-              <select className="sw-input sw-focus" value={draft.pillar} onChange={(e) => setDraft((d) => ({ ...d, pillar: e.target.value }))}>
-                {PILLARS.map((p) => <option key={p} value={p}>{p}</option>)}
-              </select></div>
-            <div><label className="sw-label">SOV (£)</label>
-              <input className="sw-input sw-focus" value={draft.sov} onChange={(e) => setDraft((d) => ({ ...d, sov: e.target.value }))} /></div>
-            <div><label className="sw-label">GP (£)</label>
-              <input className="sw-input sw-focus" value={draft.gp} onChange={(e) => setDraft((d) => ({ ...d, gp: e.target.value }))} /></div>
-            <div><label className="sw-label">Units</label>
-              <input className="sw-input sw-focus" value={draft.units} onChange={(e) => setDraft((d) => ({ ...d, units: e.target.value }))} /></div>
             <div><label className="sw-label">Opp ID</label>
               <input className="sw-input sw-focus" value={draft.opp_id} onChange={(e) => setDraft((d) => ({ ...d, opp_id: e.target.value }))} placeholder="if known" /></div>
             <div><label className="sw-label">Expected date</label>
@@ -9334,13 +9395,64 @@ function ForecastView({ netsuite, profile, staff }) {
             <div style={{ gridColumn: "span 2" }}><label className="sw-label">Notes</label>
               <input className="sw-input sw-focus" value={draft.notes} onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))} /></div>
           </div>
+
+          {/* One customer, several products. Each becomes its own forecast
+              row on save, sharing the customer and dates — which is how the
+              reporting already works, and saves entering the same company
+              three times for a Cloud, Mobile and Broadband deal. */}
+          <div className="rounded-xl p-3 mt-3" style={{ background: "var(--surface-alt)", border: "1px solid var(--border)" }}>
+            <div className="flex items-baseline gap-2 mb-2">
+              <span className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)", letterSpacing: "0.04em" }}>
+                Products
+              </span>
+              <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                {draftLines.length} line{draftLines.length === 1 ? "" : "s"} · {fmtGBP(draftLines.reduce((s, l) => s + num(l.gp), 0))} GP
+              </span>
+              <button onClick={() => setDraftLines((p) => [...p, { id: Date.now() + Math.random(), pillar: PILLARS[0], sov: "", gp: "", units: "" }])}
+                className="sw-focus ml-auto text-xs font-semibold px-2.5 py-1 rounded-lg"
+                style={{ background: "var(--primary)", color: "#fff" }}>
+                + Add product
+              </button>
+            </div>
+
+            {draftLines.map((l, i) => (
+              <div key={l.id} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 0.7fr 26px", gap: 6, marginBottom: 6, alignItems: "end" }}>
+                <div>
+                  {i === 0 && <label className="sw-label">Product</label>}
+                  <select className="sw-input sw-focus" style={{ height: 34 }} value={l.pillar}
+                    onChange={(e) => setDraftLines((p) => p.map((x) => x.id === l.id ? { ...x, pillar: e.target.value } : x))}>
+                    {PILLARS.map((p) => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </div>
+                <div>
+                  {i === 0 && <label className="sw-label">SOV (£)</label>}
+                  <input className="sw-input sw-focus" style={{ height: 34 }} value={l.sov} placeholder="0"
+                    onChange={(e) => setDraftLines((p) => p.map((x) => x.id === l.id ? { ...x, sov: e.target.value } : x))} />
+                </div>
+                <div>
+                  {i === 0 && <label className="sw-label">GP (£)</label>}
+                  <input className="sw-input sw-focus" style={{ height: 34 }} value={l.gp} placeholder="0"
+                    onChange={(e) => setDraftLines((p) => p.map((x) => x.id === l.id ? { ...x, gp: e.target.value } : x))} />
+                </div>
+                <div>
+                  {i === 0 && <label className="sw-label">Units</label>}
+                  <input className="sw-input sw-focus" style={{ height: 34 }} value={l.units} placeholder="0"
+                    onChange={(e) => setDraftLines((p) => p.map((x) => x.id === l.id ? { ...x, units: e.target.value } : x))} />
+                </div>
+                <button onClick={() => setDraftLines((p) => p.length > 1 ? p.filter((x) => x.id !== l.id) : p)}
+                  disabled={draftLines.length === 1}
+                  className="sw-focus" style={{ color: draftLines.length === 1 ? "var(--border)" : "var(--red)", fontSize: 14, height: 34 }}
+                  title={draftLines.length === 1 ? "At least one product is needed" : "Remove this line"}>✕</button>
+              </div>
+            ))}
+          </div>
           <div className="flex items-center gap-4 mt-3 flex-wrap">
             <label className="flex items-center gap-1.5 text-xs cursor-pointer"><input type="checkbox" checked={draft.previously_forecasted} onChange={(e) => setDraft((d) => ({ ...d, previously_forecasted: e.target.checked }))} /> Previously forecasted</label>
             <label className="flex items-center gap-1.5 text-xs cursor-pointer"><input type="checkbox" checked={draft.sr_raised} onChange={(e) => setDraft((d) => ({ ...d, sr_raised: e.target.checked }))} /> SR raised</label>
             <label className="flex items-center gap-1.5 text-xs cursor-pointer"><input type="checkbox" checked={draft.contract_out} onChange={(e) => setDraft((d) => ({ ...d, contract_out: e.target.checked }))} /> Contract out</label>
             <div className="ml-auto flex gap-2">
-              <button onClick={() => { setAdding(false); setDraft(blankRow); }} className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold" style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>Cancel</button>
-              <button onClick={addForecast} disabled={saving} className="sw-focus px-4 py-2 rounded-lg text-xs font-semibold text-white" style={{ background: "var(--primary)" }}>{saving ? "Saving..." : "Add forecast"}</button>
+              <button onClick={() => { setAdding(false); setDraft(blankRow); setDraftLines([{ id: Date.now(), pillar: PILLARS[0], sov: "", gp: "", units: "" }]); }} className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold" style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>Cancel</button>
+              <button onClick={addForecast} disabled={saving} className="sw-focus px-4 py-2 rounded-lg text-xs font-semibold text-white" style={{ background: "var(--primary)" }}>{saving ? "Saving..." : draftLines.filter((l) => num(l.sov) || num(l.gp)).length > 1 ? `Add ${draftLines.filter((l) => num(l.sov) || num(l.gp)).length} forecasts` : "Add forecast"}</button>
             </div>
           </div>
         </div>
@@ -10115,6 +10227,172 @@ function QuotationDoc({ quoteNumber, dateStr, customerName, companyName, repName
           <p style={{ marginTop: 20 }}>Thank you again — I look forward to seeing your services go live.</p>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* Every quote that's been printed. RLS decides what each person sees —
+   your own if you're an agent, the whole team if you're a manager — so
+   this component doesn't need to filter by role itself. */
+function QuoteLog({ profile }) {
+  const [quotes, setQuotes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState("");
+  const [showConverted, setShowConverted] = useState(true);
+  const [open, setOpen] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase.from("quotes").select("*")
+      .order("created_at", { ascending: false }).limit(500);
+    setQuotes(data || []);
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return (quotes || []).filter((r) => {
+      if (!showConverted && r.used_on_order) return false;
+      if (!q) return true;
+      return [r.quote_ref, r.company_name, r.customer_name, r.rep_name]
+        .some((v) => String(v || "").toLowerCase().includes(q));
+    });
+  }, [quotes, query, showConverted]);
+
+  const totals = useMemo(() => ({
+    count: rows.length,
+    value: rows.reduce((s, r) => s + num(r.total), 0),
+    converted: rows.filter((r) => r.used_on_order).length,
+    outstanding: rows.filter((r) => !r.used_on_order).reduce((s, r) => s + num(r.total), 0),
+  }), [rows]);
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-3 flex-wrap">
+        <FileText size={18} style={{ color: "var(--primary)" }} />
+        <h2 className="sw-display text-lg font-bold">Quote log</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+          {profile?.role === "office" || profile?.role === "2ic" ? "Everyone's quotes" : "Your quotes"}
+        </span>
+
+        <div className="relative ml-auto" style={{ width: 220 }}>
+          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: "var(--ink-faint)" }} />
+          <input className="sw-input sw-focus" style={{ paddingLeft: 28, height: 32, fontSize: 12.5 }}
+            placeholder="Reference, company, rep..." value={query} onChange={(e) => setQuery(e.target.value)} />
+        </div>
+        <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--ink-soft)", cursor: "pointer" }}>
+          <input type="checkbox" checked={showConverted} onChange={(e) => setShowConverted(e.target.checked)} />
+          Include converted
+        </label>
+      </div>
+
+      <div className="sw-cols-2 mb-3" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "0.6rem" }}>
+        {[
+          ["Quotes", totals.count, "var(--ink)", ""],
+          ["Total quoted", fmtGBP(totals.value), "var(--primary)", ""],
+          ["Converted", `${totals.converted}/${totals.count}`, "var(--green)", "turned into an order"],
+          ["Still open", fmtGBP(totals.outstanding), "var(--amber)", "quoted, not yet ordered"],
+        ].map(([label, value, colour, sub]) => (
+          <div key={label} className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="text-xs font-semibold uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{label}</div>
+            <div className="sw-display font-bold" style={{ fontSize: 21, letterSpacing: "-0.02em", color: colour }}>{value}</div>
+            {sub && <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{sub}</div>}
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table className="w-full text-sm">
+            <thead>
+              <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
+                {["Reference", "Company", "Customer", "Rep", "Items", "Total", "Raised", ""].map((h, i) => (
+                  <th key={i} className={`px-3 py-2 text-xs font-semibold uppercase tracking-wide ${i === 5 ? "text-right" : "text-left"}`}
+                    style={{ color: "var(--ink-soft)" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const items = Array.isArray(r.items) ? r.items : [];
+                return (
+                  <tr key={r.id} onClick={() => setOpen(open === r.id ? null : r.id)}
+                    style={{
+                      borderTop: "1px solid var(--border)", cursor: "pointer",
+                      background: r.used_on_order ? "var(--green-soft)" : "transparent",
+                    }}>
+                    <td className="px-3 py-2 sw-mono" style={{ fontSize: 11.5, fontWeight: 600 }}>{r.quote_ref}</td>
+                    <td className="px-3 py-2 text-xs" style={{ maxWidth: 200 }}>
+                      <div className="truncate" style={{ fontWeight: 600 }}>{r.company_name || "—"}</div>
+                    </td>
+                    <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-soft)" }}>{r.customer_name || "—"}</td>
+                    <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-soft)" }}>{r.rep_name || "—"}</td>
+                    <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-faint)" }}>
+                      {items.length} line{items.length === 1 ? "" : "s"}
+                    </td>
+                    <td className="px-3 py-2 sw-mono text-xs text-right" style={{ fontWeight: 600 }}>{fmtGBP(r.total)}</td>
+                    <td className="px-3 py-2 text-xs whitespace-nowrap" style={{ color: "var(--ink-faint)" }}>{fmtDate(r.created_at)}</td>
+                    <td className="px-3 py-2">
+                      {r.used_on_order ? (
+                        <span className="rounded px-1.5 py-0.5 whitespace-nowrap" style={{ fontSize: 10, fontWeight: 700, background: "var(--green)", color: "#fff" }}>
+                          ORDERED
+                        </span>
+                      ) : (
+                        <span className="rounded px-1.5 py-0.5 whitespace-nowrap" style={{ fontSize: 10, fontWeight: 600, background: "var(--surface-alt)", color: "var(--ink-faint)" }}>
+                          open
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {rows.length === 0 && (
+                <tr><td colSpan={8} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                  {loading ? "Loading..." : "No quotes yet. They're saved automatically when printed."}
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {open && (() => {
+        const r = rows.find((x) => x.id === open);
+        if (!r) return null;
+        const items = Array.isArray(r.items) ? r.items : [];
+        return (
+          <div className="rounded-xl mt-3 p-3" style={{ background: "var(--surface)", border: "1px solid var(--primary)" }}>
+            <div className="flex items-baseline gap-2 mb-2">
+              <span className="sw-mono font-bold" style={{ color: "var(--primary)" }}>{r.quote_ref}</span>
+              <span className="text-xs" style={{ color: "var(--ink-soft)" }}>{r.company_name}</span>
+              <button onClick={() => setOpen(null)} className="sw-focus ml-auto text-xs" style={{ color: "var(--ink-faint)" }}>Close</button>
+            </div>
+            <table className="w-full text-xs">
+              <tbody>
+                {items.map((it, i) => (
+                  <tr key={i} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td className="py-1.5">{it.name}</td>
+                    <td className="py-1.5 text-right sw-mono" style={{ color: "var(--ink-faint)" }}>× {num(it.qty)}</td>
+                    <td className="py-1.5 text-right sw-mono" style={{ color: "var(--ink-faint)" }}>
+                      {it.termMonths ? `${num(it.termMonths)}m` : "—"}
+                    </td>
+                    <td className="py-1.5 text-right sw-mono" style={{ fontWeight: 600 }}>
+                      {fmtGBP(num(it.qty) * num(it.unitPrice))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {r.notes && <div className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>{r.notes}</div>}
+          </div>
+        );
+      })()}
+
+      <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
+        Quotes are saved when printed. A quote turns green once its reference has been used on a Lilac Box —
+        anything still marked open is quoted work that hasn't come in yet.
+      </p>
     </div>
   );
 }
@@ -10919,6 +11197,11 @@ function LandscapesView({ profile, staff }) {
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [openForecast, setOpenForecast] = useState(null);
+  /* One customer can be forecast across several products. Each line becomes
+     its own row on save, sharing the customer, agent and dates. */
+  const [draftLines, setDraftLines] = useState([
+    { id: 1, pillar: PILLARS[0], sov: "", gp: "", units: "" },
+  ]);
   // Forecast figures vs what NetSuite actually statted, and a filter to
   // only the deals that have landed.
   const [valueMode, setValueMode] = useState("forecast");   // forecast | statted
@@ -11089,6 +11372,57 @@ function LandscapesView({ profile, staff }) {
             <div style={{ gridColumn: "span 2" }}><label className="sw-label">Notes</label>
               <input className="sw-input sw-focus" value={draft.notes} onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))} /></div>
           </div>
+
+          {/* One customer, several products. Each becomes its own forecast
+              row on save, sharing the customer and dates — which is how the
+              reporting already works, and saves entering the same company
+              three times for a Cloud, Mobile and Broadband deal. */}
+          <div className="rounded-xl p-3 mt-3" style={{ background: "var(--surface-alt)", border: "1px solid var(--border)" }}>
+            <div className="flex items-baseline gap-2 mb-2">
+              <span className="text-xs font-semibold uppercase" style={{ color: "var(--ink-soft)", letterSpacing: "0.04em" }}>
+                Products
+              </span>
+              <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                {draftLines.length} line{draftLines.length === 1 ? "" : "s"} · {fmtGBP(draftLines.reduce((s, l) => s + num(l.gp), 0))} GP
+              </span>
+              <button onClick={() => setDraftLines((p) => [...p, { id: Date.now() + Math.random(), pillar: PILLARS[0], sov: "", gp: "", units: "" }])}
+                className="sw-focus ml-auto text-xs font-semibold px-2.5 py-1 rounded-lg"
+                style={{ background: "var(--primary)", color: "#fff" }}>
+                + Add product
+              </button>
+            </div>
+
+            {draftLines.map((l, i) => (
+              <div key={l.id} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 0.7fr 26px", gap: 6, marginBottom: 6, alignItems: "end" }}>
+                <div>
+                  {i === 0 && <label className="sw-label">Product</label>}
+                  <select className="sw-input sw-focus" style={{ height: 34 }} value={l.pillar}
+                    onChange={(e) => setDraftLines((p) => p.map((x) => x.id === l.id ? { ...x, pillar: e.target.value } : x))}>
+                    {PILLARS.map((p) => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </div>
+                <div>
+                  {i === 0 && <label className="sw-label">SOV (£)</label>}
+                  <input className="sw-input sw-focus" style={{ height: 34 }} value={l.sov} placeholder="0"
+                    onChange={(e) => setDraftLines((p) => p.map((x) => x.id === l.id ? { ...x, sov: e.target.value } : x))} />
+                </div>
+                <div>
+                  {i === 0 && <label className="sw-label">GP (£)</label>}
+                  <input className="sw-input sw-focus" style={{ height: 34 }} value={l.gp} placeholder="0"
+                    onChange={(e) => setDraftLines((p) => p.map((x) => x.id === l.id ? { ...x, gp: e.target.value } : x))} />
+                </div>
+                <div>
+                  {i === 0 && <label className="sw-label">Units</label>}
+                  <input className="sw-input sw-focus" style={{ height: 34 }} value={l.units} placeholder="0"
+                    onChange={(e) => setDraftLines((p) => p.map((x) => x.id === l.id ? { ...x, units: e.target.value } : x))} />
+                </div>
+                <button onClick={() => setDraftLines((p) => p.length > 1 ? p.filter((x) => x.id !== l.id) : p)}
+                  disabled={draftLines.length === 1}
+                  className="sw-focus" style={{ color: draftLines.length === 1 ? "var(--border)" : "var(--red)", fontSize: 14, height: 34 }}
+                  title={draftLines.length === 1 ? "At least one product is needed" : "Remove this line"}>✕</button>
+              </div>
+            ))}
+          </div>
           <div className="flex gap-2 mt-3 justify-end">
             <button onClick={() => { setAdding(false); setDraft(blank); }} className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold"
               style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>Cancel</button>
@@ -11244,9 +11578,8 @@ function LandscapesView({ profile, staff }) {
    "unplaced" before anything that merely contains "placed". */
 const PLACEMENT_BUCKETS = [
   { key: "out_for_sig",  label: "Out for Sig",  test: /out\s*for\s*sig|awaiting\s*sig|signature/i, tone: "var(--blue)" },
-  { key: "placed_tw",    label: "Placed TW",    test: /placed\s*(this\s*week|t\.?w\b)|this\s*week/i, tone: "var(--green)" },
+  { key: "placed_tw",    label: "Week to date", test: /placed\s*(this\s*week|t\.?w\b)|this\s*week/i, tone: "var(--green)" },
   { key: "placed_lw",    label: "Placed LW",    test: /placed\s*(last\s*week|l\.?w\b)|last\s*week/i, tone: "var(--gold)" },
-  { key: "placed_older", label: "Placed (older)", test: /placed\s*older|older/i,                   tone: "var(--ink-faint)" },
   { key: "unplaced",     label: "Unplaced",     test: /unplaced|not\s*placed|^$/i,                  tone: "var(--amber)" },
 ];
 
@@ -11333,7 +11666,11 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   const [agedOnly, setAgedOnly] = useState(false);
   // Ranked column can switch to an activity matrix
   const [rankView, setRankView] = useState("ranked");        // ranked | throughput
-  const [flowMode, setFlowMode] = useState("week");          // week (per day) | weeks (per week)
+  const [flowMode, setFlowMode] = useState("week");          // week (per day) | weeks (per week) | month
+  const [flowMonth, setFlowMonth] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
   const [flowFy, setFlowFy] = useState(() => String(fyYearOf()));
   // 0 = this week, 1 = last week, and so on back
   const [weekBack, setWeekBack] = useState(0);
@@ -11479,7 +11816,11 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         manager: o.closer_team || null,
         sov: num(o.contract_value),
         gp: num(o.gp_office != null ? o.gp_office : o.sales_agent_gp),
-        aged: (daysOld(o.submission_date) ?? 0) > 89,
+        /* A Lilac submission awaiting its NetSuite match isn't an aged
+           order — it hasn't reached NetSuite yet, so counting its age
+           against the 90-day rule was inflating the figure with orders
+           nobody could act on. */
+        aged: false,
         ageDays: daysOld(o.submission_date),
         dirty: o.dirty_order === "Yes",
         status: o.order_status || null,
@@ -11623,6 +11964,15 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
     return new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() - weekBack * 7);
   }, [weekBack]);
 
+  const flowMonthOptions = useMemo(() => Array.from({ length: 14 }, (_, i) => {
+    const now = new Date();
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    return {
+      key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
+      label: d.toLocaleDateString("en-GB", { month: "long", year: "numeric" }),
+    };
+  }), []);
+
   const weekBackOptions = useMemo(() => Array.from({ length: 12 }, (_, i) => {
     const ws = weekStart();
     const d = new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() - i * 7);
@@ -11672,8 +12022,20 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
 
     const y = parseInt(flowFy, 10);
     const perDay = flowMode === "week";
+    const perMonth = flowMode === "month";
     let cols = [];
-    if (perDay) {
+    if (perMonth) {
+      // Each day of the chosen month, so a whole month's activity reads at
+      // once rather than a week at a time.
+      const [my, mm] = flowMonth.split("-").map(Number);
+      const days = new Date(my, mm, 0).getDate();
+      for (let i = 1; i <= days; i++) {
+        const d = new Date(my, mm - 1, i);
+        const dow = d.getDay();
+        if (dow === 0 || dow === 6) continue;   // working days only
+        cols.push({ key: `m${i}`, label: String(i), date: d });
+      }
+    } else if (perDay) {
       // Monday to Friday only — nobody places orders at the weekend, and two
       // permanently empty columns just made the matrix harder to read.
       const ws = shownWeekStart;
@@ -11691,6 +12053,18 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
 
     const colKeyFor = (d) => {
       if (!d) return null;
+      if (perMonth) {
+        const [my, mm] = flowMonth.split("-").map(Number);
+        if (d.getFullYear() !== my || d.getMonth() !== mm - 1) return null;
+        const dow = d.getDay();
+        // Weekend work rolls into the Friday before, as in the week view
+        if (dow === 0 || dow === 6) {
+          const back = dow === 0 ? 2 : 1;
+          const f = new Date(d.getFullYear(), d.getMonth(), d.getDate() - back);
+          return f.getMonth() === mm - 1 ? `m${f.getDate()}` : null;
+        }
+        return `m${d.getDate()}`;
+      }
       if (perDay) {
         const ws = shownWeekStart;
         const i = Math.floor((new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() - ws.getTime()) / 86400000);
@@ -11741,7 +12115,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
       };
     });
     return { cols, rows, colTotals, placedUnparsed, placedDated };
-  }, [unplaced, flowMode, flowFy, shownWeekStart]);
+  }, [unplaced, flowMode, flowFy, flowMonth, shownWeekStart]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -11906,12 +12280,9 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
             })}
           </div>
 
-          {/* Placement states — 2×2, scaled down to sit beside the products.
-              placed_older is deliberately not shown: it's a catch-all for
-              anything placed more than a fortnight ago, and a fifth card
-              would break the grid. It's still counted in All statuses. */}
+          {/* Placement states — 2×2, scaled down to sit beside the products */}
           <div className="sw-cols-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: "0.75rem" }}>
-            {PLACEMENT_BUCKETS.filter((b) => b.key !== "placed_older").map((b) => {
+            {PLACEMENT_BUCKETS.map((b) => {
               const d = placement.buckets[b.key];
               const active = placementView === b.key;
               return (
@@ -12076,7 +12447,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
               <div>
                 <div className="flex items-center gap-1.5 mb-2 flex-wrap">
                   <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 26 }}>
-                    {[["week", "By day"], ["weeks", "Per week"]].map(([k, lbl]) => (
+                    {[["week", "By day"], ["weeks", "Per week"], ["month", "Per month"]].map(([k, lbl]) => (
                       <button key={k} onClick={() => setFlowMode(k)}
                         className="sw-focus px-2 text-xs whitespace-nowrap" style={flowMode === k
                           ? { background: "var(--primary-soft)", color: "var(--primary)", fontWeight: 600, height: "100%" }
@@ -12090,6 +12461,12 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                       value={weekBack} onChange={(e) => setWeekBack(parseInt(e.target.value, 10))}
                       title="Which week to show">
                       {weekBackOptions.map((w) => <option key={w.value} value={w.value}>{w.label}</option>)}
+                    </select>
+                  )}
+                  {flowMode === "month" && (
+                    <select className="sw-input sw-focus" style={{ width: 132, height: 26, fontSize: 11.5 }}
+                      value={flowMonth} onChange={(e) => setFlowMonth(e.target.value)}>
+                      {flowMonthOptions.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
                     </select>
                   )}
                   {flowMode === "weeks" && (
@@ -12134,6 +12511,23 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                               </td>
                             ))}
                             <td className="sw-mono" style={{ padding: "2px 0 0 6px", textAlign: "right", borderTop: "1px solid var(--border)", color: "var(--blue)", fontWeight: 600 }}>{r.recvTotal}</td>
+                            {/* Placed as a share of received. Distorted by
+                                system-driven waits (DV4s held pending
+                                broadband), so it isn't a performance measure
+                                on its own — hence the muted styling. */}
+                            <td rowSpan={2} className="sw-mono" style={{
+                              padding: "2px 0 0 8px", textAlign: "right", borderTop: "1px solid var(--border)",
+                              verticalAlign: "middle", fontWeight: 700,
+                              color: r.recvTotal
+                                ? (r.placedTotal / r.recvTotal >= 0.8 ? "var(--green)"
+                                  : r.placedTotal / r.recvTotal >= 0.5 ? "var(--amber)" : "var(--red)")
+                                : "var(--ink-faint)",
+                            }}
+                              title={r.recvTotal
+                                ? `${r.placedTotal} placed of ${r.recvTotal} received. Waits outside the agent's control affect this.`
+                                : "Nothing received in this period"}>
+                              {r.recvTotal ? `${Math.round((r.placedTotal / r.recvTotal) * 100)}%` : "·"}
+                            </td>
                           </tr>
                           <tr>
                             <td style={{ padding: "0 5px 4px 0", textAlign: "right", color: "var(--green)", fontSize: 10, fontWeight: 600, whiteSpace: "nowrap" }}>
@@ -12149,7 +12543,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                         </React.Fragment>
                       ))}
                       {flow.rows.length === 0 && (
-                        <tr><td colSpan={flow.cols.length + 3} className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>
+                        <tr><td colSpan={flow.cols.length + 4} className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>
                           Nothing in this window.
                         </td></tr>
                       )}
@@ -12165,6 +12559,19 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                           <td className="sw-mono" style={{ padding: "5px 0 1px 6px", textAlign: "right", borderTop: "2px solid var(--border)", color: "var(--blue)", fontWeight: 700 }}>
                             {flow.rows.reduce((s, r) => s + r.recvTotal, 0)}
                           </td>
+                          {(() => {
+                            const rec = flow.rows.reduce((s, r) => s + r.recvTotal, 0);
+                            const pl = flow.rows.reduce((s, r) => s + r.placedTotal, 0);
+                            return (
+                              <td rowSpan={2} className="sw-mono" style={{
+                                padding: "5px 0 1px 8px", textAlign: "right", borderTop: "2px solid var(--border)",
+                                verticalAlign: "middle", fontWeight: 700, fontSize: 12,
+                                color: rec ? "var(--ink)" : "var(--ink-faint)",
+                              }} title={`${pl} placed of ${rec} received across the office`}>
+                                {rec ? `${Math.round((pl / rec) * 100)}%` : "·"}
+                              </td>
+                            );
+                          })()}
                         </tr>
                         <tr>
                           <td style={{ padding: "1px 4px 4px 0" }} />
@@ -13484,6 +13891,7 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
     { label: "Submit Lilac Box", icon: Plus, active: tab === "new", onClick: go("new") },
     { label: "Landscapes", icon: MapPin, active: tab === "landscapes", onClick: go("landscapes") },
     { label: "Quote Builder", icon: FileText, active: tab === "quote", onClick: go("quote") },
+    { label: "Quote Log", icon: ClipboardList, active: tab === "quotelog", onClick: go("quotelog") },
   ];
   const settings = [
     { label: "Sales Agents", icon: Users, active: tab === "admin", onClick: go("admin") },
@@ -14337,6 +14745,7 @@ export default function App() {
         {tab === "forecast" && <ForecastView netsuite={netsuiteResolved} profile={profile} staff={staff} />}
         {tab === "landscapes" && <LandscapesView profile={profile} staff={staff} />}
         {tab === "quote" && <QuoteBuilderView profile={profile} staff={staff} />}
+        {tab === "quotelog" && <QuoteLog profile={profile} />}
         {tab === "coach" && <SalesCoachView />}
         {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onResetPassword={resetPassword} onSetActive={setStaffActive} plans={payPlans}
           netsuite={netsuiteResolved} leads={leadsForAdmin} aliases={aliases} onAddAlias={addAlias} onDeleteAlias={deleteAlias} onAddLeaver={addLeaver}
