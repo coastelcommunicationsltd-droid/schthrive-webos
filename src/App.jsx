@@ -244,6 +244,50 @@ const TONE_MAP = {
 };
 const TONE_CHOICES = ["green", "blue", "amber", "red", "primary", "gold", "neutral"];
 
+/* ---------------------------------------------------------------------- */
+/*  REVENUE STAGE                                                          */
+/* ---------------------------------------------------------------------- */
+
+/* The three sales-facing statuses agreed in the leadership walkthrough,
+   plus Red for anything that earns nothing.
+
+     Red      rejected, cancelled — no GP, no commission
+     Claimed  Lilac Box submitted to sales delivery. Nothing more.
+     Issued   contract signed, SR'd and placed on BT
+     Payable  closed and commission due
+
+   Stored in status_config.tone, which already exists — so this needs no
+   schema change. The stage IS the colour, which is the point: a manager
+   sets what a status means and the colour follows, rather than choosing
+   the two independently and letting them drift apart. */
+const REVENUE_STAGES = [
+  { key: "red",     label: "Red",     fg: "var(--red)",   bg: "var(--red-soft)",
+    note: "Rejected or cancelled — earns nothing" },
+  { key: "claimed", label: "Claimed", fg: "var(--amber)", bg: "var(--amber-soft)",
+    note: "Lilac Box submitted to sales delivery" },
+  { key: "issued",  label: "Issued",  fg: "var(--blue)",  bg: "var(--blue-soft)",
+    note: "Signed, SR'd and placed on BT" },
+  { key: "payable", label: "Payable", fg: "var(--green)", bg: "var(--green-soft)",
+    note: "Closed and commission due" },
+];
+const STAGE_MAP = Object.fromEntries(REVENUE_STAGES.map((s) => [s.key, s]));
+
+/* Existing rows hold old tone values and a count_gp flag, so both are read
+   and translated. count_gp=false always wins: a status that earns no GP is
+   Red whatever colour someone picked for it previously. */
+function stageOf(cfg) {
+  if (!cfg) return "claimed";
+  if (cfg.count_gp === false) return "red";
+  const t = String(cfg.tone || "").toLowerCase();
+  if (STAGE_MAP[t]) return t;
+  if (t === "red") return "red";
+  if (t === "green") return "payable";
+  if (t === "blue" || t === "primary") return "issued";
+  return "claimed";                       // amber, gold, neutral, unset
+}
+
+const stageTone = (stage) => STAGE_MAP[stage] || STAGE_MAP.claimed;
+
 // Best guess when a status hasn't been configured yet — this is also what
 // seeds the colour a manager then sees and can override.
 function guessTone(status) {
@@ -882,46 +926,86 @@ function KPICard({ icon: Icon, label, value, sub, accent, target, rawValue }) {
 }
 
 /* Headline figure. Carries a target when the viewer has a pay plan. */
-function HeroCard({ label, value, note, accent, target, fullTarget, rawValue, acq, acqLabel }) {
+function HeroCard({ label, value, note, accent, target, fullTarget, rawValue, acq, acqLabel, stages, stageFmt = fmtGBP }) {
   // Colour reflects pace (are you where you should be today); the number
   // and bar reflect the whole target, so day 1 doesn't read as 1200%.
   const tone = target ? paceTone(rawValue, target) : null;
   const denom = fullTarget || target;
   const pct = denom ? Math.round((rawValue / denom) * 100) : 0;
   const pacePct = denom && target ? Math.min(100, (target / denom) * 100) : 0;
+
   return (
-    <div className="sw-rise rounded-xl p-4 flex flex-col justify-between"
+    <div className="sw-rise rounded-xl p-4"
       style={{ background: "var(--surface)", border: "1px solid var(--border)", minHeight: 112 }}>
-      <div className="flex items-start justify-between gap-3">
-        <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{label}</span>
-        {acq && (
+
+      <div style={{ display: "grid", gridTemplateColumns: stages ? "minmax(0,1fr) auto" : "1fr", gap: 14, alignItems: "start" }}>
+
+        {/* Left — the headline figure, unchanged */}
+        <div className="flex flex-col justify-between" style={{ minWidth: 0 }}>
+          <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>{label}</span>
+
+          <div className="sw-display" style={{ fontSize: 29, fontWeight: 600, lineHeight: 1.05, letterSpacing: "-0.025em", color: "var(--ink)", marginTop: 6 }}>
+            {value}
+          </div>
+
+          {tone ? (
+            <div style={{ marginTop: 8 }}>
+              <div className="rounded-full mb-1.5" style={{ height: 5, background: "var(--surface-alt)", position: "relative" }}>
+                <div className="rounded-full" style={{ width: Math.min(100, pct) + "%", height: "100%", background: tone.fg, transition: "width .3s" }} />
+                {/* Where you should be today — sits proud of the bar so it
+                    reads whether it falls on filled or unfilled track. */}
+                {pacePct > 0 && pacePct <= 100 && (
+                  <div title={`On pace today: ${fmtGBP(target)}`}
+                    style={{ position: "absolute", left: `calc(${pacePct}% - 1px)`, top: -3, bottom: -3, width: 2, background: "var(--ink)", borderRadius: 1 }} />
+                )}
+              </div>
+              <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                {fmtGBP(denom)} target · {fmtGBP(target)} to pace
+              </div>
+            </div>
+          ) : (
+            <div className="text-xs" style={{ marginTop: 8, color: "var(--ink-faint)" }}>{note}</div>
+          )}
+        </div>
+
+        {/* Right — where that total has got to, plus ACQ beneath it.
+            Three sub-cards that sum to the headline on the left. */}
+        {stages && (
+          <div style={{ display: "grid", gap: 4, width: 132 }}>
+            {REVENUE_STAGES.filter((s) => s.key !== "red").map((s) => (
+              <div key={s.key} className="rounded-lg"
+                style={{ background: s.bg, padding: "5px 8px", borderLeft: `2px solid ${s.fg}` }}
+                title={s.note}>
+                <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: s.fg }}>
+                  {s.label}
+                </div>
+                <div className="sw-mono" style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)", lineHeight: 1.2 }}>
+                  {stageFmt(stages[s.key] || 0)}
+                </div>
+              </div>
+            ))}
+
+            {acq && (
+              <div className="rounded-lg" style={{ background: "var(--surface-alt)", padding: "5px 8px" }}>
+                <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--ink-faint)" }}>
+                  {acqLabel} · {acq.pct.toFixed(0)}%
+                </div>
+                <div className="sw-mono" style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-soft)", lineHeight: 1.2 }}>
+                  {acq.value}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* No stage data — ACQ keeps its old position top-right */}
+        {!stages && acq && (
           <div className="text-right shrink-0">
             <div className="sw-mono" style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-soft)" }}>{acq.value}</div>
             <div style={{ fontSize: 10, color: "var(--ink-faint)" }}>{acqLabel} · {acq.pct.toFixed(0)}%</div>
           </div>
         )}
       </div>
-      <div className="sw-display" style={{ fontSize: 29, fontWeight: 600, lineHeight: 1.05, letterSpacing: "-0.025em", color: "var(--ink)" }}>
-        {value}
-      </div>
-      {tone ? (
-        <div>
-          <div className="rounded-full mb-1.5" style={{ height: 5, background: "var(--surface-alt)", position: "relative" }}>
-            <div className="rounded-full" style={{ width: Math.min(100, pct) + "%", height: "100%", background: tone.fg, transition: "width .3s" }} />
-            {/* Where you should be today — sits proud of the bar so it reads
-                whether it falls on filled or unfilled track. */}
-            {pacePct > 0 && pacePct <= 100 && (
-              <div title={`On pace today: ${fmtGBP(target)}`}
-                style={{ position: "absolute", left: `calc(${pacePct}% - 1px)`, top: -3, bottom: -3, width: 2, background: "var(--ink)", borderRadius: 1 }} />
-            )}
-          </div>
-          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
-            {fmtGBP(denom)} target · {fmtGBP(target)} to pace
-          </div>
-        </div>
-      ) : (
-        <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{note}</div>
-      )}
     </div>
   );
 }
@@ -1488,6 +1572,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
   const [statusFilter, setStatusFilter] = useState("All");
   const [agentFilter, setAgentFilter] = useState("All");
   const [ngpMode, setNgpMode] = useState("hide");  // hide | show | only
+  const [rejectedOnly, setRejectedOnly] = useState(false);  // narrows Red to rejected
   const [nsovMode, setNsovMode] = useState("show");  // show | only (NSOV still counts toward GP, so it isn't hidden by default)
   const [dataView, setDataView] = useState("claimed");   // forecast | claimed | statted
   const [productFilter, setProductFilter] = useState("All");
@@ -1501,7 +1586,10 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
   const role = profile?.role || "agent";
   const isOffice = role === "office";
   const is2ic = role === "2ic";
-  // office starts on whole-office; 2ic starts scoped to their own team
+  /* A 2IC covers for their manager, so they can see the whole office —
+     but the view opens on their own team, which is what they need most
+     days. Office opens on everything. */
+  const canSeeOffice = isOffice || is2ic;
   const [scope, setScope] = useState(is2ic ? (profile?.team || "office") : "office");
   const [period, setPeriod] = useState("mtd"); // MTD is the default view
   const canFilterByAgent = isOffice || is2ic;
@@ -1551,7 +1639,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
   const scoped = useMemo(() => {
     let rows = inPeriod;
     // Team scope
-    if (isOffice && scope !== "office") {
+    if (canSeeOffice && scope !== "office") {
       rows = rows.filter((o) => o.closer_team === scope || o.lead_gen_team === scope);
     }
     // Agent filter — applies to the KPI cards as well as the table, so the
@@ -1560,7 +1648,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
       rows = rows.filter((o) => o.closer_name === agentFilter || o.lead_gen_name === agentFilter);
     }
     return rows;
-  }, [inPeriod, isOffice, scope, agentFilter]);
+  }, [inPeriod, canSeeOffice, scope, agentFilter]);
 
   // Every agent (closer or lead gen) appearing in the currently-scoped orders —
   // this is how a manager/2IC "sorts the list to agents".
@@ -1578,13 +1666,13 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
     // Built before the agent filter is applied, so picking one doesn't
     // leave the dropdown with a single option and no way back.
     let rows = inPeriod;
-    if (isOffice && scope !== "office") {
+    if (canSeeOffice && scope !== "office") {
       rows = rows.filter((o) => o.closer_team === scope || o.lead_gen_team === scope);
     }
     const names = new Set();
     rows.forEach((o) => { if (o.closer_name) names.add(o.closer_name); if (o.lead_gen_name) names.add(o.lead_gen_name); });
     return Array.from(names).sort();
-  }, [inPeriod, isOffice, scope]);
+  }, [inPeriod, canSeeOffice, scope]);
 
   // ---- Which dataset the table shows ---------------------------------
   // Claimed = what agents submitted. Statted = what NetSuite booked.
@@ -1592,7 +1680,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
   // the same table, filters and sorting work across all three.
   const viewRows = useMemo(() => {
     const inPeriodDate = periodTest(period);
-    const teamScope = isOffice && scope !== "office" ? scope : (is2ic ? profile?.team : null);
+    const teamScope = canSeeOffice && scope !== "office" ? scope : null;
 
     if (dataView === "statted") {
       return (netsuite || [])
@@ -1679,7 +1767,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
         raw: o,
       };
     });
-  }, [dataView, scoped, netsuite, forecasts, period, isOffice, is2ic, scope, profile, flagsFor, statusCfg]);
+  }, [dataView, scoped, netsuite, forecasts, period, canSeeOffice, scope, profile, flagsFor, statusCfg]);
 
   // Every product tag appearing in the current view, for the slicer.
   // Products are often combined ("Cloud Voice + Broadband"), so the
@@ -1701,8 +1789,9 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
       // but sometimes chasing them is the job, hence "only".
       if (ngpMode === "hide" && r.ngp) return false;
       if (ngpMode === "only" && !r.ngp) return false;
+      if (rejectedOnly && !(r.ngp && isRejected(r))) return false;
       // Non SOV means exactly that: excluded from SOV but still counting
-      // toward GP. Anything also carrying NGP belongs in the Non GP filter,
+      // toward GP. Anything also carrying NGP belongs in the Red GP filter,
       // not here.
       if (nsovMode === "only" && (!r.nsov || r.ngp)) return false;
       const q = query.trim().toLowerCase();
@@ -1739,7 +1828,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
       if (typeof av === "string") return av.localeCompare(bv) * dir;
       return (av - bv) * dir;
     });
-  }, [viewRows, query, statusFilter, agentFilter, productFilter, focusFilter, sortKey, sortDir, ngpMode, nsovMode, campaignOnly, acqOnly]);
+  }, [viewRows, query, statusFilter, agentFilter, productFilter, focusFilter, sortKey, sortDir, ngpMode, nsovMode, campaignOnly, acqOnly, rejectedOnly, isRejected]);
 
   // Totals for the strip sitting directly above the list. These follow the
   // VISIBLE rows — every filter, the search box and the dataset toggle — so
@@ -1822,6 +1911,16 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
     return gpWorking.net;
   }, [gpCountable, isOffice, is2ic, scope, profile, agentFilter, gpWorking]);
   const ngpCount = useMemo(() => viewRows.filter((r) => r.ngp).length, [viewRows]);
+  /* Red covers rejected and cancelled together. Rejected is the half worth
+     chasing — a rejection can come back, a cancellation generally doesn't. */
+  const isRejected = useCallback(
+    (r) => /reject/i.test(String(r.status || "")),
+    []
+  );
+  const rejectedCount = useMemo(
+    () => viewRows.filter((r) => r.ngp && isRejected(r)).length,
+    [viewRows, isRejected]
+  );
   const agedCount = useMemo(() => viewRows.filter((r) => r.ageDays != null && r.ageDays >= 90).length, [viewRows]);
   // 60+ is inclusive of the 90+ set — it's "at least this old", not a band,
   // so the two counts deliberately overlap.
@@ -1887,7 +1986,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
   const nsSovCards = useMemo(() => {
     const inP = periodTest(period);
     // Scale with whatever is selected: period, team scope and agent.
-    const teamScope = isOffice && scope !== "office" ? scope : (is2ic ? profile?.team : null);
+    const teamScope = canSeeOffice && scope !== "office" ? scope : null;
     const rows = (netsuite || []).filter((r) => {
       if (r.count_sov === false) return false;
       const cfg = r.order_status ? statusCfg[r.order_status] : null;
@@ -1949,6 +2048,29 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
     };
   }, [gpCountable, isCampaignRow, isAcqRow]);
 
+  /* GP and SOV broken down by where each order has got to. An order sits in
+     exactly one stage, so these sum to the headline — Claimed is work with
+     sales delivery, Issued is on BT, Payable is commission due.
+
+     An order with no NetSuite match yet has only been claimed, whatever a
+     status might later say. */
+  const stageSplits = useMemo(() => {
+    const z = () => ({ claimed: 0, issued: 0, payable: 0 });
+    const gp = z(), sov = z(), count = z();
+
+    gpCountable.forEach((o) => {
+      const n = nsFor(o);
+      const st = n ? stageOf(statusCfg[n.order_status]) : "claimed";
+      if (st === "red") return;                    // earns nothing
+      const bucket = (st === "payable" || st === "issued") ? st : "claimed";
+      gp[bucket] += num(o.gp_office != null ? o.gp_office : o.sales_agent_gp);
+      sov[bucket] += num(o.contract_value);
+      count[bucket] += 1;
+    });
+
+    return { gp, sov, count };
+  }, [gpCountable, nsFor, statusCfg]);
+
   // ---- Which commission tier the current scope is hitting -------------
   // Returns nulls when there's no plan or no tiers — a normal state, not
   // an error, so nothing downstream needs a guard beyond checking `met`.
@@ -2006,7 +2128,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
     };
 
     // Who's in scope: the team being viewed, or the whole office
-    const teamScope = isOffice && scope !== "office" ? scope : (is2ic ? profile?.team : null);
+    const teamScope = canSeeOffice && scope !== "office" ? scope : null;
     const people = (staff || []).filter((s) => {
       if (s.sells === false || s.active === false) return false;
       if (isManager(s)) return false;
@@ -2131,7 +2253,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
   // work landed against what the plan expects by now?
   const planVsStatted = useMemo(() => {
     const inP = periodTest(period);
-    const teamScope = isOffice && scope !== "office" ? scope : (is2ic ? profile?.team : null);
+    const teamScope = canSeeOffice && scope !== "office" ? scope : null;
     let gp = 0, cloud = 0, conn = 0, mobile = 0;
 
     (netsuite || []).forEach((n) => {
@@ -2168,7 +2290,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
   // These look at the last six months rather than the period toggle —
   // the point is the trend, which one month can't show.
   const analytics = useMemo(() => {
-    const teamScope = isOffice && scope !== "office" ? scope : (is2ic ? profile?.team : null);
+    const teamScope = canSeeOffice && scope !== "office" ? scope : null;
     const monthKeys = [];
     const base = new Date();
     for (let i = 5; i >= 0; i--) {
@@ -2290,10 +2412,10 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
         <div className="sw-cols-2 mb-3" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
           {[
             { label: gpLabel, value: fmtGBP(gpTotal), target: targets.gp, fullTarget: targets.full.gp, raw: gpTotal,
-              acq: { value: fmtGBP(splits.acqGp), pct: splits.acqPct }, acqLabel: "ACQ GP",
+              acq: { value: fmtGBP(splits.acqGp), pct: splits.acqPct }, acqLabel: "ACQ GP", stages: stageSplits.gp,
               note: gpWorking.dc > 0 ? `${fmtGBP(gpWorking.claimed)} claimed − ${fmtGBP(gpWorking.dc)} DC` : "Single-counted GP" },
             { label: "SOV", value: fmtGBP(sovTotal), target: null, raw: 0,
-              acq: { value: fmtGBP(splits.acqSov), pct: sovTotal ? (splits.acqSov / sovTotal) * 100 : 0 }, acqLabel: "ACQ SOV",
+              acq: { value: fmtGBP(splits.acqSov), pct: sovTotal ? (splits.acqSov / sovTotal) * 100 : 0 }, acqLabel: "ACQ SOV", stages: stageSplits.sov,
               note: `${productScoped.length} order${productScoped.length === 1 ? "" : "s"} · ${periodLabelFor(period)}` },
           ].map((c) => {
             const tone = c.target ? paceTone(c.raw, c.target) : null;
@@ -2304,12 +2426,23 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
               <div key={c.label} className="rounded-xl px-6 py-7" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
                 <div className="flex items-start justify-between gap-3">
                   <span className="text-xs font-medium uppercase" style={{ color: "var(--ink-faint)", letterSpacing: "0.05em" }}>{c.label}</span>
-                  {c.acq && (
-                    <div className="text-right shrink-0">
-                      <div className="sw-mono" style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-soft)" }}>{c.acq.value}</div>
-                      <div style={{ fontSize: 10, color: "var(--ink-faint)" }}>{c.acqLabel} · {c.acq.pct.toFixed(0)}%</div>
-                    </div>
-                  )}
+                  <div className="flex items-start gap-2 shrink-0">
+                    {c.stages && REVENUE_STAGES.filter((s) => s.key !== "red").map((s) => (
+                      <div key={s.key} className="rounded-lg text-right" title={s.note}
+                        style={{ background: s.bg, padding: "5px 9px", borderLeft: `2px solid ${s.fg}` }}>
+                        <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: s.fg }}>{s.label}</div>
+                        <div className="sw-mono" style={{ fontSize: 14, fontWeight: 700 }}>{fmtGBP(c.stages[s.key] || 0)}</div>
+                      </div>
+                    ))}
+                    {c.acq && (
+                      <div className="rounded-lg text-right" style={{ background: "var(--surface-alt)", padding: "5px 9px" }}>
+                        <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--ink-faint)" }}>
+                          {c.acqLabel} · {c.acq.pct.toFixed(0)}%
+                        </div>
+                        <div className="sw-mono" style={{ fontSize: 14, fontWeight: 600, color: "var(--ink-soft)" }}>{c.acq.value}</div>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <div className="sw-display sw-hero-num" style={{ fontSize: 46, fontWeight: 600, letterSpacing: "-0.03em", lineHeight: 1.05, marginTop: 10 }}>
                   {c.value}
@@ -2336,6 +2469,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
           <HeroCard label={gpLabel} value={fmtGBP(gpTotal)} accent="#1F7A3D"
             target={targets.gp} fullTarget={targets.full.gp} rawValue={gpTotal}
             acq={{ value: fmtGBP(splits.acqGp), pct: splits.acqPct }} acqLabel="ACQ GP"
+            stages={stageSplits.gp}
             note={gpWorking.dc > 0 ? `${fmtGBP(gpWorking.claimed)} claimed − ${fmtGBP(gpWorking.dc)} DC` : "Single-counted"} />
           <CampaignBar label="Campaign GP" value={splits.campaignGp} pct={splits.campaignPct} />
         </div>
@@ -2343,6 +2477,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
         <div>
           <HeroCard label="SOV" value={fmtGBP(sovTotal)} accent="#4C1D8F"
             acq={{ value: fmtGBP(splits.acqSov), pct: sovTotal ? (splits.acqSov / sovTotal) * 100 : 0 }} acqLabel="ACQ SOV"
+            stages={stageSplits.sov}
             note={`${productScoped.length} order${productScoped.length === 1 ? "" : "s"}`} />
           <CampaignBar label="Campaign SOV" value={splits.campaignSov} pct={sovTotal ? (splits.campaignSov / sovTotal) * 100 : 0} />
         </div>
@@ -2500,7 +2635,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
         <HealthItem label="active" value={activeOrders} colour="var(--blue)" hint="Not yet complete" />
         <HealthItem label="not statted" value={notStattedCount} colour="var(--amber)" hint="No NetSuite match after 12h" />
         <HealthItem label="dirty" value={dirtyCount} colour="var(--red)" hint="Flagged for review" />
-        {ngpCount > 0 && <HealthItem label="NGP" value={ngpCount} colour="var(--red)" hint="Excluded from GP" />}
+        {ngpCount > 0 && <HealthItem label="Red GP" value={ngpCount} colour="var(--red)" hint="Earns nothing — rejected or cancelled" />}
         {nsovCount > 0 && <HealthItem label="NSOV" value={nsovCount} colour="var(--amber)" hint="Excluded from SOV" />}
         <button onClick={onNewOrder}
           className="sw-focus ml-auto px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white flex items-center gap-1.5"
@@ -2665,16 +2800,11 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
             </span>
           )}
 
-          {isOffice && (
+          {canSeeOffice && (
             <select className="sw-input sw-focus" style={{ width: 178, height: 32, fontSize: 12.5 }} value={scope} onChange={(e) => setScope(e.target.value)}>
               <option value="office">Whole Office</option>
               {teamOptions.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
-          )}
-          {is2ic && (
-            <span className="flex items-center px-2.5 rounded-lg text-xs font-semibold whitespace-nowrap" style={{ height: 32, background: "var(--primary-soft)", color: "var(--primary)" }}>
-              {profile?.team || "My team"}
-            </span>
           )}
 
           <div className="relative" style={{ flex: 1, minWidth: 180 }}>
@@ -2700,18 +2830,34 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
           {ngpCount > 0 && (
           <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 32 }}>
             {[
-              ["hide", "Hide Non GP", null, "Non-GP orders don't count toward GP"],
-              ["show", "Show Non GP", null, "Include Non-GP orders in the list"],
-              ["only", "Only Non GP", ngpCount, "Just the Non-GP orders"],
+              ["hide", "Hide Red GP", null, "Red orders earn nothing and are hidden by default"],
+              ["show", "Show Red GP", null, "Include Red orders in the list"],
+              ["only", "Only Red GP", ngpCount, "Just the Red orders"],
             ].map(([k, lbl, n, hint]) => (
-              <button key={k} onClick={() => { setNgpMode(k); setFocusFilter("All"); }} title={hint}
+              <button key={k} onClick={() => { setNgpMode(k); setRejectedOnly(false); setFocusFilter("All"); }} title={hint}
                 className="sw-focus px-2 text-xs whitespace-nowrap"
                 style={ngpMode === k && focusFilter === "All"
-                  ? { background: "var(--surface-alt)", color: "var(--ink)", fontWeight: 600, height: "100%" }
+                  ? { background: "var(--red-soft)", color: "var(--red)", fontWeight: 600, height: "100%" }
                   : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
                 {lbl}{n ? <b style={{ fontWeight: 700 }}> ({n})</b> : ""}
               </button>
             ))}
+
+            {/* Red covers rejected AND cancelled; this narrows to the ones
+                that came back rejected, which is the actionable half. */}
+            {rejectedCount > 0 && (
+              <>
+                <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
+                <button onClick={() => { setRejectedOnly((v) => !v); if (!rejectedOnly) setNgpMode("only"); setFocusFilter("All"); }}
+                  title="Only orders NetSuite has rejected, rather than everything Red"
+                  className="sw-focus px-2 text-xs whitespace-nowrap"
+                  style={rejectedOnly
+                    ? { background: "var(--red)", color: "#fff", fontWeight: 600, height: "100%" }
+                    : { background: "transparent", color: "var(--red)", height: "100%" }}>
+                  Rejected only<b style={{ fontWeight: 700 }}> ({rejectedCount})</b>
+                </button>
+              </>
+            )}
           </div>
           )}
 
@@ -2720,12 +2866,12 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
             {nsovCount > 0 && (
               <>
                 <button onClick={() => { setNsovMode(nsovMode === "only" ? "show" : "only"); setFocusFilter("All"); }}
-                  title="Show only orders whose Suffex says NSOV without NGP — excluded from SOV but still counting toward GP. They appear in the list normally otherwise."
+                  title="Only orders marked Non-Commission — excluded from SOV but still counting toward GP. They appear in the list normally otherwise."
                   className="sw-focus px-2 text-xs whitespace-nowrap"
                   style={nsovMode === "only" && focusFilter === "All"
                     ? { background: "var(--amber-soft)", color: "var(--amber)", fontWeight: 600, height: "100%" }
                     : { background: "transparent", color: "var(--ink-soft)", height: "100%" }}>
-                  Only Non SOV<b style={{ fontWeight: 700 }}> ({nsovCount})</b>
+                  Only Non-Commission<b style={{ fontWeight: 700 }}> ({nsovCount})</b>
                 </button>
                 <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
               </>
@@ -5600,38 +5746,43 @@ function PayPlansView({ plans, staff, tiers, metrics, tablesMissing, error, onSa
 /* ---------------------------------------------------------------------- */
 
 function StatusConfigRow({ row, onSave, showAttention }) {
-  const [tone, setTone] = useState(row.tone || "primary");
-  const [countGp, setCountGp] = useState(row.count_gp !== false);
+  /* The stage decides both what the order counts as and what colour it
+     shows in, so there is one control rather than two that can disagree. */
+  const [stage, setStage] = useState(() => stageOf(row));
   const [countSov, setCountSov] = useState(row.count_sov !== false);
   const [needsAttention, setNeedsAttention] = useState(row.needs_attention === true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  const dirty = tone !== row.tone || countGp !== (row.count_gp !== false) || countSov !== (row.count_sov !== false) || needsAttention !== (row.needs_attention === true);
-  const preview = TONE_MAP[tone] || TONE_MAP.neutral;
+  const dirty = stage !== stageOf(row)
+    || countSov !== (row.count_sov !== false)
+    || needsAttention !== (row.needs_attention === true);
+  const preview = stageTone(stage);
 
   return (
     <tr style={{ borderTop: "1px solid var(--border)" }}>
       <td className="px-3 py-2">
         <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold"
-          style={{ color: countGp ? preview.fg : "var(--red)", background: countGp ? preview.bg : "var(--red-soft)" }}>
-          <span style={{ background: countGp ? preview.fg : "var(--red)" }} className="w-1.5 h-1.5 rounded-full" />
+          style={{ color: preview.fg, background: preview.bg }}>
+          <span style={{ background: preview.fg }} className="w-1.5 h-1.5 rounded-full" />
           {row.status}
         </span>
         {row.auto_added && <span className="text-xs ml-2" style={{ color: "var(--ink-faint)" }}>new</span>}
       </td>
       <td className="px-3 py-2">
-        <select className="sw-input sw-focus" style={{ width: 110 }} value={tone} onChange={(e) => setTone(e.target.value)}>
-          {TONE_CHOICES.map((t) => <option key={t} value={t}>{t}</option>)}
+        <select className="sw-input sw-focus" style={{ width: 130, color: preview.fg, fontWeight: 600 }}
+          value={stage} onChange={(e) => setStage(e.target.value)}>
+          {REVENUE_STAGES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
         </select>
-      </td>
-      <td className="px-3 py-2 text-center">
-        <input type="checkbox" checked={countGp} onChange={(e) => setCountGp(e.target.checked)} title="Counts toward GP" />
-        <div className="text-xs" style={{ color: countGp ? "var(--ink-faint)" : "var(--red)" }}>{countGp ? "counts" : "NGP"}</div>
+        <div className="text-xs mt-0.5" style={{ color: "var(--ink-faint)", maxWidth: 190 }}>
+          {stageTone(stage).note}
+        </div>
       </td>
       <td className="px-3 py-2 text-center">
         <input type="checkbox" checked={countSov} onChange={(e) => setCountSov(e.target.checked)} title="Counts toward SOV" />
-        <div className="text-xs" style={{ color: countSov ? "var(--ink-faint)" : "var(--amber)" }}>{countSov ? "counts" : "NSOV"}</div>
+        <div className="text-xs" style={{ color: countSov ? "var(--ink-faint)" : "var(--amber)" }}>
+          {countSov ? "counts" : "Non-Commission"}
+        </div>
       </td>
       {showAttention && (
         <td className="px-3 py-2 text-center">
@@ -5645,7 +5796,16 @@ function StatusConfigRow({ row, onSave, showAttention }) {
           disabled={!dirty || saving}
           onClick={async () => {
             setSaving(true);
-            await onSave(row.status, { tone, count_gp: countGp, count_sov: countSov, needs_attention: needsAttention, auto_added: false });
+            /* The stage is written into `tone`, and count_gp derived from
+               it — a Red status earns nothing by definition, so the two can
+               never contradict each other. */
+            await onSave(row.status, {
+              tone: stage,
+              count_gp: stage !== "red",
+              count_sov: countSov,
+              needs_attention: needsAttention,
+              auto_added: false,
+            });
             setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 1500);
           }}
           className="sw-focus text-xs font-semibold px-2.5 py-1.5 rounded-lg"
@@ -5676,9 +5836,13 @@ function StatusSettingsView({ rows, onSave, newCount }) {
       </div>
 
       <p className="text-sm mb-4 p-3 rounded-xl" style={{ background: "var(--primary-soft)", color: "var(--ink-soft)" }}>
-        Statuses arriving from NetSuite are added here automatically with a best-guess colour, marked <b>new</b> until
-        you've checked them. Unticking <b>GP</b> makes a status NGP — those orders drop out of GP totals and are hidden
-        from the dashboard unless someone asks to see them. Unticking <b>SOV</b> makes it NSOV.
+        Statuses arriving from NetSuite are added here automatically with a best guess, marked <b>new</b> until
+        you've checked them. The <b>revenue stage</b> says what an order at that status counts as, and sets its
+        colour to match — <b style={{ color: "var(--red)" }}>Red</b> earns nothing,
+        <b style={{ color: "var(--amber)" }}> Claimed</b> is with sales delivery,
+        <b style={{ color: "var(--blue)" }}> Issued</b> is signed and placed on BT, and
+        <b style={{ color: "var(--green)" }}> Payable</b> is closed with commission due.
+        Unticking <b>SOV</b> makes it Non-Commission.
         {newCount > 0 && <> <b>{newCount} new {newCount === 1 ? "status" : "statuses"}</b> to review.</>}
       </p>
 
@@ -5693,7 +5857,7 @@ function StatusSettingsView({ rows, onSave, newCount }) {
         <table className="w-full text-sm">
           <thead>
             <tr style={{ background: "var(--surface-alt)" }}>
-              {["Status", "Colour", "Counts to GP", "Counts to SOV", ...(showAttention ? ["Needs action"] : []), "", ""].map((h, i) => (
+              {["Status", "Revenue stage", "Counts to SOV", ...(showAttention ? ["Needs action"] : []), "", ""].map((h, i) => (
                 <th key={i} className="text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>{h}</th>
               ))}
             </tr>
@@ -5701,7 +5865,7 @@ function StatusSettingsView({ rows, onSave, newCount }) {
           <tbody>
             {sorted.map((r) => <StatusConfigRow key={r.status} row={r} onSave={onSave} showAttention={showAttention} />)}
             {sorted.length === 0 && (
-              <tr><td colSpan={showAttention ? 7 : 6} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+              <tr><td colSpan={showAttention ? 6 : 5} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
                 No statuses yet — they'll appear as NetSuite data syncs in.
               </td></tr>
             )}
@@ -10061,7 +10225,7 @@ const QUOTE_NEXT_STEPS = [
   ["Order Completion", "A new account number is generated per product (prefix WW, WM, ST, GP or VP)."],
 ];
 
-function QuotationDoc({ quoteNumber, dateStr, customerName, companyName, repName, repPhone, items, subtotal, vat, total, contractTotal, notes }) {
+function QuotationDoc({ quoteNumber, dateStr, customerName, companyName, repName, repPhone, repEmail, items, subtotal, vat, total, contractTotal, notes }) {
   const validUntil = (() => {
     try {
       const d = new Date(dateStr);
@@ -10077,22 +10241,22 @@ function QuotationDoc({ quoteNumber, dateStr, customerName, companyName, repName
     <div id="sw-quotation-doc" style={{ background: "#fff", fontFamily: "'Inter', Arial, sans-serif" }}>
       {/* Page 1 — the quotation */}
       <div style={{ borderRadius: 16, overflow: "hidden", maxWidth: 780, margin: "0 auto", border: `1px solid ${BORDER}` }}>
-        <div style={{ background: `linear-gradient(120deg, ${PURPLE_DARK}, ${PURPLE})`, padding: "34px 40px", color: "#fff", position: "relative", overflow: "hidden" }}>
-          <div style={{ position: "absolute", top: -60, right: -60, width: 200, height: 200, borderRadius: "50%", background: "rgba(255,255,255,0.06)" }} />
-          <div style={{ position: "absolute", bottom: -80, right: 60, width: 160, height: 160, borderRadius: "50%", background: "rgba(255,255,255,0.05)" }} />
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", position: "relative" }}>
-            <div>
-              <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-0.5px" }}>BT Local Business</div>
-              <div style={{ fontSize: 12.5, opacity: 0.92, marginTop: 4, fontStyle: "italic" }}>Big business power. Local business care.</div>
-            </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 12, letterSpacing: "2.5px", opacity: 0.8, fontWeight: 700 }}>QUOTATION</div>
-              <div style={{ fontSize: 20, fontWeight: 800, marginTop: 4 }}>{quoteNumber}</div>
-              <div style={{ fontSize: 12, opacity: 0.85, marginTop: 2 }}>
-                {dateStr ? new Date(dateStr).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }) : ""}
-              </div>
-            </div>
-          </div>
+        {/* The brand banner, served from /public. Print stylesheets often
+            drop background images, so this is a real <img> — it survives
+            Save as PDF, which a CSS background would not. */}
+        <img src="/quote-banner.jpg" alt="BT Local Business, represented by Coastel Communications Ltd"
+          style={{ display: "block", width: "100%", height: "auto" }} />
+
+        {/* Reference and date sit under the banner rather than over it */}
+        <div style={{
+          display: "flex", justifyContent: "space-between", alignItems: "baseline",
+          padding: "14px 40px", background: PURPLE_DARK, color: "#fff", gap: 16, flexWrap: "wrap",
+        }}>
+          <span style={{ fontSize: 12, letterSpacing: "2.5px", fontWeight: 700, opacity: 0.85 }}>QUOTATION</span>
+          <span style={{ fontSize: 18, fontWeight: 800 }}>{quoteNumber}</span>
+          <span style={{ fontSize: 12.5, opacity: 0.85 }}>
+            {dateStr ? new Date(dateStr).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }) : ""}
+          </span>
         </div>
 
         <div style={{ padding: "32px 40px 40px" }}>
@@ -10105,7 +10269,9 @@ function QuotationDoc({ quoteNumber, dateStr, customerName, companyName, repName
             <div style={{ background: TINT, borderLeft: `3px solid ${GOLD}`, borderRadius: 8, padding: "14px 16px" }}>
               <div style={{ fontSize: 10.5, color: PURPLE, textTransform: "uppercase", letterSpacing: "0.8px", fontWeight: 700, marginBottom: 6 }}>Prepared By</div>
               <div style={{ fontSize: 16, fontWeight: 700, color: INK }}>{repName || "—"}</div>
-              <div style={{ fontSize: 13, color: SLATE, marginTop: 2 }}>BT Local Business Sales</div>
+              {repPhone && <div style={{ fontSize: 12.5, color: SLATE, marginTop: 2 }}>{repPhone}</div>}
+              {repEmail && <div style={{ fontSize: 12.5, color: SLATE, wordBreak: "break-word" }}>{repEmail}</div>}
+              {!repPhone && !repEmail && <div style={{ fontSize: 13, color: SLATE, marginTop: 2 }}>BT Local Business Sales</div>}
             </div>
 
             {/* Sits with the other two rather than under the table — it's
@@ -10284,6 +10450,9 @@ function QuoteLog({ profile }) {
     });
   }, [quotes, query, showConverted]);
 
+  // The row currently open, resolved from the id so it survives a reload
+  const openQuote = useMemo(() => (rows || []).find((r) => r.id === open) || null, [rows, open]);
+
   const totals = useMemo(() => ({
     count: rows.length,
     value: rows.reduce((s, r) => s + num(r.total), 0),
@@ -10326,12 +10495,16 @@ function QuoteLog({ profile }) {
         ))}
       </div>
 
+      <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: openQuote ? "minmax(0, 1fr) minmax(0, 1.15fr)" : "1fr", gap: "0.75rem", alignItems: "start" }}>
+
       <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div style={{ overflowX: "auto" }}>
           <table className="w-full text-sm">
             <thead>
               <tr style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
-                {["Reference", "Company", "Customer", "Rep", "Items", "Total", "Raised", ""].map((h, i) => (
+                {(openQuote
+                  ? ["Reference", "Company", "Total", ""]
+                  : ["Reference", "Company", "Customer", "Rep", "Items", "Total", "Raised", ""]).map((h, i) => (
                   <th key={i} className={`px-3 py-2 text-xs font-semibold uppercase tracking-wide ${i === 5 ? "text-right" : "text-left"}`}
                     style={{ color: "var(--ink-soft)" }}>{h}</th>
                 ))}
@@ -10341,22 +10514,26 @@ function QuoteLog({ profile }) {
               {rows.map((r) => {
                 const items = Array.isArray(r.items) ? r.items : [];
                 return (
-                  <tr key={r.id} onClick={() => setOpen(open === r.id ? null : r.id)}
+                  <tr key={r.id} onClick={() => setOpen(r.id)}
                     style={{
                       borderTop: "1px solid var(--border)", cursor: "pointer",
-                      background: r.used_on_order ? "var(--green-soft)" : "transparent",
+                      background: open === r.id ? "var(--primary-soft)"
+                        : r.used_on_order ? "var(--green-soft)" : "transparent",
+                      boxShadow: open === r.id ? "inset 3px 0 0 var(--primary)" : undefined,
                     }}>
                     <td className="px-3 py-2 sw-mono" style={{ fontSize: 11.5, fontWeight: 600 }}>{r.quote_ref}</td>
                     <td className="px-3 py-2 text-xs" style={{ maxWidth: 200 }}>
                       <div className="truncate" style={{ fontWeight: 600 }}>{r.company_name || "—"}</div>
                     </td>
-                    <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-soft)" }}>{r.customer_name || "—"}</td>
-                    <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-soft)" }}>{r.rep_name || "—"}</td>
-                    <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-faint)" }}>
-                      {items.length} line{items.length === 1 ? "" : "s"}
-                    </td>
+                    {!openQuote && <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-soft)" }}>{r.customer_name || "—"}</td>}
+                    {!openQuote && <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-soft)" }}>{r.rep_name || "—"}</td>}
+                    {!openQuote && (
+                      <td className="px-3 py-2 text-xs" style={{ color: "var(--ink-faint)" }}>
+                        {items.length} line{items.length === 1 ? "" : "s"}
+                      </td>
+                    )}
                     <td className="px-3 py-2 sw-mono text-xs text-right" style={{ fontWeight: 600 }}>{fmtGBP(r.total)}</td>
-                    <td className="px-3 py-2 text-xs whitespace-nowrap" style={{ color: "var(--ink-faint)" }}>{fmtDate(r.created_at)}</td>
+                    {!openQuote && <td className="px-3 py-2 text-xs whitespace-nowrap" style={{ color: "var(--ink-faint)" }}>{fmtDate(r.created_at)}</td>}
                     <td className="px-3 py-2">
                       {r.used_on_order ? (
                         <span className="rounded px-1.5 py-0.5 whitespace-nowrap" style={{ fontSize: 10, fontWeight: 700, background: "var(--green)", color: "#fff" }}>
@@ -10372,7 +10549,7 @@ function QuoteLog({ profile }) {
                 );
               })}
               {rows.length === 0 && (
-                <tr><td colSpan={8} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
+                <tr><td colSpan={openQuote ? 4 : 8} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
                   {loading ? "Loading..." : "No quotes yet. They're saved automatically when printed."}
                 </td></tr>
               )}
@@ -10381,37 +10558,51 @@ function QuoteLog({ profile }) {
         </div>
       </div>
 
-      {open && (() => {
-        const r = rows.find((x) => x.id === open);
-        if (!r) return null;
-        const items = Array.isArray(r.items) ? r.items : [];
-        return (
-          <div className="rounded-xl mt-3 p-3" style={{ background: "var(--surface)", border: "1px solid var(--primary)" }}>
-            <div className="flex items-baseline gap-2 mb-2">
-              <span className="sw-mono font-bold" style={{ color: "var(--primary)" }}>{r.quote_ref}</span>
-              <span className="text-xs" style={{ color: "var(--ink-soft)" }}>{r.company_name}</span>
-              <button onClick={() => setOpen(null)} className="sw-focus ml-auto text-xs" style={{ color: "var(--ink-faint)" }}>Close</button>
-            </div>
-            <table className="w-full text-xs">
-              <tbody>
-                {items.map((it, i) => (
-                  <tr key={i} style={{ borderTop: "1px solid var(--border)" }}>
-                    <td className="py-1.5">{it.name}</td>
-                    <td className="py-1.5 text-right sw-mono" style={{ color: "var(--ink-faint)" }}>× {num(it.qty)}</td>
-                    <td className="py-1.5 text-right sw-mono" style={{ color: "var(--ink-faint)" }}>
-                      {it.termMonths ? `${num(it.termMonths)}m` : "—"}
-                    </td>
-                    <td className="py-1.5 text-right sw-mono" style={{ fontWeight: 600 }}>
-                      {fmtGBP(num(it.qty) * num(it.unitPrice))}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {r.notes && <div className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>{r.notes}</div>}
+      {/* The quote as the customer received it, rendered from the saved
+          line items — not a summary of it. */}
+      {openQuote && (
+        <div className="sw-sticky-col" style={{ position: "sticky", top: 66, maxHeight: "calc(100vh - 90px)", overflowY: "auto" }}>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="sw-mono" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--primary)" }}>
+              {openQuote.quote_ref}
+            </span>
+            {openQuote.used_on_order && (
+              <span className="rounded px-1.5 py-0.5" style={{ fontSize: 10, fontWeight: 700, background: "var(--green)", color: "#fff" }}>
+                ORDERED
+              </span>
+            )}
+            <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+              {openQuote.rep_name}{openQuote.created_at ? ` · ${fmtDate(openQuote.created_at)}` : ""}
+            </span>
+            <button onClick={() => setOpen(null)} className="sw-focus ml-auto text-xs font-semibold"
+              style={{ color: "var(--primary)" }}>Close</button>
           </div>
-        );
-      })()}
+
+          {/* Scaled down so a full-width quote fits the column without
+              the reader having to scroll sideways to read it. */}
+          <div style={{ overflow: "hidden", borderRadius: 12, border: "1px solid var(--border)" }}>
+            <div style={{ transform: "scale(0.62)", transformOrigin: "top left", width: "161.3%" }}>
+              <QuotationDoc
+                quoteNumber={openQuote.quote_ref}
+                dateStr={openQuote.created_at}
+                customerName={openQuote.customer_name}
+                companyName={openQuote.company_name}
+                repName={openQuote.rep_name}
+                repPhone={openQuote.rep_phone}
+                items={Array.isArray(openQuote.items) ? openQuote.items : []}
+                subtotal={num(openQuote.subtotal)}
+                vat={num(openQuote.vat)}
+                total={num(openQuote.total)}
+                contractTotal={(Array.isArray(openQuote.items) ? openQuote.items : [])
+                  .reduce((s, it) => s + num(it.unitPrice) * (num(it.termMonths) || 0), 0)}
+                notes={openQuote.notes} />
+            </div>
+          </div>
+        </div>
+      )}
+      </div>
+
+
 
       <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
         Quotes are saved when printed. A quote turns green once its reference has been used on a Lilac Box —
@@ -10429,14 +10620,25 @@ function QuoteBuilderView({ profile, staff }) {
 
   /* Everything the quotation needs. Prefilled from whoever's signed in. */
   const [quote, setQuote] = useState({
-    customer: "", company: "", customerEmail: "", repName: "", repPhone: "",
+    customer: "", company: "", customerEmail: "", repName: "", repPhone: "", repEmail: "",
     notes: "Prices exclude VAT. Subject to standard BT Local Business terms and conditions.",
   });
   const [items, setItems] = useState([]);
   const [savedRef, setSavedRef] = useState("");
 
   useEffect(() => {
-    if (me && !quote.repName) setQuote((p) => ({ ...p, repName: me.full_name || "" }));
+    /* The rep is whoever is signed in — a quote is theirs by definition,
+       and picking yourself from a dropdown every time is friction with no
+       purpose. Phone and email come from the staff record where they're
+       held; `phone` doesn't exist on staff yet, so it falls back to blank
+       and the agent types it once. */
+    if (!me) return;
+    setQuote((p) => ({
+      ...p,
+      repName: p.repName || me.full_name || "",
+      repPhone: p.repPhone || me.phone || me.direct_dial || "",
+      repEmail: p.repEmail || me.email || "",
+    }));
   }, [me]);   // eslint-disable-line
 
   const addItem = (cat) => setItems((p) => [...p, {
@@ -10489,6 +10691,10 @@ function QuoteBuilderView({ profile, staff }) {
         created_by: sess?.session?.user?.id || null,
         rep_name: quote.repName || null,
         rep_phone: quote.repPhone || null,
+        /* No rep_email column on `quotes` yet, so it shows on the printed
+           quote but is not stored. Add the column and a line here when the
+           schema next changes — deliberately not smuggled into notes,
+           which the customer reads. */
         customer_name: quote.customer || null,
         company_name: quote.company || null,
         items: items.map((it) => ({
@@ -10515,14 +10721,30 @@ function QuoteBuilderView({ profile, staff }) {
     if (!w) return;
     w.document.write(`<!doctype html><html><head><title>Quotation ${quoteNumber} — ${quote.company || "Customer"}</title>
       <meta charset="utf-8" />
+      <base href="${window.location.origin}/" />
       <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
         body { margin:0; font-family:'Inter',Arial,sans-serif; }
         table { width:100%; border-collapse:separate; border-spacing:0; }
+        img { max-width:100%; height:auto; }
+        /* Keep the brand colours when printing — browsers strip backgrounds
+           by default, which would leave the header bars white */
+        * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         @page { margin: 10mm; }
       </style></head><body>${node.outerHTML}</body></html>`);
     w.document.close();
-    setTimeout(() => { w.focus(); w.print(); }, 400);
+
+    // Wait for the banner to decode — printing too early leaves a gap
+    // where the image should be.
+    const go = () => { w.focus(); w.print(); };
+    const img = w.document.querySelector("img");
+    if (img && !img.complete) {
+      img.addEventListener("load", () => setTimeout(go, 120), { once: true });
+      img.addEventListener("error", () => setTimeout(go, 120), { once: true });
+      setTimeout(go, 3000);            // never hang on a missing image
+    } else {
+      setTimeout(go, 400);
+    }
   };
 
   /* Opens the customer's default mail client with the covering note ready.
@@ -10589,16 +10811,19 @@ function QuoteBuilderView({ profile, staff }) {
             <div className="sw-display text-sm mb-3" style={{ color: "var(--ink-faint)", fontWeight: 600, letterSpacing: "0.03em" }}>QUOTE DETAILS</div>
 
             <label className="sw-label">Sales rep</label>
-            <select className="sw-input sw-focus mb-2" value={quote.repName}
-              onChange={(e) => setQuote((p) => ({ ...p, repName: e.target.value }))}>
-              <option value="">—</option>
-              {(staff || []).filter((s) => s.sells !== false && s.active !== false)
-                .map((s) => <option key={s.id} value={s.full_name}>{s.full_name}</option>)}
-            </select>
+            <div className="sw-input mb-2 flex items-center" style={{ background: "var(--surface-alt)", color: "var(--ink-soft)" }}
+              title="Taken from whoever is signed in">
+              {quote.repName || "—"}
+            </div>
 
             <label className="sw-label">Your contact phone</label>
             <input className="sw-input sw-focus mb-2" value={quote.repPhone} placeholder="e.g. 01752 123456"
               onChange={(e) => setQuote((p) => ({ ...p, repPhone: e.target.value }))} />
+
+            <label className="sw-label">Your email</label>
+            <input className="sw-input sw-focus mb-2" type="email" value={quote.repEmail || ""}
+              placeholder="shown on the quote"
+              onChange={(e) => setQuote((p) => ({ ...p, repEmail: e.target.value }))} />
 
             <label className="sw-label">Customer contact name</label>
             <input className="sw-input sw-focus mb-2" value={quote.customer} placeholder="e.g. Jane Smith"
@@ -10680,7 +10905,7 @@ function QuoteBuilderView({ profile, staff }) {
             <QuotationDoc
               quoteNumber={quoteNumber} dateStr={quoteDate}
               customerName={quote.customer} companyName={quote.company}
-              repName={quote.repName} repPhone={quote.repPhone}
+              repName={quote.repName} repPhone={quote.repPhone} repEmail={quote.repEmail}
               items={items} subtotal={subtotal} vat={vat} total={total} contractTotal={contractTotal} notes={quote.notes} />
           </div>
         </div>
