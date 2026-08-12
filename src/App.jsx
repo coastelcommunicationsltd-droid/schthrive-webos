@@ -3123,6 +3123,20 @@ function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove }) 
     { k: "delivery_status", label: "Delivery status" },
     { k: "schedule_5", label: "Schedule 5" },
     { k: "campaign_source", label: "Campaign source" },
+    /* Contact details, so a wrong number or a changed contact can be
+       corrected here rather than by re-submitting the whole Lilac Box. */
+    { k: "customer_name", label: "Customer name" },
+    { k: "customer_position", label: "Customer position" },
+    { k: "customer_landline", label: "Customer landline" },
+    { k: "customer_mobile", label: "Customer mobile" },
+    { k: "customer_email", label: "Customer email" },
+    { k: "secondary_name", label: "Second contact" },
+    { k: "secondary_landline", label: "Second landline" },
+    { k: "secondary_mobile", label: "Second mobile" },
+    { k: "postcode", label: "Postcode" },
+    { k: "le_name", label: "LE name" },
+    { k: "trading_as", label: "Trading as" },
+    { k: "entity_type", label: "Entity type", options: ENTITY_TYPES },
     { k: "dirty_order", label: "Dirty order", options: ["No", "Yes"] },
     { k: "submission_date", label: "Submission date", date: true },
     { k: "drive_link", label: "Drive link", w: 2 },
@@ -10463,6 +10477,54 @@ function QuoteLog({ profile }) {
   // The row currently open, resolved from the id so it survives a reload
   const openQuote = useMemo(() => (rows || []).find((r) => r.id === open) || null, [rows, open]);
 
+  const isOffice = profile?.role === "office";
+
+  /* Opens the saved quote in a print window, which is also how it becomes
+     a PDF. Rebuilt from the stored line items rather than a kept file, so
+     it always reflects what was actually saved. */
+  const downloadQuote = useCallback((q) => {
+    const node = document.getElementById("sw-quotelog-doc");
+    if (!node || !q) return;
+    const w = window.open("", "_blank");
+    if (!w) return;
+
+    // The on-screen copy is scaled down to fit the column; print full size
+    const clone = node.cloneNode(true);
+    clone.removeAttribute("id");
+    clone.setAttribute("style", "width:100%");
+    w.document.write(`<!doctype html><html><head><title>Quotation ${q.quote_ref} — ${q.company_name || "Customer"}</title>
+      <meta charset="utf-8" />
+      <base href="${window.location.origin}/" />
+      <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+        body { margin:0; font-family:'Inter',Arial,sans-serif; }
+        table { width:100%; border-collapse:separate; border-spacing:0; }
+        img { max-width:100%; height:auto; }
+        * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        @page { margin: 10mm; }
+      </style></head><body>${clone.outerHTML}</body></html>`);
+    w.document.close();
+
+    const go = () => { w.focus(); w.print(); };
+    const img = w.document.querySelector("img");
+    if (img && !img.complete) {
+      img.addEventListener("load", () => setTimeout(go, 120), { once: true });
+      img.addEventListener("error", () => setTimeout(go, 120), { once: true });
+      setTimeout(go, 3000);
+    } else {
+      setTimeout(go, 400);
+    }
+  }, []);
+
+  const [confirmDel, setConfirmDel] = useState(null);
+  const deleteQuote = useCallback(async (id) => {
+    const { error } = await supabase.from("quotes").delete().eq("id", id);
+    if (error) return;
+    setConfirmDel(null);
+    if (open === id) setOpen(null);
+    load();
+  }, [open, load]);
+
   const totals = useMemo(() => ({
     count: rows.length,
     value: rows.reduce((s, r) => s + num(r.total), 0),
@@ -10584,14 +10646,36 @@ function QuoteLog({ profile }) {
             <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
               {openQuote.rep_name}{openQuote.created_at ? ` · ${fmtDate(openQuote.created_at)}` : ""}
             </span>
-            <button onClick={() => setOpen(null)} className="sw-focus ml-auto text-xs font-semibold"
+            <button onClick={() => downloadQuote(openQuote)}
+              className="sw-focus ml-auto text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1"
+              title="Opens it ready to print or save as PDF"
+              style={{ background: "var(--primary)", color: "#fff" }}>
+              <FileText size={11} /> Download
+            </button>
+
+            {isOffice && (
+              confirmDel === openQuote.id ? (
+                <>
+                  <button onClick={() => deleteQuote(openQuote.id)}
+                    className="sw-focus text-xs font-semibold px-2.5 py-1 rounded-lg"
+                    style={{ background: "var(--red)", color: "#fff" }}>Really delete</button>
+                  <button onClick={() => setConfirmDel(null)} className="sw-focus text-xs" style={{ color: "var(--ink-faint)" }}>Cancel</button>
+                </>
+              ) : (
+                <button onClick={() => setConfirmDel(openQuote.id)}
+                  className="sw-focus text-xs font-semibold px-2.5 py-1 rounded-lg"
+                  style={{ color: "var(--red)", border: "1px solid var(--border)" }}>Delete</button>
+              )
+            )}
+
+            <button onClick={() => setOpen(null)} className="sw-focus text-xs font-semibold"
               style={{ color: "var(--primary)" }}>Close</button>
           </div>
 
           {/* Scaled down so a full-width quote fits the column without
               the reader having to scroll sideways to read it. */}
           <div style={{ overflow: "hidden", borderRadius: 12, border: "1px solid var(--border)" }}>
-            <div style={{ transform: "scale(0.62)", transformOrigin: "top left", width: "161.3%" }}>
+            <div id="sw-quotelog-doc" style={{ transform: "scale(0.62)", transformOrigin: "top left", width: "161.3%" }}>
               <QuotationDoc
                 quoteNumber={openQuote.quote_ref}
                 dateStr={openQuote.created_at}
@@ -10921,6 +11005,30 @@ function QuoteBuilderView({ profile, staff }) {
         </div>
       )}
 
+    </div>
+  );
+}
+
+/* The three activity views share a strip so they read as one place. Kept
+   separate from the main nav because the top bar was getting crowded. */
+function ActivityTabs({ tab, onGo }) {
+  const items = [
+    { key: "pipeline", label: "Pipeline", icon: GitBranch },
+    { key: "leads", label: "Leads", icon: Phone },
+    { key: "calls", label: "Calls", icon: PhoneCall },
+  ];
+  return (
+    <div className="flex items-center gap-1 mb-3 rounded-xl p-1"
+      style={{ background: "var(--blue-soft)", border: "1px solid var(--border)", width: "fit-content" }}>
+      {items.map(({ key, label, icon: Icon }) => (
+        <button key={key} onClick={() => onGo(key)}
+          className="sw-focus flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold"
+          style={tab === key
+            ? { background: "var(--blue)", color: "#fff" }
+            : { background: "transparent", color: "var(--blue)" }}>
+          <Icon size={13} /> {label}
+        </button>
+      ))}
     </div>
   );
 }
@@ -11837,6 +11945,8 @@ function scoreLead(productRaw, rules) {
 
 function LeadsView({ staff, profile }) {
   const aliases = useAliases();
+  const [view, setView] = useState("tables");     // tables | kpis
+  const [plans, setPlans] = useState([]);
   const [leads, setLeads] = useState([]);
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -11855,12 +11965,14 @@ function LeadsView({ staff, profile }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [lr, rr] = await Promise.all([
+    const [lr, rr, pl] = await Promise.all([
       supabase.from("leads").select("*").limit(20000),
       supabase.from("lead_rules").select("*").order("sort_order"),
+      supabase.from("pay_plans").select("id,name,target_gp,plan_kind"),
     ]);
     setLeads(lr.data || []);
     setRules(rr.data || []);
+    setPlans(pl.data || []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -12014,6 +12126,94 @@ function LeadsView({ staff, profile }) {
 
   const leadGens = useMemo(() => aggregate((l) => resolve(l.creator)), [aggregate, resolve]);
   const closers = useMemo(() => aggregate((l) => resolve(l.lead_owner)), [aggregate, resolve]);
+  /* ---- KPIs ---------------------------------------------------------
+     Rates are computed off the raw leads rather than the scored set,
+     because a lead that scored nothing still counts as one sent.
+
+     Qualified rate  qualified / everything actually sent
+     Win rate        won / qualified — of the ones that got through, how
+                     many closed. Sitting it on qualified rather than on
+                     everything sent keeps the two measures independent.
+     Deals to plan   works backwards from the pay plan: what has to go in
+                     the top of the funnel to get the GP out of the bottom.
+     ------------------------------------------------------------------- */
+  const planTargetFor = useCallback((name) => {
+    const s = (staff || []).find((x) => nameKey(x.full_name) === nameKey(name));
+    if (!s || !s.pay_plan_id) return 0;
+    const p = (plans || []).find((x) => x.id === s.pay_plan_id);
+    return num(p?.target_gp);
+  }, [staff, plans]);
+
+  const kpis = useMemo(() => {
+    const [y, m] = month.split("-").map(Number);
+    const from = new Date(y, m - 1, 1);
+    const to = new Date(y, m, 1);
+
+    const inMonth = (leads || []).filter((l) => {
+      const d = l.lead_date ? new Date(l.lead_date) : null;
+      return d && d >= from && d < to;
+    });
+
+    const blank = (name) => ({
+      name, team: teamOf(name),
+      sent: 0, qualified: 0, won: 0,
+      dealValue: 0, wonWithValue: 0,
+    });
+
+    const build = (pickName, isGen) => {
+      const by = {};
+      inMonth.forEach((l) => {
+        const name = pickName(l);
+        if (!name) return;
+
+        const status = String(l.sent_status || "");
+        const unsent = /unsent/i.test(status);
+        const selfOwned = l.creator && l.lead_owner
+          && nameKey(resolve(l.creator)) === nameKey(resolve(l.lead_owner));
+        // A lead you raised and kept was never sent to anyone
+        if (unsent && selfOwned) return;
+
+        if (!by[name]) by[name] = blank(name);
+        const r = by[name];
+        r.sent += 1;
+
+        const qualified = /qualified/i.test(status) && !/unqualified|unq/i.test(status);
+        if (!qualified) return;
+        r.qualified += 1;
+
+        const stage = String((l.data && (l.data["Stage"] || l.data["Sub Status"])) || "");
+        if (/\bwon\b|converted|closed won/i.test(stage)) {
+          r.won += 1;
+          const amt = num((l.data && (l.data["Opportunity Amount"] || l.data["Opportunity Amount Currency"])) || 0);
+          if (amt > 0) { r.dealValue += amt; r.wonWithValue += 1; }
+        }
+      });
+
+      return Object.values(by).map((r) => {
+        const qualRate = r.sent ? r.qualified / r.sent : 0;
+        const winRate = r.qualified ? r.won / r.qualified : 0;
+        const avgDeal = r.wonWithValue ? r.dealValue / r.wonWithValue : 0;
+        const split = isGen ? LEADGEN_SPLIT : CLOSER_SPLIT;
+        const target = planTargetFor(r.name);
+
+        /* What one lead is worth to this person, allowing for how many
+           qualify, how many of those close, and their share of the GP.
+           Zero anywhere in that chain means the answer is unknowable —
+           shown as a dash rather than a made-up number. */
+        const gpPerLead = qualRate * winRate * avgDeal * split;
+        const needed = gpPerLead > 0 && target > 0 ? Math.ceil(target / gpPerLead) : null;
+
+        return { ...r, qualRate, winRate, avgDeal, split, target, gpPerLead, needed };
+      }).sort((a, b) => b.qualified - a.qualified || b.sent - a.sent);
+    };
+
+    return {
+      gens: build((l) => resolve(l.creator), true),
+      closers: build((l) => resolve(l.lead_owner), false),
+    };
+  }, [leads, month, resolve, teamOf, planTargetFor]);
+
+
 
   /* Every lead the person raised or owns this month — including ones that
      scored nothing and ones marked Unsent. The tables above count what
@@ -12210,6 +12410,18 @@ function LeadsView({ staff, profile }) {
           value={month} onChange={(e) => setMonth(e.target.value)}>
           {monthOptions.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
         </select>
+
+        <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 32 }}>
+          {[["tables", "Conversations"], ["kpis", "KPIs"]].map(([k, lbl]) => (
+            <button key={k} onClick={() => { setView(k); setDrill(null); }}
+              className="sw-focus px-3 text-xs whitespace-nowrap"
+              style={view === k
+                ? { background: "var(--blue)", color: "#fff", fontWeight: 600, height: "100%" }
+                : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
+              {lbl}
+            </button>
+          ))}
+        </div>
         <span className="text-xs" style={{ color: "var(--ink-faint)" }}
           title="Leads count in the month they were created">
           by created date · day {days.done} of {days.total}, {Math.max(0, days.total - days.done)} left
@@ -12225,7 +12437,7 @@ function LeadsView({ staff, profile }) {
             Sub 4 convos a day
           </span>
           {copied && <span className="text-xs font-semibold" style={{ color: "var(--green)" }}>{copied}</span>}
-          {profile?.role === "office" && (
+          {view === "tables" && profile?.role === "office" && (
             <button onClick={() => setShowRules((v) => !v)} className="sw-focus text-xs font-semibold"
               style={{ color: "var(--primary)" }}>
               {showRules ? "Hide scoring" : "How this scores"}
@@ -12259,6 +12471,96 @@ function LeadsView({ staff, profile }) {
         </div>
       )}
 
+      {/* KPIs — the funnel rather than the volume */}
+      {view === "kpis" && (
+        <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: "0.75rem", alignItems: "start" }}>
+          {[
+            { key: "gens", label: "Lead Gens", sub: "by Created By", data: kpis.gens, accent: "var(--primary)", verb: "send" },
+            { key: "closers", label: "Closers", sub: "by Lead Owner", data: kpis.closers, accent: "var(--blue)", verb: "receive" },
+          ].map((t) => (
+            <div key={t.key} className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+              <div className="px-3 py-2" style={{ background: "var(--surface-alt)", borderBottom: "1px solid var(--border)" }}>
+                <span className="sw-display" style={{ fontSize: 14, fontWeight: 700, color: t.accent }}>{t.label}</span>
+                <span className="text-xs ml-2" style={{ color: "var(--ink-faint)" }}>{t.sub}</span>
+              </div>
+
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ borderCollapse: "collapse", width: "100%" }}>
+                  <thead>
+                    <tr style={{ background: "var(--surface-alt)" }}>
+                      <th className="text-left px-2 py-1.5" style={{ fontSize: 10, textTransform: "uppercase", color: "var(--ink-soft)", letterSpacing: "0.04em" }}>Agent</th>
+                      <th className="px-2 py-1.5" style={{ fontSize: 10, textTransform: "uppercase", color: "var(--ink-soft)" }} title="Leads actually sent">Sent</th>
+                      <th className="px-2 py-1.5" style={{ fontSize: 10, textTransform: "uppercase", color: "var(--ink-soft)" }} title="Share of sent leads that were qualified">Qual %</th>
+                      <th className="px-2 py-1.5" style={{ fontSize: 10, textTransform: "uppercase", color: "var(--ink-soft)" }} title="Share of qualified leads now marked Won">Win %</th>
+                      <th className="px-2 py-1.5" style={{ fontSize: 10, textTransform: "uppercase", color: "var(--ink-soft)" }} title="Average value of a won deal, and this person's share of it">Avg deal</th>
+                      <th className="px-2 py-1.5" style={{ fontSize: 10, textTransform: "uppercase", color: "var(--ink-soft)" }}
+                        title={`Leads they would need to ${t.verb} in a month to reach their pay plan, at their own rates`}>
+                        To plan
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {t.data.map((r) => (
+                      <tr key={r.name} style={{ borderTop: "1px solid var(--border)" }}>
+                        <td className="px-2 py-1.5" style={{ maxWidth: 150 }}>
+                          <div className="truncate" style={{ fontSize: 12.5, fontWeight: 600 }}>{r.name}</div>
+                          <div className="truncate" style={{ fontSize: 10, color: "var(--ink-faint)" }}>{r.team || "—"}</div>
+                        </td>
+                        <td className="sw-mono px-2 py-1.5" style={{ textAlign: "center", fontSize: 12.5 }}>{r.sent}</td>
+                        <td className="sw-mono px-2 py-1.5" style={{
+                          textAlign: "center", fontSize: 12.5, fontWeight: 600,
+                          color: r.qualRate >= 0.4 ? "var(--green)" : r.qualRate >= 0.2 ? "var(--amber)" : "var(--red)",
+                        }} title={`${r.qualified} of ${r.sent} qualified`}>
+                          {r.sent ? `${Math.round(r.qualRate * 100)}%` : "·"}
+                        </td>
+                        <td className="sw-mono px-2 py-1.5" style={{
+                          textAlign: "center", fontSize: 12.5, fontWeight: 600,
+                          color: r.winRate >= 0.3 ? "var(--green)" : r.winRate >= 0.15 ? "var(--amber)" : "var(--red)",
+                        }} title={`${r.won} of ${r.qualified} qualified deals won`}>
+                          {r.qualified ? `${Math.round(r.winRate * 100)}%` : "·"}
+                        </td>
+                        <td className="px-2 py-1.5" style={{ textAlign: "center" }}>
+                          <div className="sw-mono" style={{ fontSize: 12.5 }}>{r.avgDeal ? fmtGBP(r.avgDeal) : "·"}</div>
+                          {r.avgDeal > 0 && (
+                            <div className="sw-mono" style={{ fontSize: 10, color: "var(--ink-faint)" }}
+                              title={`Their ${Math.round(r.split * 100)}% share`}>
+                              {fmtGBP(r.avgDeal * r.split)}
+                            </div>
+                          )}
+                        </td>
+                        <td className="sw-mono px-2 py-1.5" style={{ textAlign: "center", fontSize: 13, fontWeight: 700, color: r.needed ? "var(--primary)" : "var(--ink-faint)" }}
+                          title={r.needed
+                            ? `${fmtGBP(r.target)} plan ÷ ${fmtGBP(r.gpPerLead)} per lead`
+                            : "Needs a pay plan, and at least one won deal with a value on it"}>
+                          {r.needed ?? "·"}
+                        </td>
+                      </tr>
+                    ))}
+                    {t.data.length === 0 && (
+                      <tr><td colSpan={6} className="px-3 py-10 text-center text-xs" style={{ color: "var(--ink-faint)" }}>
+                        {loading ? "Loading..." : "Nothing this month."}
+                      </td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+
+          <p className="text-xs" style={{ color: "var(--ink-faint)", gridColumn: "1 / -1" }}>
+            <b>Qual %</b> is qualified leads as a share of everything actually sent — anything raised and kept
+            unsent is left out. <b>Win %</b> sits on qualified rather than on everything sent, so the two
+            measures stay independent of each other. <b>Avg deal</b> shows the full value with the agent's own
+            share beneath ({Math.round(LEADGEN_SPLIT * 100)}% lead gen, {Math.round(CLOSER_SPLIT * 100)}% closer).
+            <b> To plan</b> works backwards from the pay plan at that person's own rates: a dash means either no
+            plan is set or there's no won deal with a value yet, in which case the honest answer is that we
+            can't know.
+          </p>
+        </div>
+      )}
+
+
+      {view === "tables" && (<>
       {/* Tables stay put; the person's leads open beside them. The tables
           condense rather than disappear, so the numbers remain comparable. */}
       <div style={drill ? { display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: "0.75rem", alignItems: "start" } : undefined}>
@@ -12486,6 +12788,7 @@ function LeadsView({ staff, profile }) {
         month, so someone who joined mid-month isn't penalised for the days before they started.
       </p>
       )}
+      </>)}
     </div>
   );
 }
@@ -13358,11 +13661,26 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         return { key: `d${i}`, label: ["Mon", "Tue", "Wed", "Thu", "Fri"][i], date: d };
       });
     } else {
-      const w1 = fyWeekStart(y);
-      const end = new Date(Math.min(Date.now(), new Date(y + 1, 3, 1).getTime()));
-      const last = Math.max(1, Math.floor((weekStart(end).getTime() - w1.getTime()) / 604800000) + 1);
-      const first = Math.max(1, last - 12);   // last 13 weeks keeps it readable
-      for (let w = first; w <= last; w++) cols.push({ key: `w${w}`, label: `W${w}`, week: w });
+      /* The weeks of one chosen month. Thirteen rolling FY weeks was too
+         wide to read and never lined up with how the month is discussed. */
+      const [my, mm] = flowMonth.split("-").map(Number);
+      const first = new Date(my, mm - 1, 1);
+      const lastDay = new Date(my, mm, 0);
+      let ws = weekStart(first);
+      let i = 0;
+      while (ws <= lastDay) {
+        const fri = new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() + 4);
+        const fmt = (x) => x.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+        cols.push({
+          key: `mw${i}`,
+          label: `${fmt(ws)}`,
+          title: `${fmt(ws)} – ${fmt(fri)}`,
+          weekStartMs: ws.getTime(),
+        });
+        ws = new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() + 7);
+        i += 1;
+        if (i > 6) break;                       // a month spans at most six
+      }
     }
 
     const colKeyFor = (d) => {
@@ -13376,6 +13694,12 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         if (belongsTo !== y) return null;
         return `fm${idx}`;
       }
+      if (!perDay && !perMonth) {
+        // Which of the chosen month's weeks this date falls in
+        const dws = weekStart(d).getTime();
+        const hit = cols.find((c) => c.weekStartMs === dws);
+        return hit ? hit.key : null;
+      }
       if (perDay) {
         const ws = shownWeekStart;
         const i = Math.floor((new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() - ws.getTime()) / 86400000);
@@ -13384,9 +13708,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         if (i === 5 || i === 6) return "d4";
         return i >= 0 && i < 5 ? `d${i}` : null;
       }
-      const fw = fyWeekOf(d);
-      if (!fw || fw.fy !== y) return null;
-      return `w${fw.week}`;
+      return null;
     };
 
     const by = {};
@@ -13773,7 +14095,14 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                       {weekBackOptions.map((w) => <option key={w.value} value={w.value}>{w.label}</option>)}
                     </select>
                   )}
-                  {(flowMode === "weeks" || flowMode === "month") && (
+                  {flowMode === "weeks" && (
+                    <select className="sw-input sw-focus" style={{ width: 132, height: 26, fontSize: 11.5 }}
+                      value={flowMonth} onChange={(e) => setFlowMonth(e.target.value)}
+                      title="Which month's weeks to show">
+                      {flowMonthOptions.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+                    </select>
+                  )}
+                  {flowMode === "month" && (
                     <select className="sw-input sw-focus" style={{ width: 96, height: 26, fontSize: 11.5 }}
                       value={flowFy} onChange={(e) => setFlowFy(e.target.value)}>
                       {fyList().map((y) => <option key={y} value={y}>{fyLabel(y)}</option>)}
@@ -13815,10 +14144,11 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                               </td>
                             ))}
                             <td className="sw-mono" style={{ padding: "2px 0 0 6px", textAlign: "right", borderTop: "1px solid var(--border)", color: "var(--blue)", fontWeight: 600 }}>{r.recvTotal}</td>
-                            {/* Placed as a share of received. Distorted by
-                                system-driven waits (DV4s held pending
-                                broadband), so it isn't a performance measure
-                                on its own — hence the muted styling. */}
+                            {/* Placed as a share of received. Hidden on the
+                                day view: an order received on Thursday can't
+                                be placed by Friday, so a five-day rate reads
+                                as failure when nothing is wrong. */}
+                            {flowMode !== "week" && (
                             <td rowSpan={2} className="sw-mono" style={{
                               padding: "2px 0 0 8px", textAlign: "right", borderTop: "1px solid var(--border)",
                               verticalAlign: "middle", fontWeight: 700,
@@ -13832,6 +14162,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                                 : "Nothing received in this period"}>
                               {r.recvTotal ? `${Math.round((r.placedTotal / r.recvTotal) * 100)}%` : "·"}
                             </td>
+                            )}
                           </tr>
                           <tr>
                             <td style={{ padding: "0 5px 4px 0", textAlign: "right", color: "var(--green)", fontSize: 10, fontWeight: 600, whiteSpace: "nowrap" }}>
@@ -13847,7 +14178,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                         </React.Fragment>
                       ))}
                       {flow.rows.length === 0 && (
-                        <tr><td colSpan={flow.cols.length + 4} className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>
+                        <tr><td colSpan={flow.cols.length + (flowMode === "week" ? 3 : 4)} className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>
                           Nothing in this window.
                         </td></tr>
                       )}
@@ -13863,7 +14194,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                           <td className="sw-mono" style={{ padding: "5px 0 1px 6px", textAlign: "right", borderTop: "2px solid var(--border)", color: "var(--blue)", fontWeight: 700 }}>
                             {flow.rows.reduce((s, r) => s + r.recvTotal, 0)}
                           </td>
-                          {(() => {
+                          {flowMode !== "week" && (() => {
                             const rec = flow.rows.reduce((s, r) => s + r.recvTotal, 0);
                             const pl = flow.rows.reduce((s, r) => s + r.placedTotal, 0);
                             return (
@@ -13895,7 +14226,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                 <div className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
                   <span style={{ color: "var(--blue)", fontWeight: 600 }}>Received</span> off the NetSuite date ·{" "}
                   <span style={{ color: "var(--green)", fontWeight: 600 }}>Placed</span> off the order-placed date
-                  {flowMode === "weeks" ? " · FY weeks run Apr–Mar, Mon–Sun" : ""}
+                  {flowMode === "weeks" ? " · weeks of the chosen month, Mon–Sun" : ""}
                 </div>
                 {flow.placedUnparsed > 0 && (
                   <div className="text-xs mt-1.5 rounded-lg px-2 py-1.5" style={{ background: "var(--amber-soft)", color: "var(--amber)" }}>
@@ -15230,9 +15561,9 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
             <NavLink icon={Inbox} label="Sales Delivery" active={tab === "delivery"} onClick={go("delivery")} tint="purple" />
           )}
           <NavLink icon={TrendingUp} label="Forecasting" active={tab === "forecast"} onClick={go("forecast")} tint="green" />
-          <NavLink icon={GitBranch} label="Pipeline" active={tab === "pipeline"} onClick={go("pipeline")} tint="blue" />
-          <NavLink icon={Phone} label="Leads" active={tab === "leads"} onClick={go("leads")} tint="blue" />
-          <NavLink icon={PhoneCall} label="Calls" active={tab === "calls"} onClick={go("calls")} tint="blue" />
+          <NavLink icon={PhoneCall} label="Activity"
+            active={["leads", "pipeline", "calls"].includes(tab)}
+            onClick={go("leads")} tint="blue" />
           <NavMenu icon={LayoutDashboard} label="Dashboards" childActive={dashActive} items={dashboards} />
           <NavMenu icon={Inbox} label="Submission Boxes" childActive={subActive} items={submissions} />
           <NavLink icon={Headphones} label="Sales Coach" active={tab === "coach"} onClick={go("coach")} />
@@ -15265,9 +15596,9 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
               { label: "Claimed", icon: ClipboardList, active: tab === "dashboard", onClick: go("dashboard") },
               ...(canSeeDelivery ? [{ label: "Sales Delivery", icon: Inbox, active: tab === "delivery", onClick: go("delivery") }] : []),
               { label: "Forecasting", icon: TrendingUp, active: tab === "forecast", onClick: go("forecast") },
-              { label: "Pipeline", icon: GitBranch, active: tab === "pipeline", onClick: go("pipeline") },
-              { label: "Leads", icon: Phone, active: tab === "leads", onClick: go("leads") },
-              { label: "Calls", icon: PhoneCall, active: tab === "calls", onClick: go("calls") },
+              { label: "Activity · Pipeline", icon: GitBranch, active: tab === "pipeline", onClick: go("pipeline") },
+              { label: "Activity · Leads", icon: Phone, active: tab === "leads", onClick: go("leads") },
+              { label: "Activity · Calls", icon: PhoneCall, active: tab === "calls", onClick: go("calls") },
             ] },
             { heading: "Dashboards", items: dashboards },
             { heading: "Submission Boxes", items: submissions },
@@ -16064,11 +16395,16 @@ export default function App() {
         {tab === "daybyday" && <DayByDayView orders={orders} staff={staff} netsuite={netsuiteResolved} />}
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuiteResolved} />}
         {tab === "distribution" && <DistributionView orders={orders} netsuite={netsuiteResolved} staff={staff} />}
-        {tab === "leads" && <LeadsView staff={staff} profile={profile} />}
-        {tab === "pipeline" && (
-          <PipelineView staff={staff} profile={profile} appSettings={appSettings} onSaveSetting={saveAppSetting} />
+        {["leads", "pipeline", "calls"].includes(tab) && (
+          <>
+            <ActivityTabs tab={tab} onGo={setTab} />
+            {tab === "leads" && <LeadsView staff={staff} profile={profile} />}
+            {tab === "pipeline" && (
+              <PipelineView staff={staff} profile={profile} appSettings={appSettings} onSaveSetting={saveAppSetting} />
+            )}
+            {tab === "calls" && <CallsView staff={staff} profile={profile} />}
+          </>
         )}
-        {tab === "calls" && <CallsView staff={staff} profile={profile} />}
         {tab === "delivery" && (profile?.role === "office" || profile?.role === "sd" || profile?.role === "sd_2ic") && (
           <DeliveryView orders={orders} netsuite={netsuiteResolved} staff={staff} profile={profile} unplaced={unplaced}
             deliveryTeam={deliveryTeam} onAllocate={allocateOrder} onSaveOrder={saveOrder} onOpenOrder={setSelected} />
