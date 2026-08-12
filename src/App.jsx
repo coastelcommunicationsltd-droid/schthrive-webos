@@ -12144,10 +12144,28 @@ function LeadsView({ staff, profile }) {
     return num(p?.target_gp);
   }, [staff, plans]);
 
-  const kpis = useMemo(() => {
+  /* KPIs run over six months, not the single month the tables use.
+
+     Conversion rates need volume to mean anything — an agent who sent
+     nine leads in a month and converted one reads as 11%, which is noise
+     rather than a rate. Six months smooths that out, and it also gives
+     deals time to actually close: a lead sent in the last fortnight has
+     had no chance to be won yet, so a one-month window makes everyone's
+     win rate look worse than it is.
+
+     The window ENDS at the selected month, so scrolling back still shows
+     what the picture looked like at the time. */
+  const KPI_MONTHS = 6;
+
+  const kpiWindow = useMemo(() => {
     const [y, m] = month.split("-").map(Number);
-    const from = new Date(y, m - 1, 1);
-    const to = new Date(y, m, 1);
+    const to = new Date(y, m, 1);                       // exclusive
+    const from = new Date(y, m - KPI_MONTHS, 1);
+    return { from, to };
+  }, [month]);
+
+  const kpis = useMemo(() => {
+    const { from, to } = kpiWindow;
 
     const inMonth = (leads || []).filter((l) => {
       const d = l.lead_date ? new Date(l.lead_date) : null;
@@ -12198,6 +12216,11 @@ function LeadsView({ staff, profile }) {
 
         /* What one lead is worth to this person, allowing for how many
            qualify, how many of those close, and their share of the GP.
+
+           The rates come from six months but are per-lead averages, so
+           dividing a MONTHLY pay plan by them still gives a monthly
+           answer — the windows don't need to match.
+
            Zero anywhere in that chain means the answer is unknowable —
            shown as a dash rather than a made-up number. */
         const gpPerLead = qualRate * winRate * avgDeal * split;
@@ -12211,7 +12234,7 @@ function LeadsView({ staff, profile }) {
       gens: build((l) => resolve(l.creator), true),
       closers: build((l) => resolve(l.lead_owner), false),
     };
-  }, [leads, month, resolve, teamOf, planTargetFor]);
+  }, [leads, kpiWindow, resolve, teamOf, planTargetFor]);
 
 
 
@@ -12422,10 +12445,21 @@ function LeadsView({ staff, profile }) {
             </button>
           ))}
         </div>
-        <span className="text-xs" style={{ color: "var(--ink-faint)" }}
-          title="Leads count in the month they were created">
-          by created date · day {days.done} of {days.total}, {Math.max(0, days.total - days.done)} left
-        </span>
+        {view === "kpis" ? (
+          <span className="text-xs" style={{ color: "var(--ink-faint)" }}
+            title="Rates need volume and deals need time to close, so KPIs run over six months">
+            {kpiWindow.from.toLocaleDateString("en-GB", { month: "short", year: "numeric" })}
+            {" – "}
+            {new Date(kpiWindow.to.getFullYear(), kpiWindow.to.getMonth() - 1, 1)
+              .toLocaleDateString("en-GB", { month: "short", year: "numeric" })}
+            {" · 6 months"}
+          </span>
+        ) : (
+          <span className="text-xs" style={{ color: "var(--ink-faint)" }}
+            title="Leads count in the month they were created">
+            by created date · day {days.done} of {days.total}, {Math.max(0, days.total - days.done)} left
+          </span>
+        )}
 
         <div className="ml-auto flex items-center gap-3 flex-wrap">
           <span className="flex items-center gap-1.5 text-xs" style={{ color: "var(--ink-faint)" }}>
@@ -12494,7 +12528,7 @@ function LeadsView({ staff, profile }) {
                       <th className="px-2 py-1.5" style={{ fontSize: 10, textTransform: "uppercase", color: "var(--ink-soft)" }} title="Share of qualified leads now marked Won">Win %</th>
                       <th className="px-2 py-1.5" style={{ fontSize: 10, textTransform: "uppercase", color: "var(--ink-soft)" }} title="Average value of a won deal, and this person's share of it">Avg deal</th>
                       <th className="px-2 py-1.5" style={{ fontSize: 10, textTransform: "uppercase", color: "var(--ink-soft)" }}
-                        title={`Leads they would need to ${t.verb} in a month to reach their pay plan, at their own rates`}>
+                        title={`Leads they would need to ${t.verb} in a month to reach their monthly pay plan, at the rates they have run at over the last six months`}>
                         To plan
                       </th>
                     </tr>
@@ -12538,7 +12572,7 @@ function LeadsView({ staff, profile }) {
                     ))}
                     {t.data.length === 0 && (
                       <tr><td colSpan={6} className="px-3 py-10 text-center text-xs" style={{ color: "var(--ink-faint)" }}>
-                        {loading ? "Loading..." : "Nothing this month."}
+                        {loading ? "Loading..." : "Nothing in this window."}
                       </td></tr>
                     )}
                   </tbody>
@@ -12548,7 +12582,10 @@ function LeadsView({ staff, profile }) {
           ))}
 
           <p className="text-xs" style={{ color: "var(--ink-faint)", gridColumn: "1 / -1" }}>
-            <b>Qual %</b> is qualified leads as a share of everything actually sent — anything raised and kept
+            Figures cover the <b>six months</b> ending with the month selected above, rather than that month
+            alone — a single month rarely carries enough leads for a conversion rate to mean anything, and a
+            deal sent last week hasn't had time to close.
+            <b> Qual %</b> is qualified leads as a share of everything actually sent — anything raised and kept
             unsent is left out. <b>Win %</b> sits on qualified rather than on everything sent, so the two
             measures stay independent of each other. <b>Avg deal</b> shows the full value with the agent's own
             share beneath ({Math.round(LEADGEN_SPLIT * 100)}% lead gen, {Math.round(CLOSER_SPLIT * 100)}% closer).
