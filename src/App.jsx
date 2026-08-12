@@ -6,7 +6,7 @@ import {
   Loader2, Users, Eye, EyeOff, ArrowLeft, LogIn, KeyRound, Palette, MapPin,
   BarChart3, CalendarDays, Target, Headphones, Phone,
   ChevronDown, ClipboardList, LayoutDashboard, Settings as SettingsIcon,
-  History, FileText, Inbox, Menu, Lock, Trophy,
+  History, FileText, Inbox, Menu, Lock, Trophy, GitBranch, PhoneCall,
 } from "lucide-react";
 
 /* ====================================================================== */
@@ -6808,7 +6808,7 @@ function DeveloperView() {
 
 function SettingsView({ statusRows, onSaveStatus, newCount,
                        coachScenarios, coachSettings, onSaveCoachScenario, onAddCoachScenario, onDeleteCoachScenario, onSaveCoachSettings,
-                       coachStages, onSaveStage, onAddStage, onDeleteStage }) {
+                       coachStages, onSaveStage, onAddStage, onDeleteStage, appSettings, onSaveSetting }) {
   const [section, setSection] = useState("statuses");
   return (
     <div>
@@ -6816,6 +6816,7 @@ function SettingsView({ statusRows, onSaveStatus, newCount,
         {[
           { key: "statuses", label: "Order Statuses", icon: Palette, badge: newCount },
           { key: "coach", label: "Coach Setup", icon: Headphones, badge: 0 },
+          { key: "pipeline", label: "Pipeline Products", icon: GitBranch, badge: 0 },
           { key: "developer", label: "Developer", icon: ShieldAlert, badge: 0 },
         ].map((s) => (
           <button key={s.key} onClick={() => setSection(s.key)}
@@ -6836,6 +6837,9 @@ function SettingsView({ statusRows, onSaveStatus, newCount,
           onSaveStage={onSaveStage} onAddStage={onAddStage} onDeleteStage={onDeleteStage}
           onSaveScenario={onSaveCoachScenario} onAddScenario={onAddCoachScenario}
           onDeleteScenario={onDeleteCoachScenario} onSaveSettings={onSaveCoachSettings} />
+      )}
+      {section === "pipeline" && (
+        <PipelineSettings appSettings={appSettings} onSaveSetting={onSaveSetting} />
       )}
       {section === "developer" && <DeveloperView />}
     </div>
@@ -10922,6 +10926,887 @@ function QuoteBuilderView({ profile, staff }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  PIPELINE — opportunity volume by agent and product                     */
+/* ---------------------------------------------------------------------- */
+
+/* Products are identified from the opportunity TITLE, because that's the
+   only place the product reliably appears. Each product carries a list of
+   trigger phrases; a title matching any of them counts for that product.
+
+   Held in app_settings as JSON under `pipeline_products`, so it's editable
+   in Settings without a schema change. These are the defaults used until
+   someone saves their own.
+
+     price   what one unit of this product is worth, for pipeline value
+     target  units per agent that counts as on track
+     triggers  phrases to look for in the title, case-insensitive */
+const PIPELINE_DEFAULT_PRODUCTS = [
+  { key: "broadband", label: "Broadband", price: 3000, target: 20,
+    triggers: ["broadband", "fttp", "fttc", "sogea", "ultrafast", "hyperfast"] },
+  { key: "btnet", label: "BT Net", price: 18000, target: 10,
+    triggers: ["bt net", "btnet", "leased line", "ethernet", "ead"] },
+  { key: "mobile", label: "Mobile", price: 3000, target: 20,
+    triggers: ["mobile", "ee ", "sim", "airtime", "handset"] },
+  { key: "voice", label: "Voice", price: 4000, target: 40,
+    triggers: ["voice", "dv4", "digital voice", "d v 4 b", "cloud voice", "cloud work"] },
+];
+
+const PIPELINE_DEFAULT_SETTINGS = {
+  products: PIPELINE_DEFAULT_PRODUCTS,
+  totalTarget: 100,     // opportunities per agent
+  redBelowPct: 75,      // below this share of target reads red
+};
+
+/* One opportunity can carry several products — a title reading
+   "DV4B + Broadband" counts for both, which is how the sheet has always
+   treated it. Returns the matching product keys. */
+function pipelineProductsOf(title, products) {
+  const t = String(title || "").toLowerCase();
+  if (!t) return [];
+  return (products || []).filter((p) =>
+    (p.triggers || []).some((trig) => {
+      const s = String(trig || "").toLowerCase().trim();
+      return s && t.includes(s);
+    })
+  ).map((p) => p.key);
+}
+
+/* Green at or above target, red below the configured share of it, and
+   nothing in between — a middle band that shades gradually reads as noise
+   at this density. */
+function pipelineTone(units, target, redBelowPct) {
+  if (!target) return null;
+  if (units >= target) return { bg: "rgba(27,112,56,0.16)", fg: "var(--green)" };
+  if (units < target * ((redBelowPct ?? 75) / 100)) return { bg: "rgba(214,69,65,0.15)", fg: "var(--red)" };
+  return null;
+}
+
+/* Products and the phrases that identify them. Held as JSON in
+   app_settings, so adding a product needs no schema change and no deploy —
+   which matters, because the phrases people use in opportunity titles
+   change faster than either. */
+function PipelineSettings({ appSettings, onSaveSetting }) {
+  const parsed = useMemo(() => {
+    try {
+      const raw = appSettings?.pipeline_config;
+      if (!raw) return PIPELINE_DEFAULT_SETTINGS;
+      return { ...PIPELINE_DEFAULT_SETTINGS, ...(typeof raw === "string" ? JSON.parse(raw) : raw) };
+    } catch { return PIPELINE_DEFAULT_SETTINGS; }
+  }, [appSettings]);
+
+  const [cfg, setCfg] = useState(parsed);
+  const [saved, setSaved] = useState(false);
+  const [testTitle, setTestTitle] = useState("");
+  useEffect(() => { setCfg(parsed); }, [parsed]);
+
+  const dirty = JSON.stringify(cfg) !== JSON.stringify(parsed);
+  const products = cfg.products || [];
+
+  const setProduct = (i, patch) =>
+    setCfg((c) => ({ ...c, products: c.products.map((p, n) => n === i ? { ...p, ...patch } : p) }));
+
+  const addProduct = () => setCfg((c) => ({
+    ...c,
+    products: [...(c.products || []), {
+      key: `product_${Date.now().toString(36)}`, label: "New product",
+      price: 0, target: 10, triggers: [],
+    }],
+  }));
+
+  // What the test title would match, so a trigger can be checked before saving
+  const testHits = useMemo(
+    () => pipelineProductsOf(testTitle, products),
+    [testTitle, products]
+  );
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <GitBranch size={18} style={{ color: "var(--blue)" }} />
+        <h2 className="sw-display text-lg font-bold">Pipeline products</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+          What counts as each product, and what a unit is worth
+        </span>
+        <button onClick={async () => { await onSaveSetting("pipeline_config", JSON.stringify(cfg)); setSaved(true); setTimeout(() => setSaved(false), 2000); }}
+          disabled={!dirty}
+          className="sw-focus ml-auto px-3 py-1.5 rounded-lg text-xs font-semibold"
+          style={{ background: dirty ? "var(--primary)" : "var(--surface)", color: dirty ? "#fff" : "var(--ink-faint)", border: "1px solid var(--border)" }}>
+          {saved ? "Saved" : "Save changes"}
+        </button>
+      </div>
+
+      {/* Try a real title before committing to a trigger */}
+      <div className="rounded-xl p-3 mb-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <label className="sw-label">Test a title</label>
+        <input className="sw-input sw-focus" value={testTitle}
+          placeholder="e.g. ACQ DV4B - Security - CSR"
+          onChange={(e) => setTestTitle(e.target.value)} />
+        <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+          {testTitle && testHits.length === 0 && (
+            <span className="text-xs" style={{ color: "var(--amber)" }}>
+              Matches nothing — this opportunity would be counted but sit in no product column.
+            </span>
+          )}
+          {testHits.map((k) => {
+            const p = products.find((x) => x.key === k);
+            return (
+              <span key={k} className="rounded px-2 py-0.5" style={{ fontSize: 11, fontWeight: 600, background: "var(--blue-soft)", color: "var(--blue)" }}>
+                {p?.label || k}
+              </span>
+            );
+          })}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gap: "0.6rem" }}>
+        {products.map((p, i) => (
+          <div key={p.key} className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1.4fr 100px 90px 28px", gap: 8, alignItems: "end" }}>
+              <div>
+                <label className="sw-label">Product</label>
+                <input className="sw-input sw-focus" value={p.label}
+                  onChange={(e) => setProduct(i, { label: e.target.value })} />
+              </div>
+              <div>
+                <label className="sw-label">Price per unit</label>
+                <input className="sw-input sw-focus" type="number" value={p.price}
+                  onChange={(e) => setProduct(i, { price: parseFloat(e.target.value) || 0 })} />
+              </div>
+              <div>
+                <label className="sw-label">PL target</label>
+                <input className="sw-input sw-focus" type="number" value={p.target}
+                  onChange={(e) => setProduct(i, { target: parseFloat(e.target.value) || 0 })} />
+              </div>
+              <button onClick={() => setCfg((c) => ({ ...c, products: c.products.filter((_, n) => n !== i) }))}
+                className="sw-focus" style={{ color: "var(--red)", fontSize: 15, height: 38 }}
+                title="Remove this product">✕</button>
+            </div>
+
+            <label className="sw-label" style={{ marginTop: 8 }}>
+              Triggers <span style={{ fontWeight: 400, color: "var(--ink-faint)" }}>
+                — comma separated. A title containing any of these counts for this product.
+              </span>
+            </label>
+            <input className="sw-input sw-focus" value={(p.triggers || []).join(", ")}
+              placeholder="dv4, digital voice, d v 4 b"
+              onChange={(e) => setProduct(i, { triggers: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} />
+          </div>
+        ))}
+      </div>
+
+      <button onClick={addProduct}
+        className="sw-focus mt-2 px-3 py-2 rounded-lg text-xs font-semibold"
+        style={{ background: "var(--surface)", border: "1px dashed var(--border)", color: "var(--ink-soft)" }}>
+        + Add product
+      </button>
+
+      <div className="rounded-xl p-3 mt-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <label className="sw-label">Opportunities target per agent</label>
+            <input className="sw-input sw-focus" type="number" value={cfg.totalTarget}
+              onChange={(e) => setCfg((c) => ({ ...c, totalTarget: parseFloat(e.target.value) || 0 }))} />
+          </div>
+          <div>
+            <label className="sw-label">Red below (% of target)</label>
+            <input className="sw-input sw-focus" type="number" value={cfg.redBelowPct}
+              onChange={(e) => setCfg((c) => ({ ...c, redBelowPct: parseFloat(e.target.value) || 0 }))} />
+          </div>
+        </div>
+      </div>
+
+      <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
+        Triggers are matched anywhere in the title, case-insensitive, so <b>dv4</b> catches DV4B and ACQ DV4.
+        Include the spaced-out variants people actually type — <b>d v 4 b</b> won't be caught by <b>dv4</b>.
+        A title can match several products and counts under each, which is deliberate.
+      </p>
+    </div>
+  );
+}
+
+function PipelineView({ staff, profile, appSettings, onSaveSetting }) {
+  const [opps, setOpps] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [tableMissing, setTableMissing] = useState(false);
+
+  const [team, setTeam] = useState("All teams");
+  const [productFilter, setProductFilter] = useState("All");
+  const [excludeProduct, setExcludeProduct] = useState("None");
+  const [band, setBand] = useState("All");
+  const [dirtyOnly, setDirtyOnly] = useState(false);
+  const [drill, setDrill] = useState(null);          // { agent, product }
+  const [editTargets, setEditTargets] = useState(false);
+
+  /* Config lives in app_settings as JSON, so products, prices and targets
+     are editable without a schema change. */
+  const cfg = useMemo(() => {
+    try {
+      const raw = appSettings?.pipeline_config;
+      if (!raw) return PIPELINE_DEFAULT_SETTINGS;
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      return { ...PIPELINE_DEFAULT_SETTINGS, ...parsed };
+    } catch {
+      return PIPELINE_DEFAULT_SETTINGS;   // malformed config shouldn't blank the page
+    }
+  }, [appSettings]);
+
+  const products = cfg.products || PIPELINE_DEFAULT_PRODUCTS;
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data, error } = await supabase.from("opportunities").select("*").limit(20000);
+    if (error) {
+      // 42P01 is "relation does not exist" — the feed isn't built yet
+      setTableMissing(/does not exist|schema cache/i.test(error.message));
+      setOpps([]);
+    } else {
+      setOpps(data || []);
+    }
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const teamOf = useCallback((name) => {
+    const s = (staff || []).find((x) => nameKey(x.full_name) === nameKey(name)
+      || (x.alt_name && nameKey(x.alt_name) === nameKey(name)));
+    return s?.team || null;
+  }, [staff]);
+
+  const teamOptions = useMemo(() => {
+    const s = new Set();
+    (staff || []).forEach((x) => { if (x.team) s.add(x.team); });
+    return Array.from(s).sort();
+  }, [staff]);
+
+  /* Every opportunity, tagged with the products its title matches. Done
+     once rather than per cell — the table reads this many times over. */
+  const tagged = useMemo(() => (opps || []).map((o) => {
+    const title = o.opportunity_name || o.title || o.name || "";
+    return {
+      ...o,
+      _title: title,
+      _agent: o.agent_name || o.owner || o.closer_name || "Unassigned",
+      _units: num(o.units ?? o.quantity ?? 1) || 1,
+      _value: num(o.value ?? o.opportunity_amount ?? o.contract_value),
+      _dirty: o.dirty === true || o.dirty_order === "Yes" || /dirty/i.test(String(o.flags || "")),
+      _products: pipelineProductsOf(title, products),
+    };
+  }), [opps, products]);
+
+  const filtered = useMemo(() => tagged.filter((o) => {
+    if (team !== "All teams" && teamOf(o._agent) !== team) return false;
+    if (productFilter !== "All" && !o._products.includes(productFilter)) return false;
+    // "BT Net with no Cloud" — the exclusion that makes this genuinely useful
+    if (excludeProduct !== "None" && o._products.includes(excludeProduct)) return false;
+    if (dirtyOnly && !o._dirty) return false;
+    if (band !== "All") {
+      const u = o._units;
+      if (band === "1" && u !== 1) return false;
+      if (band === "2-5" && (u < 2 || u > 5)) return false;
+      if (band === "6-10" && (u < 6 || u > 10)) return false;
+      if (band === "10+" && u < 11) return false;
+    }
+    return true;
+  }), [tagged, team, teamOf, productFilter, excludeProduct, band, dirtyOnly]);
+
+  /* One row per agent: units per product, their own opportunity count, and
+     the real pipeline value from the CRM rather than a calculated one. */
+  const rows = useMemo(() => {
+    const by = {};
+    filtered.forEach((o) => {
+      const name = o._agent;
+      if (!by[name]) {
+        by[name] = { name, team: teamOf(name), units: {}, opps: 0, value: 0 };
+        products.forEach((p) => { by[name].units[p.key] = 0; });
+      }
+      const r = by[name];
+      r.opps += 1;
+      r.value += o._value;
+      o._products.forEach((k) => { if (r.units[k] != null) r.units[k] += o._units; });
+    });
+    return Object.values(by).sort((a, b) => b.value - a.value);
+  }, [filtered, teamOf, products]);
+
+  const totals = useMemo(() => {
+    const units = {};
+    products.forEach((p) => { units[p.key] = 0; });
+    let opps = 0, value = 0;
+    rows.forEach((r) => {
+      opps += r.opps;
+      value += r.value;
+      products.forEach((p) => { units[p.key] += r.units[p.key] || 0; });
+    });
+    // Calculated value: units × price. Deliberately separate from the CRM
+    // value above — they answer different questions and rarely agree.
+    const calcValue = {};
+    let calcTotal = 0;
+    products.forEach((p) => {
+      calcValue[p.key] = units[p.key] * num(p.price);
+      calcTotal += calcValue[p.key];
+    });
+    return { units, opps, value, calcValue, calcTotal };
+  }, [rows, products]);
+
+  const drillOpps = useMemo(() => {
+    if (!drill) return [];
+    return filtered
+      .filter((o) => nameKey(o._agent) === nameKey(drill.agent))
+      .filter((o) => drill.product === "__total" || o._products.includes(drill.product))
+      .sort((a, b) => b._value - a._value);
+  }, [filtered, drill]);
+
+  const saveCfg = useCallback(async (next) => {
+    await onSaveSetting("pipeline_config", JSON.stringify(next));
+  }, [onSaveSetting]);
+
+  const setTarget = (key, value) => {
+    const n = parseFloat(value);
+    const next = key === "__total"
+      ? { ...cfg, totalTarget: Number.isFinite(n) ? n : 0 }
+      : { ...cfg, products: products.map((p) => p.key === key ? { ...p, target: Number.isFinite(n) ? n : 0 } : p) };
+    saveCfg(next);
+  };
+  const setPrice = (key, value) => {
+    const n = parseFloat(value);
+    saveCfg({ ...cfg, products: products.map((p) => p.key === key ? { ...p, price: Number.isFinite(n) ? n : 0 } : p) });
+  };
+
+  const Num = ({ v, tone, onClick, bold }) => (
+    <td onClick={onClick}
+      className="sw-mono"
+      style={{
+        padding: "4px 8px", textAlign: "center", fontSize: 12.5,
+        fontWeight: bold ? 700 : 500,
+        background: tone ? tone.bg : "transparent",
+        color: tone ? tone.fg : (v ? "var(--ink)" : "var(--ink-faint)"),
+        borderLeft: "1px solid var(--border)",
+        cursor: onClick && v ? "pointer" : "default",
+      }}
+      title={onClick && v ? "Show these opportunities" : undefined}>
+      {v || "·"}
+    </td>
+  );
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <GitBranch size={18} style={{ color: "var(--blue)" }} />
+        <h2 className="sw-display text-lg font-bold">Pipeline</h2>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Opportunity volume by agent</span>
+
+        <select className="sw-input sw-focus" style={{ width: 160, height: 32, fontSize: 12.5 }}
+          value={team} onChange={(e) => setTeam(e.target.value)}>
+          <option>All teams</option>
+          {teamOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+
+        <select className="sw-input sw-focus" style={{ width: 140, height: 32, fontSize: 12.5 }}
+          value={productFilter} onChange={(e) => setProductFilter(e.target.value)}>
+          <option value="All">All products</option>
+          {products.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+        </select>
+
+        <select className="sw-input sw-focus" style={{ width: 168, height: 32, fontSize: 12.5 }}
+          value={excludeProduct} onChange={(e) => setExcludeProduct(e.target.value)}
+          title="Leaves out any opportunity carrying this product — e.g. BT Net with no Cloud">
+          <option value="None">Exclude nothing</option>
+          {products.map((p) => <option key={p.key} value={p.key}>No {p.label}</option>)}
+        </select>
+
+        <select className="sw-input sw-focus" style={{ width: 120, height: 32, fontSize: 12.5 }}
+          value={band} onChange={(e) => setBand(e.target.value)} title="Units on the opportunity">
+          <option value="All">Any size</option>
+          <option value="1">1 unit</option>
+          <option value="2-5">2–5 units</option>
+          <option value="6-10">6–10 units</option>
+          <option value="10+">10+ units</option>
+        </select>
+
+        <button onClick={() => setDirtyOnly((v) => !v)}
+          className="sw-focus px-3 rounded-lg text-xs font-semibold"
+          style={{
+            height: 32,
+            background: dirtyOnly ? "var(--amber)" : "transparent",
+            color: dirtyOnly ? "#fff" : "var(--amber)",
+            border: `1px solid ${dirtyOnly ? "var(--amber)" : "var(--border)"}`,
+          }}>Dirty</button>
+
+        <button onClick={() => setEditTargets((v) => !v)}
+          className="sw-focus ml-auto text-xs font-semibold" style={{ color: "var(--primary)" }}>
+          {editTargets ? "Done" : "Edit targets & prices"}
+        </button>
+      </div>
+
+      {tableMissing && (
+        <div className="rounded-xl p-3 mb-3" style={{ background: "var(--amber-soft)", border: "1px solid var(--amber)" }}>
+          <div className="text-xs font-bold uppercase mb-1" style={{ color: "var(--amber)", letterSpacing: "0.04em" }}>
+            No opportunity feed yet
+          </div>
+          <div className="text-xs" style={{ color: "var(--ink-soft)" }}>
+            The layout, products and targets below are live and saved — they'll populate as soon as an
+            <b> opportunities</b> table exists. Expected columns: <span className="sw-mono">opportunity_name</span>,
+            <span className="sw-mono"> agent_name</span>, <span className="sw-mono">units</span>,
+            <span className="sw-mono"> value</span>, <span className="sw-mono">dirty</span>.
+            Products are read from the title using the triggers in Settings.
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", width: "100%" }}>
+            <thead>
+              {/* Price per unit — the figure that turns volume into value */}
+              <tr style={{ background: "var(--blue-soft)" }}>
+                <th className="text-left px-3 py-1.5" style={{ fontSize: 10.5, textTransform: "uppercase", color: "var(--blue)", letterSpacing: "0.04em", whiteSpace: "nowrap" }}>
+                  Price per unit
+                </th>
+                <th />
+                {products.map((p) => (
+                  <th key={p.key} className="px-2 py-1.5" style={{ borderLeft: "1px solid var(--border)" }}>
+                    {editTargets ? (
+                      <input className="sw-input sw-focus sw-mono" style={{ width: 78, height: 24, fontSize: 11.5, textAlign: "center" }}
+                        defaultValue={p.price} onBlur={(e) => setPrice(p.key, e.target.value)} />
+                    ) : (
+                      <span className="sw-mono" style={{ fontSize: 12, fontWeight: 600 }}>{fmtGBP(p.price)}</span>
+                    )}
+                  </th>
+                ))}
+                <th className="px-2 py-1.5" style={{ borderLeft: "1px solid var(--border)" }} />
+              </tr>
+
+              <tr style={{ background: "var(--surface-alt)" }}>
+                <th className="text-left px-3 py-1" style={{ fontSize: 10.5, textTransform: "uppercase", color: "var(--ink-soft)", letterSpacing: "0.04em" }}>Total units</th>
+                <th />
+                {products.map((p) => (
+                  <th key={p.key} className="sw-mono px-2 py-1" style={{ fontSize: 12, fontWeight: 700, borderLeft: "1px solid var(--border)" }}>
+                    {(totals.units[p.key] || 0).toLocaleString()}
+                  </th>
+                ))}
+                <th className="sw-mono px-2 py-1" style={{ fontSize: 12, fontWeight: 700, borderLeft: "1px solid var(--border)" }}>
+                  {totals.opps.toLocaleString()}
+                </th>
+              </tr>
+
+              <tr style={{ background: "var(--blue-soft)" }}>
+                <th className="text-left px-3 py-1" style={{ fontSize: 10.5, textTransform: "uppercase", color: "var(--blue)", letterSpacing: "0.04em" }}>
+                  Value <span style={{ fontWeight: 400, textTransform: "none" }}>(units × price)</span>
+                </th>
+                <th />
+                {products.map((p) => (
+                  <th key={p.key} className="sw-mono px-2 py-1" style={{ fontSize: 11.5, fontWeight: 600, borderLeft: "1px solid var(--border)" }}>
+                    {fmtGBP(totals.calcValue[p.key] || 0)}
+                  </th>
+                ))}
+                <th className="sw-mono px-2 py-1" style={{ fontSize: 11.5, fontWeight: 700, borderLeft: "1px solid var(--border)" }}>
+                  {fmtGBP(totals.calcTotal)}
+                </th>
+              </tr>
+
+              {/* PL size targets — editable, and what drives the shading */}
+              <tr style={{ background: "var(--surface-alt)" }}>
+                <th className="text-left px-3 py-1" style={{ fontSize: 10.5, textTransform: "uppercase", color: "var(--ink-soft)", letterSpacing: "0.04em", whiteSpace: "nowrap" }}>
+                  PL size target
+                </th>
+                <th />
+                {products.map((p) => (
+                  <th key={p.key} className="px-2 py-1" style={{ borderLeft: "1px solid var(--border)" }}>
+                    <input className="sw-input sw-focus sw-mono" style={{ width: 56, height: 24, fontSize: 11.5, textAlign: "center" }}
+                      defaultValue={p.target} onBlur={(e) => setTarget(p.key, e.target.value)}
+                      title={`Units per agent that counts as on track for ${p.label}`} />
+                  </th>
+                ))}
+                <th className="px-2 py-1" style={{ borderLeft: "1px solid var(--border)" }}>
+                  <input className="sw-input sw-focus sw-mono" style={{ width: 56, height: 24, fontSize: 11.5, textAlign: "center" }}
+                    defaultValue={cfg.totalTarget} onBlur={(e) => setTarget("__total", e.target.value)}
+                    title="Opportunities per agent that counts as on track" />
+                </th>
+              </tr>
+
+              <tr style={{ background: "var(--ink)" }}>
+                <th className="text-left px-3 py-2" style={{ fontSize: 11, textTransform: "uppercase", color: "#fff", letterSpacing: "0.05em" }}>Value</th>
+                <th className="text-left px-3 py-2" style={{ fontSize: 11, textTransform: "uppercase", color: "#fff", letterSpacing: "0.05em" }}>Agent</th>
+                {products.map((p) => (
+                  <th key={p.key} className="px-2 py-2" style={{ fontSize: 11, color: "#fff", fontWeight: 700, borderLeft: "1px solid rgba(255,255,255,0.15)" }}>
+                    {p.label}
+                  </th>
+                ))}
+                <th className="px-2 py-2" style={{ fontSize: 11, color: "#fff", fontWeight: 700, borderLeft: "1px solid rgba(255,255,255,0.15)" }}>
+                  Opportunities
+                </th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.name} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td className="sw-mono px-3 py-1" style={{ fontSize: 12, color: "var(--ink-soft)", whiteSpace: "nowrap" }}>
+                    {fmtGBP(r.value)}
+                  </td>
+                  <td className="px-3 py-1" style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap", color: "var(--blue)" }}>
+                    {r.name}
+                  </td>
+                  {products.map((p) => (
+                    <Num key={p.key} v={r.units[p.key] || 0}
+                      tone={pipelineTone(r.units[p.key] || 0, p.target, cfg.redBelowPct)}
+                      onClick={() => setDrill({ agent: r.name, product: p.key })} />
+                  ))}
+                  <Num v={r.opps} bold
+                    tone={pipelineTone(r.opps, cfg.totalTarget, cfg.redBelowPct)}
+                    onClick={() => setDrill({ agent: r.name, product: "__total" })} />
+                </tr>
+              ))}
+
+              {rows.length === 0 && (
+                <tr><td colSpan={products.length + 3} className="px-4 py-12 text-center" style={{ color: "var(--ink-faint)" }}>
+                  {loading ? "Loading..." : tableMissing ? "Waiting on the opportunity feed." : "Nothing matches these filters."}
+                </td></tr>
+              )}
+            </tbody>
+
+            {rows.length > 0 && (
+              <tfoot>
+                <tr style={{ background: "var(--blue)", borderTop: "2px solid var(--border)" }}>
+                  <td className="sw-mono px-3 py-2" style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>{fmtGBP(totals.value)}</td>
+                  <td className="px-3 py-2" style={{ fontSize: 12, fontWeight: 700, color: "#fff" }}>All agents</td>
+                  {products.map((p) => (
+                    <td key={p.key} className="sw-mono px-2 py-2" style={{ textAlign: "center", fontSize: 12.5, fontWeight: 700, color: "#fff" }}>
+                      {(totals.units[p.key] || 0).toLocaleString()}
+                    </td>
+                  ))}
+                  <td className="sw-mono px-2 py-2" style={{ textAlign: "center", fontSize: 12.5, fontWeight: 700, color: "#fff" }}>
+                    {totals.opps.toLocaleString()}
+                  </td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      </div>
+
+      {/* The opportunities behind a number */}
+      {drill && (
+        <div className="rounded-xl mt-3 overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--blue)" }}>
+          <div className="px-3 py-2 flex items-center gap-2 flex-wrap" style={{ background: "var(--blue-soft)", borderBottom: "1px solid var(--border)" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--blue)" }}>{drill.agent}</span>
+            <span className="text-xs" style={{ color: "var(--ink-soft)" }}>
+              {drill.product === "__total" ? "all opportunities" : (products.find((p) => p.key === drill.product)?.label || "")}
+              {" · "}{drillOpps.length}
+            </span>
+            <button onClick={() => setDrill(null)} className="sw-focus ml-auto text-xs font-semibold" style={{ color: "var(--blue)" }}>Close</button>
+          </div>
+          <div style={{ maxHeight: 380, overflowY: "auto" }}>
+            <table className="w-full text-sm">
+              <thead>
+                <tr style={{ background: "var(--surface-alt)" }}>
+                  {["Company", "Opportunity", "Units", "Value", "Stage"].map((h, i) => (
+                    <th key={h} className={`px-3 py-1.5 text-xs font-semibold uppercase ${i >= 2 && i <= 3 ? "text-right" : "text-left"}`}
+                      style={{ color: "var(--ink-soft)", letterSpacing: "0.03em" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {drillOpps.map((o, i) => (
+                  <tr key={o.id || i} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td className="px-3 py-1.5 text-xs" style={{ fontWeight: 600, maxWidth: 200 }}>
+                      <div className="truncate">{o.company_name || o.account || "—"}</div>
+                    </td>
+                    <td className="px-3 py-1.5 text-xs" style={{ color: "var(--ink-soft)", maxWidth: 320 }}>
+                      <div className="truncate" title={o._title}>{o._title || "—"}</div>
+                    </td>
+                    <td className="px-3 py-1.5 sw-mono text-xs text-right">{o._units}</td>
+                    <td className="px-3 py-1.5 sw-mono text-xs text-right" style={{ fontWeight: 600 }}>{fmtGBP(o._value)}</td>
+                    <td className="px-3 py-1.5 text-xs" style={{ color: "var(--ink-faint)" }}>{o.stage || "—"}</td>
+                  </tr>
+                ))}
+                {drillOpps.length === 0 && (
+                  <tr><td colSpan={5} className="px-3 py-8 text-center text-xs" style={{ color: "var(--ink-faint)" }}>Nothing here.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
+        Products are read from each opportunity's title, so one opportunity can count under several.
+        Click any number to see what's behind it. <b>Value</b> on the left is what the CRM holds;
+        the <b>Value</b> row at the top is units × price per unit — they answer different questions and
+        rarely agree. Green means at or above target, red below {cfg.redBelowPct}% of it.
+      </p>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  CALLS — outbound and inbound activity by agent                         */
+/* ---------------------------------------------------------------------- */
+
+/* Talk time arrives in whatever shape the phone system exports — seconds,
+   "1:23:45", or minutes as a decimal. All three are normalised to seconds
+   so the column can be totalled. */
+function callSeconds(v) {
+  if (v == null || v === "") return 0;
+  if (typeof v === "number") return v > 10000 ? v : v * 60;   // big numbers are already seconds
+  const s = String(v).trim();
+  if (/^\d+(\.\d+)?$/.test(s)) {
+    const n = parseFloat(s);
+    return n > 10000 ? n : n * 60;
+  }
+  const parts = s.split(":").map((x) => parseInt(x, 10) || 0);
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return 0;
+}
+
+function fmtTalk(seconds) {
+  const s = Math.round(num(seconds));
+  if (!s) return "—";
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h) return `${h}h ${String(m).padStart(2, "0")}m`;
+  return `${m}m`;
+}
+
+function CallsView({ staff, profile }) {
+  const [calls, setCalls] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [tableMissing, setTableMissing] = useState(false);
+
+  const [range, setRange] = useState("mtd");        // today | wtd | mtd | month
+  const [month, setMonth] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [team, setTeam] = useState("All teams");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data, error } = await supabase.from("calls").select("*").limit(50000);
+    if (error) {
+      setTableMissing(/does not exist|schema cache/i.test(error.message));
+      setCalls([]);
+    } else {
+      setCalls(data || []);
+    }
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const monthOptions = useMemo(() => Array.from({ length: 14 }, (_, i) => {
+    const now = new Date();
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    return {
+      key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
+      label: d.toLocaleDateString("en-GB", { month: "long", year: "numeric" }),
+    };
+  }), []);
+
+  const window_ = useMemo(() => {
+    const now = new Date();
+    if (range === "today") {
+      const from = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      return { from, to: new Date(from.getFullYear(), from.getMonth(), from.getDate() + 1) };
+    }
+    if (range === "wtd") {
+      const ws = weekStart();
+      return { from: ws, to: new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() + 7) };
+    }
+    const [y, m] = (range === "month" ? month : `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`)
+      .split("-").map(Number);
+    return { from: new Date(y, m - 1, 1), to: new Date(y, m, 1) };
+  }, [range, month]);
+
+  const teamOf = useCallback((name) => {
+    const s = (staff || []).find((x) => nameKey(x.full_name) === nameKey(name)
+      || (x.alt_name && nameKey(x.alt_name) === nameKey(name)));
+    return s?.team || null;
+  }, [staff]);
+
+  const teamOptions = useMemo(() => {
+    const s = new Set();
+    (staff || []).forEach((x) => { if (x.team) s.add(x.team); });
+    return Array.from(s).sort();
+  }, [staff]);
+
+  /* One row per agent. Days counted are days they ACTUALLY called — a
+     per-day average across the whole month would punish anyone who joined
+     late or was on leave, which is exactly the wrong signal. */
+  const rows = useMemo(() => {
+    const by = {};
+    (calls || []).forEach((c) => {
+      const when = c.call_date || c.date || c.started_at || c.call_time;
+      const d = when ? new Date(String(when).slice(0, 10) + "T00:00:00") : null;
+      if (!d || Number.isNaN(d.getTime()) || d < window_.from || d >= window_.to) return;
+
+      const name = c.agent_name || c.agent || c.user_name || "Unassigned";
+      if (team !== "All teams" && teamOf(name) !== team) return;
+
+      if (!by[name]) {
+        by[name] = { name, team: teamOf(name), outCalls: 0, outSecs: 0, inCalls: 0, inSecs: 0, days: new Set() };
+      }
+      const r = by[name];
+      const dir = String(c.direction || c.call_type || "").toLowerCase();
+      const secs = callSeconds(c.talk_time ?? c.duration ?? c.talk_seconds);
+      const n = num(c.calls ?? 1) || 1;
+
+      if (/in/.test(dir) && !/out/.test(dir)) { r.inCalls += n; r.inSecs += secs; }
+      else { r.outCalls += n; r.outSecs += secs; }
+
+      r.days.add(String(when).slice(0, 10));
+    });
+
+    return Object.values(by)
+      .map((r) => ({
+        ...r,
+        days: r.days.size,
+        totalCalls: r.outCalls + r.inCalls,
+        totalSecs: r.outSecs + r.inSecs,
+        perDay: r.days.size ? (r.outCalls + r.inCalls) / r.days.size : 0,
+      }))
+      .sort((a, b) => b.outCalls - a.outCalls);
+  }, [calls, window_, team, teamOf]);
+
+  const totals = useMemo(() => rows.reduce((t, r) => ({
+    outCalls: t.outCalls + r.outCalls, outSecs: t.outSecs + r.outSecs,
+    inCalls: t.inCalls + r.inCalls, inSecs: t.inSecs + r.inSecs,
+    totalCalls: t.totalCalls + r.totalCalls, totalSecs: t.totalSecs + r.totalSecs,
+  }), { outCalls: 0, outSecs: 0, inCalls: 0, inSecs: 0, totalCalls: 0, totalSecs: 0 }), [rows]);
+
+  const Pair = ({ calls: n, secs, tone }) => (
+    <td className="px-3 py-1.5" style={{ textAlign: "center", borderLeft: "1px solid var(--border)" }}>
+      <div className="sw-mono" style={{ fontSize: 13, fontWeight: 600, color: n ? (tone || "var(--ink)") : "var(--ink-faint)" }}>
+        {n ? n.toLocaleString() : "·"}
+      </div>
+      <div className="sw-mono" style={{ fontSize: 10, color: "var(--ink-faint)" }}>{fmtTalk(secs)}</div>
+    </td>
+  );
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <PhoneCall size={18} style={{ color: "var(--blue)" }} />
+        <h2 className="sw-display text-lg font-bold">Calls</h2>
+
+        <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", height: 32 }}>
+          {[["today", "Today"], ["wtd", "Week to date"], ["mtd", "Month to date"], ["month", "Pick month"]].map(([k, lbl]) => (
+            <button key={k} onClick={() => setRange(k)}
+              className="sw-focus px-3 text-xs whitespace-nowrap"
+              style={range === k
+                ? { background: "var(--blue)", color: "#fff", fontWeight: 600, height: "100%" }
+                : { background: "transparent", color: "var(--ink-faint)", height: "100%" }}>
+              {lbl}
+            </button>
+          ))}
+        </div>
+
+        {range === "month" && (
+          <select className="sw-input sw-focus" style={{ width: 152, height: 32, fontSize: 12.5 }}
+            value={month} onChange={(e) => setMonth(e.target.value)}>
+            {monthOptions.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+          </select>
+        )}
+
+        <select className="sw-input sw-focus" style={{ width: 160, height: 32, fontSize: 12.5 }}
+          value={team} onChange={(e) => setTeam(e.target.value)}>
+          <option>All teams</option>
+          {teamOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+
+        <span className="text-xs ml-auto" style={{ color: "var(--ink-faint)" }}>
+          {totals.totalCalls.toLocaleString()} calls · {fmtTalk(totals.totalSecs)} talk time
+        </span>
+      </div>
+
+      {tableMissing && (
+        <div className="rounded-xl p-3 mb-3" style={{ background: "var(--amber-soft)", border: "1px solid var(--amber)" }}>
+          <div className="text-xs font-bold uppercase mb-1" style={{ color: "var(--amber)", letterSpacing: "0.04em" }}>
+            No call feed yet
+          </div>
+          <div className="text-xs" style={{ color: "var(--ink-soft)" }}>
+            This populates as soon as a <b>calls</b> table exists. Expected columns:
+            <span className="sw-mono"> agent_name</span>, <span className="sw-mono">call_date</span>,
+            <span className="sw-mono"> direction</span> (in/out), <span className="sw-mono">talk_time</span>,
+            and optionally <span className="sw-mono">calls</span> where rows are already aggregated.
+            Talk time is read as seconds, minutes or h:mm:ss.
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", width: "100%" }}>
+            <thead>
+              <tr style={{ background: "var(--ink)" }}>
+                <th className="text-left px-3 py-2" style={{ fontSize: 11, textTransform: "uppercase", color: "#fff", letterSpacing: "0.05em" }}>Agent</th>
+                <th className="text-left px-3 py-2 sw-hide-sm" style={{ fontSize: 11, textTransform: "uppercase", color: "rgba(255,255,255,0.7)", letterSpacing: "0.05em" }}>Team</th>
+                {[["Outbound", "calls and talk time"], ["Inbound", "calls and talk time"], ["Total", "both directions"]].map(([h, hint]) => (
+                  <th key={h} className="px-3 py-2" title={hint}
+                    style={{ fontSize: 11, textTransform: "uppercase", color: "#fff", letterSpacing: "0.05em", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>
+                    {h}
+                  </th>
+                ))}
+                <th className="px-3 py-2" title="Days on which they actually made or took a call"
+                  style={{ fontSize: 11, textTransform: "uppercase", color: "#fff", letterSpacing: "0.05em", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>
+                  Days
+                </th>
+                <th className="px-3 py-2" title="Calls per day they were actually calling — not per calendar day"
+                  style={{ fontSize: 11, textTransform: "uppercase", color: "#fff", letterSpacing: "0.05em", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>
+                  Per day
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.name} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td className="px-3 py-1.5" style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }}>{r.name}</td>
+                  <td className="px-3 py-1.5 text-xs sw-hide-sm" style={{ color: "var(--ink-faint)", whiteSpace: "nowrap" }}>{r.team || "—"}</td>
+                  <Pair calls={r.outCalls} secs={r.outSecs} tone="var(--blue)" />
+                  <Pair calls={r.inCalls} secs={r.inSecs} tone="var(--ink-soft)" />
+                  <Pair calls={r.totalCalls} secs={r.totalSecs} tone="var(--ink)" />
+                  <td className="px-3 py-1.5 sw-mono" style={{ textAlign: "center", fontSize: 12.5, color: "var(--ink-soft)", borderLeft: "1px solid var(--border)" }}>
+                    {r.days || "·"}
+                  </td>
+                  <td className="px-3 py-1.5 sw-mono" style={{ textAlign: "center", fontSize: 13, fontWeight: 700, borderLeft: "1px solid var(--border)" }}>
+                    {r.perDay ? r.perDay.toFixed(1) : "·"}
+                  </td>
+                </tr>
+              ))}
+              {rows.length === 0 && (
+                <tr><td colSpan={7} className="px-4 py-12 text-center" style={{ color: "var(--ink-faint)" }}>
+                  {loading ? "Loading..." : tableMissing ? "Waiting on the call feed." : "No calls in this period."}
+                </td></tr>
+              )}
+            </tbody>
+            {rows.length > 0 && (
+              <tfoot>
+                <tr style={{ background: "var(--blue)", borderTop: "2px solid var(--border)" }}>
+                  <td className="px-3 py-2" style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>All agents</td>
+                  <td className="sw-hide-sm" />
+                  {[[totals.outCalls, totals.outSecs], [totals.inCalls, totals.inSecs], [totals.totalCalls, totals.totalSecs]].map(([n, s], i) => (
+                    <td key={i} className="px-3 py-2" style={{ textAlign: "center", color: "#fff" }}>
+                      <div className="sw-mono" style={{ fontSize: 13, fontWeight: 700 }}>{n.toLocaleString()}</div>
+                      <div className="sw-mono" style={{ fontSize: 10, opacity: 0.8 }}>{fmtTalk(s)}</div>
+                    </td>
+                  ))}
+                  <td /><td />
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      </div>
+
+      <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>
+        Each column shows calls with talk time beneath. <b>Per day</b> divides by the days someone actually
+        called, not by calendar days — so joining mid-month or taking leave doesn't drag the figure down.
+        Talk time is read whether it arrives as seconds, minutes or h:mm:ss.
+      </p>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /*  LEADS — creator conversations, scored from the Leads sheet             */
 /* ---------------------------------------------------------------------- */
 
@@ -14345,7 +15230,9 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
             <NavLink icon={Inbox} label="Sales Delivery" active={tab === "delivery"} onClick={go("delivery")} tint="purple" />
           )}
           <NavLink icon={TrendingUp} label="Forecasting" active={tab === "forecast"} onClick={go("forecast")} tint="green" />
+          <NavLink icon={GitBranch} label="Pipeline" active={tab === "pipeline"} onClick={go("pipeline")} tint="blue" />
           <NavLink icon={Phone} label="Leads" active={tab === "leads"} onClick={go("leads")} tint="blue" />
+          <NavLink icon={PhoneCall} label="Calls" active={tab === "calls"} onClick={go("calls")} tint="blue" />
           <NavMenu icon={LayoutDashboard} label="Dashboards" childActive={dashActive} items={dashboards} />
           <NavMenu icon={Inbox} label="Submission Boxes" childActive={subActive} items={submissions} />
           <NavLink icon={Headphones} label="Sales Coach" active={tab === "coach"} onClick={go("coach")} />
@@ -14378,7 +15265,9 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
               { label: "Claimed", icon: ClipboardList, active: tab === "dashboard", onClick: go("dashboard") },
               ...(canSeeDelivery ? [{ label: "Sales Delivery", icon: Inbox, active: tab === "delivery", onClick: go("delivery") }] : []),
               { label: "Forecasting", icon: TrendingUp, active: tab === "forecast", onClick: go("forecast") },
+              { label: "Pipeline", icon: GitBranch, active: tab === "pipeline", onClick: go("pipeline") },
               { label: "Leads", icon: Phone, active: tab === "leads", onClick: go("leads") },
+              { label: "Calls", icon: PhoneCall, active: tab === "calls", onClick: go("calls") },
             ] },
             { heading: "Dashboards", items: dashboards },
             { heading: "Submission Boxes", items: submissions },
@@ -14540,6 +15429,20 @@ export default function App() {
     setAppSettings(m);
   }, []);
   useEffect(() => { if (session?.user) loadAppSettings(); }, [session, loadAppSettings]);
+
+  /* Writes a single setting and refreshes the map. Used by Pipeline to
+     store its product config as JSON, which keeps that editable without a
+     schema change. */
+  const saveAppSetting = useCallback(async (key, value) => {
+    const { error } = await supabase.from("app_settings")
+      .upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: "key" });
+    if (error) {
+      setToast(`Couldn't save: ${error.message}`);
+      setTimeout(() => setToast(""), 5000);
+      return;
+    }
+    setAppSettings((p) => ({ ...p, [key]: value }));
+  }, []);
 
   const deliveryTeam = appSettings.delivery_team || "Tracy Webber";
 
@@ -15137,7 +16040,7 @@ export default function App() {
         mobileOpen={menuOpen} setMobileOpen={setMenuOpen} />
 
       <div style={{ minWidth: 0 }}>
-      <main className={`sw-main p-6 mx-auto ${["breakdown", "daybyday", "forecast", "landscapes", "dashboard", "distribution", "admin", "statuses", "delivery", "tops", "leads"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
+      <main className={`sw-main p-6 mx-auto ${["breakdown", "daybyday", "forecast", "landscapes", "dashboard", "distribution", "admin", "statuses", "delivery", "tops", "leads", "pipeline", "calls"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
         {submitted && (
           <div className="sw-rise rounded-2xl p-4 mb-5 flex items-center justify-between gap-4" style={{ background: "var(--green-soft)", border: "1px solid var(--green)" }}>
             <div className="flex items-center gap-3">
@@ -15162,6 +16065,10 @@ export default function App() {
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuiteResolved} />}
         {tab === "distribution" && <DistributionView orders={orders} netsuite={netsuiteResolved} staff={staff} />}
         {tab === "leads" && <LeadsView staff={staff} profile={profile} />}
+        {tab === "pipeline" && (
+          <PipelineView staff={staff} profile={profile} appSettings={appSettings} onSaveSetting={saveAppSetting} />
+        )}
+        {tab === "calls" && <CallsView staff={staff} profile={profile} />}
         {tab === "delivery" && (profile?.role === "office" || profile?.role === "sd" || profile?.role === "sd_2ic") && (
           <DeliveryView orders={orders} netsuite={netsuiteResolved} staff={staff} profile={profile} unplaced={unplaced}
             deliveryTeam={deliveryTeam} onAllocate={allocateOrder} onSaveOrder={saveOrder} onOpenOrder={setSelected} />
@@ -15182,7 +16089,8 @@ export default function App() {
           coachScenarios={coachScenarios} coachSettings={coachSettings}
           onSaveCoachScenario={saveCoachScenario} onAddCoachScenario={addCoachScenario}
           onDeleteCoachScenario={deleteCoachScenario} onSaveCoachSettings={saveCoachSettings}
-          coachStages={coachStages} onSaveStage={saveCoachStage} onAddStage={addCoachStage} onDeleteStage={deleteCoachStage} />}
+          coachStages={coachStages} onSaveStage={saveCoachStage} onAddStage={addCoachStage} onDeleteStage={deleteCoachStage}
+          appSettings={appSettings} onSaveSetting={saveAppSetting} />}
       </main>
 
       {selected && <OrderDrawer order={selected} ns={selected.document_number ? netsuite.find((n) => String(n.document_number) === String(selected.document_number)) : null} onClose={() => setSelected(null)} canEdit={canEditOrder(selected)} onSave={saveOrder} saving={savingEdit} onRemove={removeOrder} />}
