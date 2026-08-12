@@ -304,7 +304,13 @@ function guessTone(status) {
 function statusTone(status, ngp, statusCfg) {
   if (ngp) return TONE_MAP.red;                    // doesn't count — always red
   const cfg = statusCfg && statusCfg[status];
-  if (cfg && TONE_MAP[cfg.tone]) return TONE_MAP[cfg.tone];
+  if (cfg) {
+    // `tone` holds the revenue stage now, so the stage decides the colour.
+    // Older rows may still hold a raw tone name, which is honoured too.
+    const st = STAGE_MAP[String(cfg.tone || "").toLowerCase()];
+    if (st) return { fg: st.fg, bg: st.bg };
+    if (TONE_MAP[cfg.tone]) return TONE_MAP[cfg.tone];
+  }
   return TONE_MAP[guessTone(status)] || TONE_MAP.neutral;
 }
 const ENTITY_TYPES = ["Charity", "Limited", "LLP", "Partnership", "Proprietorship", "Sole Trader", "Other"];
@@ -1571,6 +1577,12 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [agentFilter, setAgentFilter] = useState("All");
+  /* Red covers rejected and cancelled together. Rejected is the half worth
+     chasing — a rejection can come back, a cancellation generally doesn't. */
+  const isRejected = useCallback(
+    (r) => /reject/i.test(String(r.status || "")),
+    []
+  );
   const [ngpMode, setNgpMode] = useState("hide");  // hide | show | only
   const [rejectedOnly, setRejectedOnly] = useState(false);  // narrows Red to rejected
   const [nsovMode, setNsovMode] = useState("show");  // show | only (NSOV still counts toward GP, so it isn't hidden by default)
@@ -1911,12 +1923,6 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
     return gpWorking.net;
   }, [gpCountable, isOffice, is2ic, scope, profile, agentFilter, gpWorking]);
   const ngpCount = useMemo(() => viewRows.filter((r) => r.ngp).length, [viewRows]);
-  /* Red covers rejected and cancelled together. Rejected is the half worth
-     chasing — a rejection can come back, a cancellation generally doesn't. */
-  const isRejected = useCallback(
-    (r) => /reject/i.test(String(r.status || "")),
-    []
-  );
   const rejectedCount = useMemo(
     () => viewRows.filter((r) => r.ngp && isRejected(r)).length,
     [viewRows, isRejected]
