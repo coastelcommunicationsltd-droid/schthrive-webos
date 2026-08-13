@@ -3600,10 +3600,57 @@ function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove, is
             </div>
           ))}
         </div>
-        {order.description && (<>
-          <h4 className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--ink-soft)" }}>Description</h4>
-          <p className="text-sm" style={{ color: "var(--ink-soft)" }}>{order.description}</p>
-        </>)}
+        {/* The agent's own words, then whatever the product sections
+            captured. Split apart and given real line breaks — as one flat
+            paragraph the product detail was unreadable, which is why
+            nobody was finding it. */}
+        {order.description && (() => {
+          const full = String(order.description);
+          const cut = full.indexOf("— Product detail —");
+          const notes = cut >= 0 ? full.slice(0, cut).trim() : full.trim();
+          const detail = cut >= 0 ? full.slice(cut + "— Product detail —".length).trim() : "";
+
+          return (
+            <>
+              {notes && (
+                <>
+                  <h4 className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--ink-soft)" }}>
+                    Order details
+                  </h4>
+                  <p className="text-sm mb-4" style={{ color: "var(--ink-soft)", whiteSpace: "pre-wrap" }}>{notes}</p>
+                </>
+              )}
+
+              {detail && (
+                <>
+                  <h4 className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--primary)" }}>
+                    Product detail
+                  </h4>
+                  <div className="rounded-xl mb-4 p-3" style={{ background: "var(--surface-alt)", border: "1px solid var(--border)" }}>
+                    {detail.split("\n").map((line, i) => {
+                      if (!line.trim()) return null;
+                      // Indented lines are answers; flush lines are headings
+                      const isHeading = !line.startsWith("  ");
+                      if (isHeading) {
+                        return (
+                          <div key={i} className="text-xs font-bold uppercase mt-2 first:mt-0"
+                            style={{ color: "var(--primary)", letterSpacing: "0.04em" }}>{line.trim()}</div>
+                        );
+                      }
+                      const [label, ...rest] = line.trim().split(":");
+                      return (
+                        <div key={i} className="flex justify-between gap-3 py-0.5 text-sm">
+                          <span style={{ color: "var(--ink-faint)" }}>{label}</span>
+                          <span className="text-right font-medium" style={{ wordBreak: "break-word" }}>{rest.join(":").trim()}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </>
+          );
+        })()}
 
         {/* Remove an order — e.g. it was rejected and re-submitted, so this
             copy shouldn't count twice. Soft delete: it's hidden, not erased. */}
@@ -14785,11 +14832,18 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                    A NetSuite row is not — it comes from the saved search
                    and has no order record behind it yet, so clicking one
                    opens the raw detail instead of doing nothing. */
-                const asOrder = r.orderId ? orders.find((o) => o.id === r.orderId) : null;
+                /* A NetSuite row usually started life as a Lilac Box —
+                   it drops out of the lilac list precisely because
+                   NetSuite now has it. Matching on document number finds
+                   the original order so sales delivery get the full record
+                   rather than just the saved-search columns. */
+                const asOrder = r.orderId
+                  ? orders.find((o) => o.id === r.orderId)
+                  : (r.doc ? orders.find((o) => String(o.document_number) === String(r.doc)) : null);
                 return (
                 <tr key={r.id}
                   onClick={() => (asOrder ? onOpenOrder(asOrder) : setRawRow(r))}
-                  title={asOrder ? "Open the full order" : "See everything on this row"}
+                  title={asOrder ? "Open the full order" : "Not submitted through the app — see the NetSuite row"}
                   style={{
                     borderTop: "1px solid var(--border)",
                     background: r.kind === "lilac" ? "var(--primary-soft)" : undefined,
@@ -14801,6 +14855,14 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                         <span title="Submitted in the app, not yet in NetSuite"
                           style={{ fontSize: 9.5, fontWeight: 700, color: "var(--primary)", background: "var(--primary-soft)", padding: "1px 4px", borderRadius: 3, marginRight: 4 }}>
                           LILAC
+                        </span>
+                      )}
+                      {/* On NetSuite, but we still hold the Lilac Box behind
+                          it — so the full record is one click away. */}
+                      {r.kind !== "lilac" && asOrder && (
+                        <span title="Submitted through the app — click for the full order"
+                          style={{ fontSize: 9.5, fontWeight: 700, color: "var(--blue)", background: "var(--blue-soft)", padding: "1px 4px", borderRadius: 3, marginRight: 4 }}>
+                          FULL
                         </span>
                       )}
                       {r.aged && (
