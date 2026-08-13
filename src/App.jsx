@@ -1588,6 +1588,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
   );
   const [ngpMode, setNgpMode] = useState("hide");  // hide | show | only
   const [rejectedOnly, setRejectedOnly] = useState(false);  // narrows Red to rejected
+  const [sdFlagOnly, setSdFlagOnly] = useState(false);      // only what SD has sent back
   const [nsovMode, setNsovMode] = useState("show");  // show | only (NSOV still counts toward GP, so it isn't hidden by default)
   const [dataView, setDataView] = useState("claimed");   // forecast | claimed | statted
   const [productFilter, setProductFilter] = useState("All");
@@ -1770,6 +1771,8 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
         closer_share: num(o.closer_share), lead_gen_share: num(o.lead_gen_share),
         closer_pct: o.closer_pct, lead_gen_pct: o.lead_gen_pct,
         status: (n && n.order_status) ? n.order_status : o.order_status,
+        delivery_status: o.delivery_status || null,
+        delivery_notes: o.delivery_notes || null,
         date: o.last_updated,
         dirty: o.dirty_order === "Yes",
         notStatted: isNotStatted(o),
@@ -1805,6 +1808,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
       if (ngpMode === "hide" && r.ngp) return false;
       if (ngpMode === "only" && !r.ngp) return false;
       if (rejectedOnly && !(r.ngp && isRejected(r))) return false;
+      if (sdFlagOnly && !needsAgentAction(r)) return false;
       // Non SOV means exactly that: excluded from SOV but still counting
       // toward GP. Anything also carrying NGP belongs in the Red GP filter,
       // not here.
@@ -1831,6 +1835,14 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
     });
     const dir = sortDir === "asc" ? 1 : -1;
     return [...f].sort((a, b) => {
+      /* Anything sales delivery has sent back floats to the top, whatever
+         the sort. It's work the agent has to do before the order can move,
+         so burying it under a date sort would defeat the point of flagging
+         it at all. */
+      const aFlag = needsAgentAction(a) ? 0 : 1;
+      const bFlag = needsAgentAction(b) ? 0 : 1;
+      if (aFlag !== bFlag) return aFlag - bFlag;
+
       let av, bv;
       switch (sortKey) {
         case "company": av = a.company_name || ""; bv = b.company_name || ""; break;
@@ -1843,7 +1855,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
       if (typeof av === "string") return av.localeCompare(bv) * dir;
       return (av - bv) * dir;
     });
-  }, [viewRows, query, statusFilter, agentFilter, productFilter, focusFilter, sortKey, sortDir, ngpMode, nsovMode, campaignOnly, acqOnly, rejectedOnly, isRejected]);
+  }, [viewRows, query, statusFilter, agentFilter, productFilter, focusFilter, sortKey, sortDir, ngpMode, nsovMode, campaignOnly, acqOnly, rejectedOnly, isRejected, sdFlagOnly]);
 
   // Totals for the strip sitting directly above the list. These follow the
   // VISIBLE rows — every filter, the search box and the dataset toggle — so
@@ -1926,6 +1938,7 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
     return gpWorking.net;
   }, [gpCountable, isOffice, is2ic, scope, profile, agentFilter, gpWorking]);
   const ngpCount = useMemo(() => viewRows.filter((r) => r.ngp).length, [viewRows]);
+  const sdFlagCount = useMemo(() => viewRows.filter((r) => needsAgentAction(r)).length, [viewRows]);
   const rejectedCount = useMemo(
     () => viewRows.filter((r) => r.ngp && isRejected(r)).length,
     [viewRows, isRejected]
@@ -2854,6 +2867,20 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
 
             {/* Red covers rejected AND cancelled; this narrows to the ones
                 that came back rejected, which is the actionable half. */}
+            {sdFlagCount > 0 && (
+              <>
+                <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
+                <button onClick={() => setSdFlagOnly((v) => !v)}
+                  title="Orders sales delivery have sent back for you to act on"
+                  className="sw-focus px-2 text-xs whitespace-nowrap"
+                  style={sdFlagOnly
+                    ? { background: "var(--amber)", color: "#fff", fontWeight: 600, height: "100%" }
+                    : { background: "transparent", color: "var(--amber)", height: "100%" }}>
+                  Needs your action<b style={{ fontWeight: 700 }}> ({sdFlagCount})</b>
+                </button>
+              </>
+            )}
+
             {rejectedCount > 0 && (
               <>
                 <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
@@ -2985,6 +3012,30 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
                       {r.campaign && <span title={`Campaign: ${r.campaignName}`} style={{ marginRight: 4 }}>🎯</span>}
                       {r.company_name}
                     </div>
+
+                    {/* Sent back by sales delivery. Its own line rather than
+                        another small flag, because it is the one thing on
+                        this row the agent has to act on. */}
+                    {needsAgentAction(r) && (() => {
+                      const a = sdAction(r.delivery_status);
+                      return (
+                        <div className="rounded mt-0.5 px-1.5 py-1" style={{ background: a.bg }}>
+                          <div className="flex items-center gap-1">
+                            <AlertTriangle size={10} style={{ color: a.fg, flexShrink: 0 }} />
+                            <span style={{ fontSize: 10, fontWeight: 700, color: a.fg, letterSpacing: "0.03em" }}>
+                              {a.label.toUpperCase()}
+                            </span>
+                          </div>
+                          {r.delivery_notes && (
+                            <div className="sw-clamp2" style={{ fontSize: 10, color: "var(--ink-soft)", lineHeight: 1.3 }}
+                              title={r.delivery_notes}>
+                              {r.delivery_notes}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
                     {(r.dirty || r.notStatted || r.nsov || r.needsAction || (r.ageDays != null && r.ageDays >= 90) || (r.kind === "forecast" && r.matched)) && (
                       <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                         {r.dirty && <span className="text-xs font-semibold" style={{ color: "var(--red)", fontSize: 10 }}>DIRTY</span>}
@@ -3075,7 +3126,98 @@ function DashboardView({ orders, netsuite, forecasts, staff, profiles, payPlans,
 /*  ORDER DETAIL DRAWER                                                    */
 /* ---------------------------------------------------------------------- */
 
-function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove }) {
+/* What sales delivery can send back to the floor. Deliberately short:
+   two outcomes an agent can act on, rather than a long list nobody
+   agrees the meaning of. Stored on delivery_status, which already
+   exists — no schema change. */
+const SD_ACTIONS = [
+  { key: "", label: "No action needed", fg: "var(--ink-faint)", bg: "transparent" },
+  { key: "Action needed", label: "Action needed from agent", fg: "var(--amber)", bg: "var(--amber-soft)",
+    hint: "Something is missing or wrong and the agent has to fix it" },
+  { key: "Rejected", label: "Rejected", fg: "var(--red)", bg: "var(--red-soft)",
+    hint: "Cannot be placed as submitted" },
+];
+/* Always returns something. A status the app doesn't recognise still needs
+   showing rather than crashing the drawer, so it falls back to the label
+   itself in amber. */
+const sdAction = (v) => SD_ACTIONS.find((a) => a.key === String(v || ""))
+  || { key: String(v || ""), label: String(v || "Flagged"), fg: "var(--amber)", bg: "var(--amber-soft)" };
+const needsAgentAction = (o) => ["Action needed", "Rejected"].includes(String(o?.delivery_status || ""));
+
+/* The panel sales delivery use to push an order back. Notes are required
+   on both outcomes — "rejected" with no reason just moves the phone call
+   rather than removing it. */
+function SdActionPanel({ order, onSave }) {
+  const [status, setStatus] = useState(order.delivery_status || "");
+  const [notes, setNotes] = useState(order.delivery_notes || "");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const dirty = status !== (order.delivery_status || "") || notes !== (order.delivery_notes || "");
+  const needsNote = status && !notes.trim();
+
+  return (
+    <div className="rounded-xl mb-5 p-4" style={{ background: "var(--surface-alt)", border: "1px solid var(--blue)" }}>
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--blue)" }}>
+          Sales delivery
+        </span>
+        {saved && <span className="text-xs font-semibold" style={{ color: "var(--green)" }}>Saved — the agent will see this</span>}
+      </div>
+
+      <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+        {SD_ACTIONS.map((a) => (
+          <button key={a.key} onClick={() => setStatus(a.key)}
+            title={a.hint}
+            className="sw-focus px-3 py-1.5 rounded-lg text-xs font-semibold"
+            style={status === a.key
+              ? { background: a.key ? a.fg : "var(--ink-soft)", color: "#fff" }
+              : { background: "var(--surface)", color: a.fg, border: "1px solid var(--border)" }}>
+            {a.label}
+          </button>
+        ))}
+      </div>
+
+      <label className="sw-label">
+        {status ? "What does the agent need to do?" : "Notes"}
+        {status && <span style={{ color: "var(--red)", fontWeight: 400 }}> — required</span>}
+      </label>
+      <textarea className="sw-input sw-focus" rows={2} value={notes}
+        placeholder={status === "Rejected"
+          ? "Why it can't be placed as submitted"
+          : status ? "What's missing, and what they need to send"
+          : "Anything worth recording against this order"}
+        onChange={(e) => setNotes(e.target.value)} />
+
+      <div className="flex items-center gap-2 mt-2">
+        <button disabled={!dirty || saving || needsNote}
+          onClick={async () => {
+            setSaving(true);
+            await onSave(order.id, {
+              delivery_status: status || null,
+              delivery_notes: notes.trim() || null,
+            });
+            setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 2500);
+          }}
+          className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold"
+          style={{
+            background: dirty && !needsNote ? "var(--blue)" : "var(--surface)",
+            color: dirty && !needsNote ? "#fff" : "var(--ink-faint)",
+            border: "1px solid var(--border)",
+          }}>
+          {saving ? "Saving..." : "Save"}
+        </button>
+        {needsNote && (
+          <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+            Add a note so the agent knows what to do.
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove, isSalesDelivery }) {
   const [editing, setEditing] = useState(false);
   const [sov, setSov] = useState("");
   const [gp, setGp] = useState("");
@@ -3257,6 +3399,29 @@ function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove }) 
             </button>
           )}
         </div>
+
+        {/* What sales delivery has sent back, shown to everyone. The agent
+            needs to see this the moment they open the order — it is the
+            whole point of flagging it. */}
+        {needsAgentAction(order) && (() => {
+          const a = sdAction(order.delivery_status);
+          return (
+            <div className="rounded-xl mb-4 p-3" style={{ background: a.bg, border: `1px solid ${a.fg}` }}>
+              <div className="flex items-center gap-1.5 mb-1">
+                <AlertTriangle size={14} style={{ color: a.fg }} />
+                <span className="text-xs font-bold uppercase" style={{ color: a.fg, letterSpacing: "0.04em" }}>
+                  {a.label}
+                </span>
+              </div>
+              <div className="text-sm" style={{ color: "var(--ink)" }}>
+                {order.delivery_notes || "No note left — ask sales delivery what's needed."}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Sales delivery push an order back from here */}
+        {isSalesDelivery && <SdActionPanel order={order} onSave={onSave} />}
 
         {/* Full amendment. Everything on the record in one form — the GP
             splits are recomputed on save rather than typed, so they can't
@@ -3473,6 +3638,68 @@ function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove }) 
 /*  LILAC FORM  (with restored cross-field validation + GP split calc)    */
 /* ---------------------------------------------------------------------- */
 
+/* Turns the product-section answers into readable lines. Only fields the
+   agent actually filled in appear, so a broadband-only order doesn't carry
+   a wall of empty mobile questions. */
+const PRODUCT_NOTE_GROUPS = [
+  ["Mobile", [
+    ["mobileOrder", "Mobile order"],
+    ["portingStatus", "Porting mobiles"],
+    ["fromEE", "From EE"],
+    ["portingNumbers", "Porting numbers"],
+    ["mobileDevices", "Devices needed"],
+    ["fmDealCalc", "Deal calc attached"],
+    ["fmConnDb", "Conn DB attached"],
+    ["fmEEConn", "Existing EE connections"],
+    ["fmBTMobConn", "Existing BT Mobile connections"],
+    ["fmPortingQty", "Connections porting"],
+  ]],
+  ["BT Net", [
+    ["btNetNew", "BT Net new"],
+    ["btNetUpgrade", "BT Net upgrade"],
+    ["btNetSpeed", "Speed"],
+    ["btNetTerm", "Term"],
+    ["btNetIp", "IP addresses"],
+    ["btNetResilience", "Resilience"],
+  ]],
+  ["DV4 / Cloud", [
+    ["dv4Order", "DV4 order"],
+    ["cloudPorting", "Cloud porting"],
+    ["dv4Lines", "Lines"],
+    ["dv4Handsets", "Handsets"],
+    ["cloudUsers", "Users"],
+  ]],
+  ["Technical", [
+    ["bundleStatus", "Bundle"],
+    ["pstnCve", "PSTN / CVE"],
+    ["installAddress", "Install address"],
+    ["installNotes", "Install notes"],
+    ["existingLines", "Existing lines"],
+    ["routerNeeded", "Router needed"],
+    ["engineerVisit", "Engineer visit"],
+  ]],
+];
+
+function buildProductNotes(f, srDealTypes) {
+  const out = [];
+  PRODUCT_NOTE_GROUPS.forEach(([heading, fields]) => {
+    const lines = fields
+      .map(([k, label]) => {
+        const v = f[k];
+        if (v == null || v === "" || v === "No") return null;   // "No" is the default, not an answer
+        return `  ${label}: ${v}`;
+      })
+      .filter(Boolean);
+    if (lines.length) out.push(`${heading}\n${lines.join("\n")}`);
+  });
+
+  if (srDealTypes && srDealTypes.length) {
+    out.push(`SR deal types\n  ${srDealTypes.join(", ")}`);
+  }
+
+  return out.length ? `— Product detail —\n${out.join("\n")}` : "";
+}
+
 function LilacForm({ onSubmit, submitting, isOffice }) {
   const { sellers } = useStaff();
   const [f, setF] = useState({ closerPct: "100%", leadGenPct: "0%" });
@@ -3670,7 +3897,16 @@ function LilacForm({ onSubmit, submitting, isOffice }) {
       schedule_5: "No",
       document_number: null,
       campaign_source: "Lilac Box",
-      description: f.orderDetails || "Submitted via New Submission portal.",
+      /* Everything the product sections asked for, folded into the
+         description. Those answers were being collected and then thrown
+         away — sales delivery need them to place the order, and asking
+         the agent again by email is exactly what this app exists to
+         stop. Kept out of `description` proper by a separator so the
+         agent's own words stay first. */
+      description: [
+        f.orderDetails || "Submitted via New Submission portal.",
+        buildProductNotes(f, srDealTypes),
+      ].filter(Boolean).join("\n\n"),
       quote_ref: f.quoteRef || null,
       closer_name: f.closerName || null,
       lead_gen_name: f.leadGenName || null,
@@ -14697,12 +14933,16 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                 const alloc = allocationOf(o);
                 const isLilac = /lilac/i.test(statusOf(o));
                 return (
-                <tr key={o.id} style={{ borderTop: "1px solid var(--border)", background: isLilac ? "var(--primary-soft)" : undefined }}>
+                <tr key={o.id} onClick={() => onOpenOrder(o)}
+                  title="Open the full order"
+                  style={{
+                    borderTop: "1px solid var(--border)",
+                    background: isLilac ? "var(--primary-soft)" : undefined,
+                    cursor: "pointer",
+                  }}>
                   <td className="px-3 py-2">
-                    <button onClick={() => onOpenOrder(o)} className="sw-focus text-left">
-                      <div className="font-medium text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>{o.company_name}</div>
-                      {o.lbcr_ref && <div className="sw-mono" style={{ fontSize: 10, color: "var(--ink-faint)" }}>{o.lbcr_ref}</div>}
-                    </button>
+                    <div className="font-medium text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>{o.company_name}</div>
+                    {o.lbcr_ref && <div className="sw-mono" style={{ fontSize: 10, color: "var(--ink-faint)" }}>{o.lbcr_ref}</div>}
                   </td>
                   <td className="px-3 py-2 text-xs sw-clamp2" style={{ color: "var(--ink-soft)", lineHeight: 1.3 }}>{o.closer_name || "—"}</td>
 
@@ -14711,6 +14951,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                       <select className={`sw-input sw-focus${busyId === o.id ? " sw-saving" : ""}`} style={{ height: 32, fontSize: 12 }}
                         value={alloc.name || ""}
                         disabled={busyId === o.id}
+                        onClick={(e) => e.stopPropagation()}
                         onChange={async (e) => {
                           setBusyId(o.id);
                           const person = team.find((t) => t.full_name === e.target.value) || null;
@@ -14760,6 +15001,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                   <td className="px-2 py-2 sw-hide-sm">
                     {o.drive_link ? (
                       <a href={o.drive_link} target="_blank" rel="noreferrer"
+                      onClick={(e) => e.stopPropagation()}
                         className="sw-focus text-xs font-semibold" style={{ color: "var(--primary)" }}>Open</a>
                     ) : (
                       <span className="text-xs" style={{ color: "var(--ink-faint)" }}>—</span>
@@ -16623,7 +16865,8 @@ export default function App() {
           appSettings={appSettings} onSaveSetting={saveAppSetting} />}
       </main>
 
-      {selected && <OrderDrawer order={selected} ns={selected.document_number ? netsuite.find((n) => String(n.document_number) === String(selected.document_number)) : null} onClose={() => setSelected(null)} canEdit={canEditOrder(selected)} onSave={saveOrder} saving={savingEdit} onRemove={removeOrder} />}
+      {selected && <OrderDrawer order={selected} ns={selected.document_number ? netsuite.find((n) => String(n.document_number) === String(selected.document_number)) : null} onClose={() => setSelected(null)} canEdit={canEditOrder(selected)} onSave={saveOrder} saving={savingEdit} onRemove={removeOrder}
+        isSalesDelivery={["office", "sd", "sd_2ic"].includes(profile?.role)} />}
       {toast && (
         <div className="sw-slide-in fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl flex items-center gap-2 text-sm font-medium text-white" style={{ background: toast.startsWith("Couldn't") ? "var(--red)" : "var(--green)" }}>
           {toast.startsWith("Couldn't") ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />} {toast}
