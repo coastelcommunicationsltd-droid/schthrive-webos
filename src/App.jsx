@@ -6376,17 +6376,37 @@ function StatusConfigRow({ row, onSave, showAttention }) {
 
 function StatusSettingsView({ rows, onSave, newCount }) {
   const [showAttention, setShowAttention] = useState(false);   // collapsed by default
+  const [sortBy, setSortBy] = useState("status");              // status | stage
+  const [sortDir, setSortDir] = useState("asc");
+
   const sorted = useMemo(() => {
+    /* Anything auto-added from NetSuite stays at the top whatever the
+       sort — it's unreviewed, which is more urgent than any ordering. */
+    const dir = sortDir === "asc" ? 1 : -1;
+    const stageRank = (r) => REVENUE_STAGES.findIndex((s) => s.key === stageOf(r));
+
     return [...rows].sort((a, b) => {
-      if (!!a.auto_added !== !!b.auto_added) return a.auto_added ? -1 : 1;  // new ones first
-      return String(a.status).localeCompare(String(b.status));
+      if (!!a.auto_added !== !!b.auto_added) return a.auto_added ? -1 : 1;
+
+      if (sortBy === "stage") {
+        const d = stageRank(a) - stageRank(b);
+        // Same stage falls back to name, so the order is stable
+        if (d !== 0) return d * dir;
+        return String(a.status).localeCompare(String(b.status));
+      }
+      return String(a.status).localeCompare(String(b.status)) * dir;
     });
-  }, [rows]);
+  }, [rows, sortBy, sortDir]);
+
+  const toggleSort = (key) => {
+    if (sortBy === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortBy(key); setSortDir("asc"); }
+  };
   const attentionCount = useMemo(() => rows.filter((r) => r.needs_attention).length, [rows]);
 
   return (
     <div>
-      <div className="flex items-center gap-2 mb-4">
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
         <Palette size={18} style={{ color: "var(--primary)" }} />
         <h2 className="sw-display text-lg" style={{ fontWeight: 600 }}>Order Statuses</h2>
         <span className="text-xs" style={{ color: "var(--ink-faint)" }}>Office only · applies everywhere immediately</span>
@@ -6414,8 +6434,20 @@ function StatusSettingsView({ rows, onSave, newCount }) {
         <table className="w-full text-sm">
           <thead>
             <tr style={{ background: "var(--surface-alt)" }}>
-              {["Status", "Revenue stage", "Counts to SOV", ...(showAttention ? ["Needs action"] : []), "", ""].map((h, i) => (
-                <th key={i} className="text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--ink-soft)" }}>{h}</th>
+              {[
+                { label: "Status", key: "status" },
+                { label: "Revenue stage", key: "stage" },
+                { label: "Counts to SOV" },
+                ...(showAttention ? [{ label: "Needs action" }] : []),
+                { label: "" }, { label: "" },
+              ].map((h, i) => (
+                <th key={i}
+                  onClick={h.key ? () => toggleSort(h.key) : undefined}
+                  className={`text-left px-3 py-2 text-xs font-semibold uppercase tracking-wide${h.key ? " cursor-pointer select-none" : ""}`}
+                  title={h.key ? `Sort by ${h.label.toLowerCase()}` : undefined}
+                  style={{ color: h.key && sortBy === h.key ? "var(--primary)" : "var(--ink-soft)" }}>
+                  {h.label}{h.key && sortBy === h.key ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                </th>
               ))}
             </tr>
           </thead>
@@ -7365,9 +7397,8 @@ function SettingsView({ statusRows, onSaveStatus, newCount,
     <div>
       <div className="flex items-center gap-2 mb-5">
         {[
-          { key: "statuses", label: "Order Statuses", icon: Palette, badge: newCount },
+          { key: "statuses", label: "Statuses & Products", icon: Palette, badge: newCount },
           { key: "coach", label: "Coach Setup", icon: Headphones, badge: 0 },
-          { key: "pipeline", label: "Pipeline Products", icon: GitBranch, badge: 0 },
           { key: "developer", label: "Developer", icon: ShieldAlert, badge: 0 },
         ].map((s) => (
           <button key={s.key} onClick={() => setSection(s.key)}
@@ -7380,17 +7411,20 @@ function SettingsView({ statusRows, onSaveStatus, newCount,
           </button>
         ))}
       </div>
+      {/* Two lists that are read together — what a status means, and what
+          a product is worth — so they sit side by side rather than being
+          two clicks apart. */}
       {section === "statuses" && (
-        <StatusSettingsView rows={statusRows} onSave={onSaveStatus} newCount={newCount} />
+        <div className="sw-cols" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: "1rem", alignItems: "start" }}>
+          <StatusSettingsView rows={statusRows} onSave={onSaveStatus} newCount={newCount} />
+          <PipelineSettings appSettings={appSettings} onSaveSetting={onSaveSetting} />
+        </div>
       )}
       {section === "coach" && (
         <CoachSettingsView scenarios={coachScenarios} settings={coachSettings} stages={coachStages}
           onSaveStage={onSaveStage} onAddStage={onAddStage} onDeleteStage={onDeleteStage}
           onSaveScenario={onSaveCoachScenario} onAddScenario={onAddCoachScenario}
           onDeleteScenario={onDeleteCoachScenario} onSaveSettings={onSaveCoachSettings} />
-      )}
-      {section === "pipeline" && (
-        <PipelineSettings appSettings={appSettings} onSaveSetting={onSaveSetting} />
       )}
       {section === "developer" && <DeveloperView />}
     </div>
@@ -11642,7 +11676,7 @@ function PipelineSettings({ appSettings, onSaveSetting }) {
       <div className="flex items-center gap-2 mb-3 flex-wrap">
         <GitBranch size={18} style={{ color: "var(--blue)" }} />
         <h2 className="sw-display text-lg font-bold">Pipeline products</h2>
-        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+        <span className="text-xs" style={{ color: "var(--ink-faint)", flexBasis: "100%" }}>
           What counts as each product, and what a unit is worth
         </span>
         <button onClick={async () => { await onSaveSetting("pipeline_config", JSON.stringify(cfg)); setSaved(true); setTimeout(() => setSaved(false), 2000); }}
@@ -11679,7 +11713,7 @@ function PipelineSettings({ appSettings, onSaveSetting }) {
       <div style={{ display: "grid", gap: "0.6rem" }}>
         {products.map((p, i) => (
           <div key={p.key} className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1.4fr 100px 90px 28px", gap: 8, alignItems: "end" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1.4fr) 88px 76px 24px", gap: 6, alignItems: "end" }}>
               <div>
                 <label className="sw-label">Product</label>
                 <input className="sw-input sw-focus" value={p.label}
