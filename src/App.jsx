@@ -11414,29 +11414,6 @@ function QuoteBuilderView({ profile, staff }) {
   );
 }
 
-/* The three activity views share a strip so they read as one place. Kept
-   separate from the main nav because the top bar was getting crowded. */
-function ActivityTabs({ tab, onGo }) {
-  const items = [
-    { key: "pipeline", label: "Pipeline", icon: GitBranch },
-    { key: "leads", label: "Leads", icon: Phone },
-    { key: "calls", label: "Calls", icon: PhoneCall },
-  ];
-  return (
-    <div className="flex items-center gap-1 mb-3 rounded-xl p-1"
-      style={{ background: "var(--blue-soft)", border: "1px solid var(--border)", width: "fit-content" }}>
-      {items.map(({ key, label, icon: Icon }) => (
-        <button key={key} onClick={() => onGo(key)}
-          className="sw-focus flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold"
-          style={tab === key
-            ? { background: "var(--blue)", color: "#fff" }
-            : { background: "transparent", color: "var(--blue)" }}>
-          <Icon size={13} /> {label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 /* ---------------------------------------------------------------------- */
 /*  PIPELINE — opportunity volume by agent and product                     */
@@ -13733,6 +13710,9 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   const [agentFilter, setAgentFilter] = useState("All");
   const [stateFilter, setStateFilter] = useState("All");
   const [busyId, setBusyId] = useState(null);
+  /* A NetSuite row with no order behind it. Opening one shows everything
+     the saved search returned, which is all there is to show. */
+  const [rawRow, setRawRow] = useState(null);
 
   const isManager = profile?.role === "office" || profile?.role === "sd";
   const canAllocate = isManager || profile?.role === "sd_2ic";
@@ -13861,6 +13841,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
       })
       .map((o) => ({
         id: `lb_${o.id}`,
+        orderId: o.id,          // the real order, so the row can open it
         kind: "lilac",
         company: o.company_name || "—",
         product: o.product_group_2 || o.item_name_grouped || "—",
@@ -14799,8 +14780,21 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
               </tr>
             </thead>
             <tbody>
-              {unplacedFiltered.map((r) => (
-                <tr key={r.id} style={{ borderTop: "1px solid var(--border)", background: r.kind === "lilac" ? "var(--primary-soft)" : undefined }}>
+              {unplacedFiltered.map((r) => {
+                /* A lilac row IS an order, so it can open the full drawer.
+                   A NetSuite row is not — it comes from the saved search
+                   and has no order record behind it yet, so clicking one
+                   opens the raw detail instead of doing nothing. */
+                const asOrder = r.orderId ? orders.find((o) => o.id === r.orderId) : null;
+                return (
+                <tr key={r.id}
+                  onClick={() => (asOrder ? onOpenOrder(asOrder) : setRawRow(r))}
+                  title={asOrder ? "Open the full order" : "See everything on this row"}
+                  style={{
+                    borderTop: "1px solid var(--border)",
+                    background: r.kind === "lilac" ? "var(--primary-soft)" : undefined,
+                    cursor: "pointer",
+                  }}>
                   <td className="px-3 py-2">
                     <div className="font-medium text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>
                       {r.kind === "lilac" && (
@@ -14888,7 +14882,8 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                     {r.date ? fmtDate(r.date) : "—"}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
               {unplacedFiltered.length === 0 && (
                 <tr><td colSpan={9} className="px-4 py-10 text-center" style={{ color: "var(--ink-faint)" }}>
                   {unplacedRows.length === 0
@@ -15897,7 +15892,7 @@ function NavLink({ icon: Icon, label, active, badge, onClick, href, tint }) {
 
 /* A nav group that opens on click. Closes when you pick something, click
    away, or press Escape. */
-function NavMenu({ icon: Icon, label, childActive, badge, items }) {
+function NavMenu({ icon: Icon, label, childActive, badge, items, tint }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -15916,8 +15911,14 @@ function NavMenu({ icon: Icon, label, childActive, badge, items }) {
         className="sw-focus flex items-center gap-1.5 px-3 rounded-lg text-sm font-medium whitespace-nowrap"
         style={{
           height: 34,
-          background: childActive ? "var(--primary-soft)" : "transparent",
-          color: childActive ? "var(--primary)" : "var(--ink-soft)",
+          /* A tint marks a group of related tabs — Activity is blue, the
+             rest fall back to the standard purple. */
+          background: tint
+            ? (childActive ? `var(--${tint})` : `var(--${tint}-soft)`)
+            : (childActive ? "var(--primary-soft)" : "transparent"),
+          color: tint
+            ? (childActive ? "#fff" : `var(--${tint})`)
+            : (childActive ? "var(--primary)" : "var(--ink-soft)"),
         }}>
         {Icon && <Icon size={14} className="shrink-0" />}
         {label}
@@ -15988,6 +15989,12 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
   ];
 
   const dashActive = ["tops", "daybyday", "breakdown", "distribution"].includes(tab);
+  const activityActive = ["leads", "pipeline", "calls"].includes(tab);
+  const activityItems = [
+    { label: "Pipeline", icon: GitBranch, active: tab === "pipeline", onClick: go("pipeline") },
+    { label: "Leads", icon: Phone, active: tab === "leads", onClick: go("leads") },
+    { label: "Calls", icon: PhoneCall, active: tab === "calls", onClick: go("calls") },
+  ];
   const subActive = ["new", "landscapes", "quote"].includes(tab);
   const setActive = ["admin", "statuses"].includes(tab);
 
@@ -16009,9 +16016,7 @@ function TopBar({ tab, setTab, profile, newStatusCount, onChangePassword, onSign
             <NavLink icon={Inbox} label="Sales Delivery" active={tab === "delivery"} onClick={go("delivery")} tint="purple" />
           )}
           <NavLink icon={TrendingUp} label="Forecasting" active={tab === "forecast"} onClick={go("forecast")} tint="green" />
-          <NavLink icon={PhoneCall} label="Activity"
-            active={["leads", "pipeline", "calls"].includes(tab)}
-            onClick={go("leads")} tint="blue" />
+          <NavMenu icon={PhoneCall} label="Activity" childActive={activityActive} tint="blue" items={activityItems} />
           <NavMenu icon={LayoutDashboard} label="Dashboards" childActive={dashActive} items={dashboards} />
           <NavMenu icon={Inbox} label="Submission Boxes" childActive={subActive} items={submissions} />
           <NavLink icon={Headphones} label="Sales Coach" active={tab === "coach"} onClick={go("coach")} />
@@ -16833,7 +16838,6 @@ export default function App() {
         {tab === "distribution" && <DistributionView orders={orders} netsuite={netsuiteResolved} staff={staff} />}
         {["leads", "pipeline", "calls"].includes(tab) && (
           <>
-            <ActivityTabs tab={tab} onGo={setTab} />
             {tab === "leads" && <LeadsView staff={staff} profile={profile} />}
             {tab === "pipeline" && (
               <PipelineView staff={staff} profile={profile} appSettings={appSettings} onSaveSetting={saveAppSetting} />
