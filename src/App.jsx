@@ -12514,13 +12514,11 @@ function LeadsView({ staff, profile }) {
         key: g,
         label: g === "Appt" ? "Appts" : g,
         rules: rs,
-        /* One rule means the total IS the breakdown. The sub-columns also
-           fold away while a person's leads are open, since the table is
-           half the width and the detail is on screen anyway. */
-        showRules: rs.length > 1 && !drill,
+        // One rule means the total IS the breakdown, so no sub-columns
+        showRules: rs.length > 1,
       };
     });
-  }, [rules, drill]);
+  }, [rules]);
 
   /* Sheet spellings resolve to the staff list through the same alias map
      NetSuite uses, so a name mapped on the Sales Agents page is credited
@@ -12841,6 +12839,9 @@ function LeadsView({ staff, profile }) {
     setTimeout(() => setCopied(""), 3000);
   }, []);
 
+  /* When a person's leads are open the tables sit in half the width, so
+     spacing tightens to keep all sixteen columns visible — the columns
+     themselves stay, only the padding gives. */
   const Cell = ({ v, bold, tone, edge, dark }) => (
     <td className="sw-mono" style={{
       padding: drill ? "3px 4px" : "5px 7px", textAlign: "center", fontSize: drill ? 11.5 : 12.5,
