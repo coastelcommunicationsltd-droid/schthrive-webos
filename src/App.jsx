@@ -321,6 +321,10 @@ const DEAL_TYPES = ["Acquisition", "Cross-sell", "Migration", "Upgrade", "Resign
 const ARB_REASONS = ["CV Call plan", "Incremental Commission", "Transaction Change", "Mobile"];
 
 const fmtGBP = (n) => new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", maximumFractionDigits: 0 }).format(n || 0);
+/* Pence matter on a quote — a customer signing up to £49.99 a month should
+   not be shown £50. Used on the quotation only; dashboards stay rounded,
+   where pennies are noise. */
+const fmtGBP2 = (n) => new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n || 0);
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "—");
 const daysSince = (d) => (d ? Math.max(0, Math.floor((Date.now() - new Date(d).getTime()) / 86400000)) : 0);
 const pctToNum = (p) => (parseFloat(String(p).replace("%", "")) || 0) / 100;
@@ -10826,8 +10830,18 @@ function QuotationDoc({ quoteNumber, dateStr, customerName, companyName, repName
             <div style={{ background: TINT, borderLeft: `3px solid ${GOLD}`, borderRadius: 8, padding: "14px 16px" }}>
               <div style={{ fontSize: 10.5, color: PURPLE, textTransform: "uppercase", letterSpacing: "0.8px", fontWeight: 700, marginBottom: 6 }}>Prepared By</div>
               <div style={{ fontSize: 16, fontWeight: 700, color: INK }}>{repName || "—"}</div>
-              {repPhone && <div style={{ fontSize: 12.5, color: SLATE, marginTop: 2 }}>{repPhone}</div>}
-              {repEmail && <div style={{ fontSize: 12.5, color: SLATE, wordBreak: "break-word" }}>{repEmail}</div>}
+              {repPhone && <div style={{ fontSize: 12.5, color: SLATE, marginTop: 2, whiteSpace: "nowrap" }}>{repPhone}</div>}
+              {/* Shrinks to fit rather than wrapping. A wrapped email made
+                  this card taller than the two beside it, which reads as a
+                  layout fault once the quote is in an email client. */}
+              {repEmail && (
+                <div style={{
+                  fontSize: repEmail.length > 30 ? 10 : repEmail.length > 24 ? 11 : 12.5,
+                  color: SLATE, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                }} title={repEmail}>
+                  {repEmail}
+                </div>
+              )}
               {!repPhone && !repEmail && <div style={{ fontSize: 13, color: SLATE, marginTop: 2 }}>BT Local Business Sales</div>}
             </div>
 
@@ -10838,18 +10852,18 @@ function QuotationDoc({ quoteNumber, dateStr, customerName, companyName, repName
                 Contract Summary
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", padding: "2px 0", fontSize: 12.5, opacity: 0.9 }}>
-                <span>Subtotal</span><span>{fmtGBP(subtotal)}</span>
+                <span>Subtotal</span><span>{fmtGBP2(subtotal)}</span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", padding: "2px 0", fontSize: 12.5, opacity: 0.75 }}>
-                <span>VAT (20%)</span><span>{fmtGBP(vat)}</span>
+                <span>VAT (20%)</span><span>{fmtGBP2(vat)}</span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "8px 0 0", marginTop: 6, borderTop: "1px solid rgba(255,255,255,0.28)" }}>
                 <span style={{ fontSize: 12.5, fontWeight: 700 }}>Total Monthly</span>
-                <span style={{ fontSize: 20, fontWeight: 800 }}>{fmtGBP(total)}</span>
+                <span style={{ fontSize: 20, fontWeight: 800 }}>{fmtGBP2(total)}</span>
               </div>
               {contractTotal > 0 && (
                 <div style={{ fontSize: 11, opacity: 0.75, marginTop: 4 }}>
-                  {fmtGBP(contractTotal)} over the full term
+                  {fmtGBP2(contractTotal)} over the full term
                 </div>
               )}
             </div>
@@ -10879,17 +10893,17 @@ function QuotationDoc({ quoteNumber, dateStr, customerName, companyName, repName
                       has no per-unit figure to give, so that cell reads as
                       a dash rather than repeating the same number. */}
                   <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: INK }}>
-                    {fmtGBP(num(it.unitPrice))}
+                    {fmtGBP2(num(it.unitPrice))}
                   </td>
                   <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: SLATE, fontSize: 12.5 }}>
-                    {num(it.qty) > 1 ? fmtGBP(num(it.unitPrice) / num(it.qty)) : "—"}
+                    {num(it.qty) > 1 ? fmtGBP2(num(it.unitPrice) / num(it.qty)) : "—"}
                   </td>
                   {/* Term is shown for the customer's benefit, never totalled */}
                   <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", color: SLATE, fontSize: 12.5, whiteSpace: "nowrap" }}>
                     {num(it.termMonths) ? `${num(it.termMonths)} months` : "—"}
                   </td>
                   <td style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, textAlign: "right", fontWeight: 700, color: PURPLE_DARK }}>
-                    {fmtGBP(num(it.unitPrice) * (num(it.termMonths) || 0))}
+                    {fmtGBP2(num(it.unitPrice) * (num(it.termMonths) || 0))}
                   </td>
                 </tr>
               ))}
@@ -11340,39 +11354,6 @@ function QuoteBuilderView({ profile, staff }) {
     }
   }, [items, quoteNumber, quote, subtotal, vat, total]);
 
-  const printQuotation = () => {
-    saveQuote();
-    const node = document.getElementById("sw-quotation-doc");
-    if (!node) return;
-    const w = window.open("", "_blank");
-    if (!w) return;
-    w.document.write(`<!doctype html><html><head><title>Quotation ${quoteNumber} — ${quote.company || "Customer"}</title>
-      <meta charset="utf-8" />
-      <base href="${window.location.origin}/" />
-      <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
-        body { margin:0; font-family:'Inter',Arial,sans-serif; }
-        table { width:100%; border-collapse:separate; border-spacing:0; }
-        img { max-width:100%; height:auto; }
-        /* Keep the brand colours when printing — browsers strip backgrounds
-           by default, which would leave the header bars white */
-        * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-        @page { margin: 10mm; }
-      </style></head><body>${node.outerHTML}</body></html>`);
-    w.document.close();
-
-    // Wait for the banner to decode — printing too early leaves a gap
-    // where the image should be.
-    const go = () => { w.focus(); w.print(); };
-    const img = w.document.querySelector("img");
-    if (img && !img.complete) {
-      img.addEventListener("load", () => setTimeout(go, 120), { once: true });
-      img.addEventListener("error", () => setTimeout(go, 120), { once: true });
-      setTimeout(go, 3000);            // never hang on a missing image
-    } else {
-      setTimeout(go, 400);
-    }
-  };
 
   /* Opens the customer's default mail client with the covering note ready.
      `mailto:` genuinely cannot carry an attachment — that's a limitation of
@@ -11380,7 +11361,11 @@ function QuoteBuilderView({ profile, staff }) {
      at the same moment, leaving it at the top of the Downloads list ready
      to drag in. Doing both from one click is as close as this gets without
      a Microsoft Graph integration. */
-  const emailQuotation = () => {
+  /* Opens whatever is registered as the mail handler — Outlook 2019 on a
+     managed desktop. `mailto:` genuinely cannot carry an attachment; that
+     is a limit of the protocol, not the browser. So the quote is saved at
+     the same moment and the agent attaches the PDF they have on file. */
+  const emailQuotation = async () => {
     const to = quote.customerEmail || "";
     const subject = `Your quotation from BT Local Business — ${quoteNumber}`;
     const body = [
@@ -11394,12 +11379,17 @@ function QuoteBuilderView({ profile, staff }) {
       "BT Local Business",
     ].join("\r\n");
 
-    // Print first, so the PDF is sitting in Downloads when they go to attach
-    printQuotation();
-    setTimeout(() => {
-      window.location.href =
-        `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-    }, 700);
+    await saveQuote();
+
+    /* An anchor rather than window.location. Setting location to a
+       mailto: leaves some browsers showing a blank page if no handler
+       responds; a click on a detached link doesn't touch the page at all. */
+    const a = document.createElement("a");
+    a.href = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
   return (
@@ -11415,15 +11405,15 @@ function QuoteBuilderView({ profile, staff }) {
               Saved as {savedRef}
             </span>
           )}
-          <button onClick={printQuotation} disabled={!items.length}
+          <button onClick={saveQuote} disabled={!items.length}
             className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold"
-            title="Prints both pages and saves the quote so it can be picked when the order is submitted"
+            title="Saves it to the Quote Log, where it can be downloaded or picked when the order is submitted"
             style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>
-            Print / Save PDF
+            Save quote
           </button>
           <button onClick={emailQuotation} disabled={!items.length}
             className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold text-white flex items-center gap-1.5"
-            title="Saves the PDF and opens Outlook with the covering note ready — attach the file it just downloaded"
+            title="Saves the quote and opens Outlook with the covering note ready"
             style={{ background: items.length ? "var(--primary)" : "var(--ink-faint)" }}>
             <Mail size={12} /> Email to customer
           </button>
@@ -11509,18 +11499,18 @@ function QuoteBuilderView({ profile, staff }) {
             {items.length > 0 && (
               <div className="rounded-lg p-2.5 mt-3" style={{ background: "var(--surface-alt)" }}>
                 <div className="flex justify-between text-xs" style={{ color: "var(--ink-soft)" }}>
-                  <span>Subtotal</span><span className="sw-mono">{fmtGBP(subtotal)}</span>
+                  <span>Subtotal</span><span className="sw-mono">{fmtGBP2(subtotal)}</span>
                 </div>
                 <div className="flex justify-between text-xs" style={{ color: "var(--ink-faint)" }}>
-                  <span>VAT (20%)</span><span className="sw-mono">{fmtGBP(vat)}</span>
+                  <span>VAT (20%)</span><span className="sw-mono">{fmtGBP2(vat)}</span>
                 </div>
                 <div className="flex justify-between mt-1 pt-1" style={{ borderTop: "1px solid var(--border)" }}>
                   <span className="text-xs font-bold">Total monthly</span>
-                  <span className="sw-mono font-bold" style={{ color: "var(--primary)" }}>{fmtGBP(total)}</span>
+                  <span className="sw-mono font-bold" style={{ color: "var(--primary)" }}>{fmtGBP2(total)}</span>
                 </div>
                 {contractTotal > 0 && (
                   <div className="flex justify-between text-xs mt-0.5" style={{ color: "var(--ink-faint)" }}>
-                    <span>Over full term</span><span className="sw-mono">{fmtGBP(contractTotal)}</span>
+                    <span>Over full term</span><span className="sw-mono">{fmtGBP2(contractTotal)}</span>
                   </div>
                 )}
               </div>
