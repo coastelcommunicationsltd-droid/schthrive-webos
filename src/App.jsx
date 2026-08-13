@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import { createClient } from "@supabase/supabase-js";
 import {
   Search, Filter, X, AlertTriangle, CheckCircle2, Clock, Radio, Plus,
-  Building2, Wallet, TrendingUp, ShieldAlert, RefreshCw, LogOut, Mail,
+  Building2, Wallet, TrendingUp, ShieldAlert, RefreshCw, LogOut,
   Loader2, Users, Eye, EyeOff, ArrowLeft, LogIn, KeyRound, Palette, MapPin,
   BarChart3, CalendarDays, Target, Headphones, Phone,
   ChevronDown, ClipboardList, LayoutDashboard, Settings as SettingsIcon,
@@ -11319,10 +11319,9 @@ function QuoteBuilderView({ profile, staff }) {
     return `${initials}-${co}-${dd}${mm}${yy}`;
   }, [quote.repName, quote.company, quoteDate]);
 
-  /* Printing saves the quote too. That's the point at which it becomes a
-     real document the customer has seen, and it means the agent can pull
-     it straight through when they come to submit the order rather than
-     retyping the customer, company and products. */
+  /* Saving is what makes a quote real: it appears in the Quote Log, and
+     the agent can pull it straight through when they come to submit the
+     order rather than retyping the customer, company and products. */
   const saveQuote = useCallback(async () => {
     if (!items.length) return;
     try {
@@ -11350,9 +11349,50 @@ function QuoteBuilderView({ profile, staff }) {
         setTimeout(() => setSavedRef(""), 4000);
       }
     } catch {
-      // Never block the print on a failed save
+      // A failed save should never stop the agent getting their document
     }
   }, [items, quoteNumber, quote, subtotal, vat, total]);
+
+  /* Saves, then opens the quote ready to be saved as a PDF. The browser's
+     print dialog is the only route to a PDF without pulling in a rendering
+     library — "Save as PDF" is the destination, so what the customer gets
+     is exactly what is on screen. */
+  const downloadQuotation = async () => {
+    await saveQuote();
+
+    const node = document.getElementById("sw-quotation-doc");
+    if (!node) return;
+    const w = window.open("", "_blank");
+    if (!w) return;
+
+    w.document.write(`<!doctype html><html><head><title>Quotation ${quoteNumber} — ${quote.company || "Customer"}</title>
+      <meta charset="utf-8" />
+      <base href="${window.location.origin}/" />
+      <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+        body { margin:0; font-family:'Inter',Arial,sans-serif; }
+        table { width:100%; border-collapse:separate; border-spacing:0; }
+        img { max-width:100%; height:auto; }
+        /* Browsers strip backgrounds when printing by default, which would
+           leave the brand bars white */
+        * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        @page { margin: 10mm; }
+      </style></head><body>${node.outerHTML}</body></html>`);
+    w.document.close();
+
+    // Wait for the banner to decode, or it prints a gap where it should be
+    const go = () => { w.focus(); w.print(); };
+    const img = w.document.querySelector("img");
+    if (img && !img.complete) {
+      img.addEventListener("load", () => setTimeout(go, 120), { once: true });
+      img.addEventListener("error", () => setTimeout(go, 120), { once: true });
+      setTimeout(go, 3000);            // never hang on a missing image
+    } else {
+      setTimeout(go, 400);
+    }
+  };
+
+  const saveOnly = async () => { await saveQuote(); };
 
 
   /* Opens the customer's default mail client with the covering note ready.
@@ -11361,36 +11401,6 @@ function QuoteBuilderView({ profile, staff }) {
      at the same moment, leaving it at the top of the Downloads list ready
      to drag in. Doing both from one click is as close as this gets without
      a Microsoft Graph integration. */
-  /* Opens whatever is registered as the mail handler — Outlook 2019 on a
-     managed desktop. `mailto:` genuinely cannot carry an attachment; that
-     is a limit of the protocol, not the browser. So the quote is saved at
-     the same moment and the agent attaches the PDF they have on file. */
-  const emailQuotation = async () => {
-    const to = quote.customerEmail || "";
-    const subject = `Your quotation from BT Local Business — ${quoteNumber}`;
-    const body = [
-      `Hello ${quote.customer || "there"}`,
-      "",
-      "Please see attached your quote as we discussed.",
-      "",
-      `Please contact me on ${quote.repPhone || "[your contact phone]"}`,
-      "",
-      quote.repName || "",
-      "BT Local Business",
-    ].join("\r\n");
-
-    await saveQuote();
-
-    /* An anchor rather than window.location. Setting location to a
-       mailto: leaves some browsers showing a blank page if no handler
-       responds; a click on a detached link doesn't touch the page at all. */
-    const a = document.createElement("a");
-    a.href = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-    a.style.display = "none";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  };
 
   return (
     <div>
@@ -11405,17 +11415,17 @@ function QuoteBuilderView({ profile, staff }) {
               Saved as {savedRef}
             </span>
           )}
-          <button onClick={saveQuote} disabled={!items.length}
+          <button onClick={saveOnly} disabled={!items.length}
             className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold"
-            title="Saves it to the Quote Log, where it can be downloaded or picked when the order is submitted"
+            title="Files it to the Quote Log without opening anything"
             style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>
             Save quote
           </button>
-          <button onClick={emailQuotation} disabled={!items.length}
+          <button onClick={downloadQuotation} disabled={!items.length}
             className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold text-white flex items-center gap-1.5"
-            title="Saves the quote and opens Outlook with the covering note ready"
+            title="Saves it and opens both pages ready to save as PDF"
             style={{ background: items.length ? "var(--primary)" : "var(--ink-faint)" }}>
-            <Mail size={12} /> Email to customer
+            <FileText size={12} /> Download quote
           </button>
         </div>
       </div>
