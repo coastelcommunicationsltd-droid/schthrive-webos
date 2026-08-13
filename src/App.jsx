@@ -15042,6 +15042,10 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                       <select className={`sw-input sw-focus${busyId === r.order.id ? " sw-saving" : ""}`} style={{ height: 30, fontSize: 11.5 }}
                         value={r.agent || ""}
                         disabled={busyId === r.order.id}
+                        /* The row opens the order on click, so this has to
+                           stop it — otherwise picking an agent also opens
+                           the drawer over the top. */
+                        onClick={(e) => e.stopPropagation()}
                         onChange={async (e) => {
                           setBusyId(r.order.id);
                           const person = team.find((t) => t.full_name === e.target.value) || null;
