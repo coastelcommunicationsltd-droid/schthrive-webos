@@ -3136,6 +3136,11 @@ const SD_ACTIONS = [
     hint: "Something is missing or wrong and the agent has to fix it" },
   { key: "Rejected", label: "Rejected", fg: "var(--red)", bg: "var(--red-soft)",
     hint: "Cannot be placed as submitted" },
+  /* Set by the AGENT, not sales delivery — it closes the loop by sending
+     the order back. Listed here so both sides read the same labels and
+     colours from one place. */
+  { key: "Updated", label: "Updated by agent", fg: "var(--green)", bg: "var(--green-soft)",
+    hint: "The agent has made the change and sent it back", agentSet: true },
 ];
 /* Always returns something. A status the app doesn't recognise still needs
    showing rather than crashing the drawer, so it falls back to the label
@@ -3143,6 +3148,9 @@ const SD_ACTIONS = [
 const sdAction = (v) => SD_ACTIONS.find((a) => a.key === String(v || ""))
   || { key: String(v || ""), label: String(v || "Flagged"), fg: "var(--amber)", bg: "var(--amber-soft)" };
 const needsAgentAction = (o) => ["Action needed", "Rejected"].includes(String(o?.delivery_status || ""));
+/* The other half of the loop: the agent has dealt with it and sales
+   delivery need to look again. */
+const awaitingSd = (o) => String(o?.delivery_status || "") === "Updated";
 
 /* The panel sales delivery use to push an order back. Notes are required
    on both outcomes — "rejected" with no reason just moves the phone call
@@ -3166,7 +3174,7 @@ function SdActionPanel({ order, onSave }) {
       </div>
 
       <div className="flex items-center gap-1.5 mb-2 flex-wrap">
-        {SD_ACTIONS.map((a) => (
+        {SD_ACTIONS.filter((a) => !a.agentSet).map((a) => (
           <button key={a.key} onClick={() => setStatus(a.key)}
             title={a.hint}
             className="sw-focus px-3 py-1.5 rounded-lg text-xs font-semibold"
@@ -3212,6 +3220,63 @@ function SdActionPanel({ order, onSave }) {
             Add a note so the agent knows what to do.
           </span>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* The agent's half of the loop. Their reply is APPENDED to the notes
+   rather than replacing them — overwriting would lose the reason sales
+   delivery gave, and then nobody could tell what was asked for. */
+function AgentReplyPanel({ order, onSave }) {
+  const [reply, setReply] = useState("");
+  const [saving, setSaving] = useState(false);
+  const a = sdAction(order.delivery_status);
+
+  const send = async () => {
+    setSaving(true);
+    const stamp = new Date().toLocaleString("en-GB", {
+      day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+    });
+    const thread = [
+      order.delivery_notes || "",
+      `[${stamp}] Agent: ${reply.trim() || "Updated as asked."}`,
+    ].filter(Boolean).join("\n\n");
+
+    await onSave(order.id, { delivery_status: "Updated", delivery_notes: thread });
+    setSaving(false);
+    setReply("");
+  };
+
+  return (
+    <div className="rounded-xl mb-4 p-3" style={{ background: a.bg, border: `1px solid ${a.fg}` }}>
+      <div className="flex items-center gap-1.5 mb-1">
+        <AlertTriangle size={14} style={{ color: a.fg }} />
+        <span className="text-xs font-bold uppercase" style={{ color: a.fg, letterSpacing: "0.04em" }}>
+          {a.label}
+        </span>
+      </div>
+
+      {/* Everything said about this order so far, oldest first */}
+      <div className="text-sm mb-2" style={{ color: "var(--ink)", whiteSpace: "pre-wrap" }}>
+        {order.delivery_notes || "No note left — ask sales delivery what's needed."}
+      </div>
+
+      <label className="sw-label">What did you change?</label>
+      <input className="sw-input sw-focus" value={reply}
+        placeholder="e.g. Corrected the postcode and attached the survey"
+        onChange={(e) => setReply(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter" && reply.trim()) { e.preventDefault(); send(); } }} />
+
+      <div className="flex items-center gap-2 mt-2">
+        <button onClick={send} disabled={saving}
+          className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold text-white"
+          style={{ background: "var(--green)" }}>
+          {saving ? "Sending..." : "Mark as updated & send back"}
+        </button>
+        <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+          Goes to the top of sales delivery's list.
+        </span>
       </div>
     </div>
   );
@@ -3403,22 +3468,38 @@ function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove, is
         {/* What sales delivery has sent back, shown to everyone. The agent
             needs to see this the moment they open the order — it is the
             whole point of flagging it. */}
-        {needsAgentAction(order) && (() => {
+        {needsAgentAction(order) && canEdit && <AgentReplyPanel order={order} onSave={onSave} />}
+
+        {/* Read-only for anyone who can't act on it */}
+        {needsAgentAction(order) && !canEdit && (() => {
           const a = sdAction(order.delivery_status);
           return (
             <div className="rounded-xl mb-4 p-3" style={{ background: a.bg, border: `1px solid ${a.fg}` }}>
               <div className="flex items-center gap-1.5 mb-1">
                 <AlertTriangle size={14} style={{ color: a.fg }} />
-                <span className="text-xs font-bold uppercase" style={{ color: a.fg, letterSpacing: "0.04em" }}>
-                  {a.label}
-                </span>
+                <span className="text-xs font-bold uppercase" style={{ color: a.fg, letterSpacing: "0.04em" }}>{a.label}</span>
               </div>
-              <div className="text-sm" style={{ color: "var(--ink)" }}>
-                {order.delivery_notes || "No note left — ask sales delivery what's needed."}
+              <div className="text-sm" style={{ color: "var(--ink)", whiteSpace: "pre-wrap" }}>
+                {order.delivery_notes || "No note left."}
               </div>
             </div>
           );
         })()}
+
+        {/* Sent back by the agent, waiting on sales delivery to look again */}
+        {awaitingSd(order) && (
+          <div className="rounded-xl mb-4 p-3" style={{ background: "var(--green-soft)", border: "1px solid var(--green)" }}>
+            <div className="flex items-center gap-1.5 mb-1">
+              <CheckCircle2 size={14} style={{ color: "var(--green)" }} />
+              <span className="text-xs font-bold uppercase" style={{ color: "var(--green)", letterSpacing: "0.04em" }}>
+                Updated by agent
+              </span>
+            </div>
+            <div className="text-sm" style={{ color: "var(--ink)", whiteSpace: "pre-wrap" }}>
+              {order.delivery_notes || "No note left."}
+            </div>
+          </div>
+        )}
 
         {/* Sales delivery push an order back from here */}
         {isSalesDelivery && <SdActionPanel order={order} onSave={onSave} />}
@@ -13760,6 +13841,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   /* A NetSuite row with no order behind it. Opening one shows everything
      the saved search returned, which is all there is to show. */
   const [rawRow, setRawRow] = useState(null);
+  const [updatedOnly, setUpdatedOnly] = useState(false);   // only what agents have sent back
 
   const isManager = profile?.role === "office" || profile?.role === "sd";
   const canAllocate = isManager || profile?.role === "sd_2ic";
@@ -13890,6 +13972,8 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
         id: `lb_${o.id}`,
         orderId: o.id,          // the real order, so the row can open it
         kind: "lilac",
+        deliveryStatus: o.delivery_status || null,
+        deliveryNotes: o.delivery_notes || null,
         company: o.company_name || "—",
         product: o.product_group_2 || o.item_name_grouped || "—",
         item: o.item_name_grouped || null,
@@ -13979,6 +14063,13 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
   }, [unplacedRows]);
 
   const dirtyCountUnplaced = useMemo(() => unplacedRows.filter((r) => r.dirty).length, [unplacedRows]);
+  /* Orders the agent has sent back. Counted separately so the count can
+     sit on a filter button rather than being buried in the list. */
+  const updatedCount = useMemo(
+    () => (orders || []).filter((o) => awaitingSd(o) && !o.removed_at).length,
+    [orders]
+  );
+
   const unplacedFiltered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return unplacedRows.filter((r) => {
@@ -14000,9 +14091,16 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
       if (agedOnly && !r.aged) return false;
       if (agentFilter === "__unallocated") { if (r.agent) return false; }
       else if (agentFilter !== "All" && r.agent !== agentFilter) return false;
+      if (updatedOnly && r.deliveryStatus !== "Updated") return false;
       return true;
+    }).sort((a, b) => {
+      /* Anything the agent has fixed and sent back leads the list. It is
+         the only work here where somebody is actively waiting. */
+      const au = a.deliveryStatus === "Updated" ? 0 : 1;
+      const bu = b.deliveryStatus === "Updated" ? 0 : 1;
+      return au - bu;
     });
-  }, [unplacedRows, query, productFilter, placementView, agentFilter, dirtyOnly, agedOnly]);
+  }, [unplacedRows, query, productFilter, placementView, agentFilter, dirtyOnly, agedOnly, updatedOnly]);
   // Totals for the strip above the unplaced list — the rows actually
   // showing, so the product, placement, agent and dirty/aged filters all
   // count towards it.
@@ -14231,6 +14329,13 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
       if (stateFilter !== "All" && statusOf(o) !== stateFilter) return false;
       return true;
     }).sort((a, b) => {
+      /* An order the agent has fixed and sent back leads everything —
+         somebody is waiting on sales delivery to look at it again, and
+         burying it under a date sort is how a round trip stalls. */
+      const aUp = awaitingSd(a) ? 0 : 1;
+      const bUp = awaitingSd(b) ? 0 : 1;
+      if (aUp !== bUp) return aUp - bUp;
+
       // When looking at one person's list, their Lilac Submitted orders
       // lead — that's the work waiting on them.
       if (agentFilter !== "All" && agentFilter !== "__unallocated") {
@@ -14493,7 +14598,21 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                 90+ days{unplacedAged ? <b style={{ fontWeight: 700 }}> ({unplacedAged})</b> : ""}
               </button>
               <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
-              <button onClick={() => setDirtyOnly((v) => !v)}
+              {updatedCount > 0 && (
+          <button onClick={() => setUpdatedOnly((v) => !v)}
+            title="Orders an agent has fixed and sent back to you"
+            className="sw-focus px-3 rounded-lg text-xs font-semibold"
+            style={{
+              height: 32,
+              background: updatedOnly ? "var(--green)" : "transparent",
+              color: updatedOnly ? "#fff" : "var(--green)",
+              border: `1px solid ${updatedOnly ? "var(--green)" : "var(--border)"}`,
+            }}>
+            Updated ({updatedCount})
+          </button>
+        )}
+
+        <button onClick={() => setDirtyOnly((v) => !v)}
                 title="Orders flagged as dirty on the Lilac Box"
                 className="sw-focus px-2 text-xs whitespace-nowrap"
                 style={dirtyOnly
@@ -14851,7 +14970,7 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                   }}>
                   <td className="px-3 py-2">
                     <div className="font-medium text-xs sw-clamp2" style={{ lineHeight: 1.3 }}>
-                      {r.kind === "lilac" && (
+                      {r.kind === "lilac" && r.deliveryStatus !== "Updated" && (
                         <span title="Submitted in the app, not yet in NetSuite"
                           style={{ fontSize: 9.5, fontWeight: 700, color: "var(--primary)", background: "var(--primary-soft)", padding: "1px 4px", borderRadius: 3, marginRight: 4 }}>
                           LILAC
@@ -14865,6 +14984,12 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                           FULL
                         </span>
                       )}
+                      {r.deliveryStatus === "Updated" && (
+                        <span title="The agent has made the change and sent it back"
+                          style={{ fontSize: 9.5, fontWeight: 700, color: "#fff", background: "var(--green)", padding: "1px 4px", borderRadius: 3, marginRight: 4 }}>
+                          UPDATED
+                        </span>
+                      )}
                       {r.aged && (
                         <span title="Over 90 days old"
                           style={{ fontSize: 9.5, fontWeight: 700, color: "var(--red)", background: "var(--red-soft)", padding: "1px 4px", borderRadius: 3, marginRight: 4 }}>
@@ -14874,6 +14999,14 @@ function DeliveryView({ orders, netsuite, staff, profile, deliveryTeam, unplaced
                       {r.company}
                     </div>
                     {r.item && <div style={{ fontSize: 10, color: "var(--ink-faint)" }}>{r.item}</div>}
+                    {/* The agent's last reply, so this can be triaged from
+                        the list rather than opening every one. */}
+                    {r.deliveryStatus === "Updated" && r.deliveryNotes && (
+                      <div className="sw-clamp2 mt-0.5" style={{ fontSize: 10, color: "var(--green)", lineHeight: 1.3 }}
+                        title={r.deliveryNotes}>
+                        {String(r.deliveryNotes).split("\n").filter(Boolean).slice(-1)[0]}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-2 text-xs sw-clamp2" style={{ color: "var(--ink-soft)", lineHeight: 1.3 }}>{r.product}</td>
                   <td className="px-2 py-2">
