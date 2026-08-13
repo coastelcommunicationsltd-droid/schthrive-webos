@@ -116,6 +116,9 @@ const STYLE = `
 .sw-root ::-webkit-scrollbar-thumb{background:var(--border);border-radius:8px;}
 @keyframes sw-pulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.45;transform:scale(.82);}}
 .sw-live-dot{animation:sw-pulse 1.8s ease-in-out infinite;}
+@keyframes sw-spin{to{transform:rotate(360deg);}}
+.sw-spin{animation:sw-spin 1s linear infinite;}
+@media (prefers-reduced-motion: reduce){.sw-spin{animation:none;}}
 @keyframes sw-flash{0%{background:var(--primary-soft);}100%{background:transparent;}}
 .sw-flash{animation:sw-flash 1.6s ease-out;}
 @keyframes sw-rise{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
@@ -3470,7 +3473,7 @@ function OrderDrawer({ order, ns, onClose, canEdit, onSave, saving, onRemove }) 
 /*  LILAC FORM  (with restored cross-field validation + GP split calc)    */
 /* ---------------------------------------------------------------------- */
 
-function LilacForm({ onSubmit, submitting }) {
+function LilacForm({ onSubmit, submitting, isOffice }) {
   const { sellers } = useStaff();
   const [f, setF] = useState({ closerPct: "100%", leadGenPct: "0%" });
 
@@ -3480,6 +3483,44 @@ function LilacForm({ onSubmit, submitting }) {
      form isn't overwritten. */
   const [quoteRef, setQuoteRef] = useState("");
   const [quoteState, setQuoteState] = useState({ loading: false, error: "", found: null });
+
+  /* Fills every required field with obvious throwaway data, so the whole
+     path — submission, Drive folder, NetSuite matching — can be exercised
+     without typing a full order. Office only, and everything is prefixed
+     TEST so it can be found and removed afterwards. */
+  const fillTestOrder = useCallback(() => {
+    const stamp = new Date().toISOString().slice(11, 16).replace(":", "");
+    const me = sellers[0]?.full_name || "";
+    setF((p) => ({
+      ...p,
+      lEName: `TEST ${stamp} Ltd`,
+      tradingAs: `TEST ${stamp} Trading`,
+      companyName: `TEST ${stamp} Ltd`,
+      cug: `TEST-${stamp}`,
+      leNumber: `9${stamp}`,
+      postcode: "PL1 1AA",
+      entityType: "Limited",
+      customerName: "Test Customer",
+      customerPosition: "Owner",
+      customerLandline: "01752 000000",
+      customerMobile: "07700 900000",
+      customerEmail: "test@example.com",
+      secondaryName: "Second Test",
+      secondaryLandline: "01752 000001",
+      secondaryMobile: "07700 900001",
+      secondaryEmail: "test2@example.com",
+      orderDetails: "TEST ORDER — safe to delete. Broadband × 1, Cloud Voice × 2.",
+      sov: "1200",
+      gp: "300",
+      closerName: p.closerName || me,
+      closerPct: "100%",
+      leadGenPct: "0%",
+      quantity: "3",
+      productGroup: "Cloud",
+      dealType: "ACQ",
+      oppId: `OID-TEST${stamp}`,
+    }));
+  }, [sellers]);
 
   const pullQuote = useCallback(async () => {
     const ref = quoteRef.trim();
@@ -3642,6 +3683,30 @@ function LilacForm({ onSubmit, submitting }) {
 
   return (
     <form onSubmit={handleSubmit}>
+      {/* Office-only. Exercising the whole path — submission, Drive
+          folder, NetSuite matching — shouldn't need a full order typed
+          by hand every time. */}
+      {isOffice && (
+        <div className="rounded-xl p-3 mb-3 flex items-center gap-3 flex-wrap"
+          style={{ background: "var(--amber-soft)", border: "1px dashed var(--amber)" }}>
+          <AlertTriangle size={15} style={{ color: "var(--amber)" }} />
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div className="text-xs font-bold uppercase" style={{ color: "var(--amber)", letterSpacing: "0.04em" }}>
+              Test submission
+            </div>
+            <div className="text-xs" style={{ color: "var(--ink-soft)" }}>
+              Fills every required field with throwaway data, all prefixed <b>TEST</b> so it can be found
+              and removed afterwards. It still creates a real order.
+            </div>
+          </div>
+          <button type="button" onClick={fillTestOrder}
+            className="sw-focus px-3 py-2 rounded-lg text-xs font-semibold text-white"
+            style={{ background: "var(--amber)" }}>
+            Fill with test data
+          </button>
+        </div>
+      )}
+
       <SectionCard title="From a quote" tone="primary">
         <div style={{ gridColumn: "span 3" }}>
           <div className="flex items-end gap-2 flex-wrap">
@@ -4019,7 +4084,111 @@ function ArbitrationForm({ onSubmit, submitting }) {
   );
 }
 
-function NewSubmissionView({ onSubmit, submitting }) {
+/* Shown after a Lilac Box goes in. Two jobs: hand over the LBCR reference,
+   and get the agent into the Drive folder to attach paperwork.
+
+   The folder is made by an Apps Script on a timer, not by the app, because
+   creating one from the browser would mean every agent going through
+   Google OAuth on top of signing into this. So the link appears a moment
+   later and this polls for it — which is honest about the wait rather than
+   pretending it's instant. */
+function SubmittedBanner({ submitted, onClose, onCopy }) {
+  const [drive, setDrive] = useState(null);
+  const [waited, setWaited] = useState(0);
+
+  useEffect(() => {
+    if (!submitted?.id || drive) return;
+    // Give up after two minutes — beyond that something is wrong with the
+    // script, and a spinner forever helps nobody.
+    if (waited > 120) return;
+
+    const t = setTimeout(async () => {
+      const { data } = await supabase.from("orders")
+        .select("drive_link").eq("id", submitted.id).single();
+      if (data?.drive_link) setDrive(data.drive_link);
+      else setWaited((w) => w + 5);
+    }, waited === 0 ? 2000 : 5000);
+
+    return () => clearTimeout(t);
+  }, [submitted, drive, waited]);
+
+  const gaveUp = !drive && waited > 120;
+
+  return (
+    <div className="sw-rise rounded-2xl p-4 mb-5" style={{ background: "var(--green-soft)", border: "1px solid var(--green)" }}>
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-3">
+          <CheckCircle2 size={20} style={{ color: "var(--green)" }} />
+          <div>
+            <div className="font-semibold text-sm">{submitted.company} submitted</div>
+            <div className="text-xs" style={{ color: "var(--ink-soft)" }}>
+              Quote this reference on the NetSuite order so the two can be matched up.
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="sw-mono font-bold text-sm px-3 py-2 rounded-lg" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            {submitted.ref}
+          </span>
+          <button onClick={() => onCopy(submitted.ref, "Reference copied")}
+            className="sw-focus text-xs font-semibold px-3 py-2 rounded-lg text-white" style={{ background: "var(--green)" }}>Copy</button>
+          <button onClick={onClose} className="sw-focus p-2 rounded-lg" style={{ color: "var(--ink-soft)" }}><X size={16} /></button>
+        </div>
+      </div>
+
+      {/* Drive folder — appears once the script has made it */}
+      {submitted.id && (
+        <div className="rounded-xl mt-3 px-3 py-2.5 flex items-center gap-3 flex-wrap"
+          style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+          {drive ? (
+            <>
+              <FileText size={15} style={{ color: "var(--primary)" }} />
+              <div style={{ flex: 1, minWidth: 180 }}>
+                <div className="text-xs font-semibold">Drive folder ready</div>
+                <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                  Drop the contract, survey and anything else for this order in here.
+                </div>
+              </div>
+              <button onClick={() => onCopy(drive, "Folder link copied")}
+                className="sw-focus text-xs font-semibold px-3 py-2 rounded-lg"
+                style={{ background: "var(--surface-alt)", border: "1px solid var(--border)", color: "var(--ink-soft)" }}>
+                Copy link
+              </button>
+              <a href={drive} target="_blank" rel="noreferrer"
+                className="sw-focus text-xs font-semibold px-3 py-2 rounded-lg text-white"
+                style={{ background: "var(--primary)", textDecoration: "none" }}>
+                Open folder &amp; upload
+              </a>
+            </>
+          ) : gaveUp ? (
+            <>
+              <AlertTriangle size={15} style={{ color: "var(--amber)" }} />
+              <div style={{ flex: 1, minWidth: 180 }}>
+                <div className="text-xs font-semibold" style={{ color: "var(--amber)" }}>No folder yet</div>
+                <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                  The order saved fine. Open it from Claimed in a minute or two and the link should be there —
+                  if it isn't, the folder script needs a look.
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <Loader2 size={15} className="sw-spin" style={{ color: "var(--ink-faint)" }} />
+              <div style={{ flex: 1, minWidth: 180 }}>
+                <div className="text-xs font-semibold">Creating your Drive folder…</div>
+                <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                  Usually about a minute. You can carry on — the link will also be on the order itself.
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NewSubmissionView({ onSubmit, submitting, isOffice }) {
   const [portal, setPortal] = useState("Lilac");
   const tabs = [
     { key: "Lilac", label: "Lilac Box (Secure Order)", tone: "primary" },
@@ -4034,7 +4203,7 @@ function NewSubmissionView({ onSubmit, submitting }) {
             style={portal === t.key ? { background: `var(--${t.tone})`, color: "#fff" } : { background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>{t.label}</button>
         ))}
       </div>
-      {portal === "Lilac" && <LilacForm onSubmit={onSubmit} submitting={submitting} />}
+      {portal === "Lilac" && <LilacForm onSubmit={onSubmit} submitting={submitting} isOffice={isOffice} />}
       {portal === "IMP" && <ImpForm onSubmit={onSubmit} submitting={submitting} />}
       {portal === "Arbitration" && <ArbitrationForm onSubmit={onSubmit} submitting={submitting} />}
     </div>
@@ -16214,7 +16383,8 @@ export default function App() {
   const handleNewOrder = useCallback(async (partial) => {
     setSubmitting(true);
     const row = { ...partial, submission_date: new Date().toISOString(), last_updated: new Date().toISOString() };
-    const { error } = await supabase.from("orders").insert(row);
+    // Ask for the row back, so the splash can watch for its Drive folder
+    const { data, error } = await supabase.from("orders").insert(row).select("id").single();
     setSubmitting(false);
     if (error) {
       setToast(`Couldn't save: ${error.message}`);
@@ -16224,7 +16394,7 @@ export default function App() {
     setTab("dashboard");
     // Show the LBCR reference persistently — the agent needs to carry it
     // into NetSuite, so this shouldn't vanish on a timer like a toast.
-    setSubmitted({ company: partial.company_name, ref: partial.lbcr_ref });
+    setSubmitted({ company: partial.company_name, ref: partial.lbcr_ref, id: data?.id || null });
     // realtime will refresh the list; loadOrders as a fallback
     loadOrders();
   }, [loadOrders]);
@@ -16410,24 +16580,11 @@ export default function App() {
       <div style={{ minWidth: 0 }}>
       <main className={`sw-main p-6 mx-auto ${["breakdown", "daybyday", "forecast", "landscapes", "dashboard", "distribution", "admin", "statuses", "delivery", "tops", "leads", "pipeline", "calls"].includes(tab) ? "max-w-none" : "max-w-6xl"}`}>
         {submitted && (
-          <div className="sw-rise rounded-2xl p-4 mb-5 flex items-center justify-between gap-4" style={{ background: "var(--green-soft)", border: "1px solid var(--green)" }}>
-            <div className="flex items-center gap-3">
-              <CheckCircle2 size={20} style={{ color: "var(--green)" }} />
-              <div>
-                <div className="font-semibold text-sm">{submitted.company} submitted</div>
-                <div className="text-xs" style={{ color: "var(--ink-soft)" }}>Quote this reference on the NetSuite order so the two can be matched up.</div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="sw-mono font-bold text-sm px-3 py-2 rounded-lg" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>{submitted.ref}</span>
-              <button onClick={() => { navigator.clipboard?.writeText(submitted.ref); setToast("Reference copied"); setTimeout(() => setToast(""), 1800); }}
-                className="sw-focus text-xs font-semibold px-3 py-2 rounded-lg text-white" style={{ background: "var(--green)" }}>Copy</button>
-              <button onClick={() => setSubmitted(null)} className="sw-focus p-2 rounded-lg" style={{ color: "var(--ink-soft)" }}><X size={16} /></button>
-            </div>
-          </div>
+          <SubmittedBanner submitted={submitted} onClose={() => setSubmitted(null)}
+            onCopy={(text, msg) => { navigator.clipboard?.writeText(text); setToast(msg); setTimeout(() => setToast(""), 1800); }} />
         )}
         {tab === "dashboard" && <DashboardView orders={orders} netsuite={netsuiteResolved} forecasts={forecasts} staff={staff} profiles={allProfiles} payPlans={payPlans} planTiers={planTiers} planMetrics={planMetrics} onNewOrder={() => setTab("new")} onOpenOrder={setSelected} flashId={flashId} profile={profile} loading={loading} />}
-        {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} />}
+        {tab === "new" && <NewSubmissionView onSubmit={handleNewOrder} submitting={submitting} isOffice={profile?.role === "office"} />}
         {tab === "tops" && <TopsView netsuite={netsuiteResolved} staff={staff} />}
         {tab === "daybyday" && <DayByDayView orders={orders} staff={staff} netsuite={netsuiteResolved} />}
         {tab === "breakdown" && <SalesBreakdownView netsuite={netsuiteResolved} />}
