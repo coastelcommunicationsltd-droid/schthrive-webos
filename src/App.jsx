@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { createClient } from "@supabase/supabase-js";
 import {
   Search, Filter, X, AlertTriangle, CheckCircle2, Clock, Radio, Plus,
   Building2, Wallet, TrendingUp, ShieldAlert, RefreshCw, LogOut,
@@ -8,41 +7,33 @@ import {
   ChevronDown, ClipboardList, LayoutDashboard, Settings as SettingsIcon,
   History, FileText, Inbox, Menu, Lock, Trophy, GitBranch, PhoneCall,
 } from "lucide-react";
+import {
+  login as apiLogin,
+  logout as apiLogout,
+  getCurrentUser,
+  changePassword as apiChangePassword,
+  salesCoach as apiSalesCoach,
+  selectData,
+  createApiDataClient,
+} from './api.js';
 
 /* ====================================================================== */
 /*  CONFIG — edit these as your org changes                               */
 /* ====================================================================== */
 
-// 1. Supabase connection — read from environment variables.
-//    Set these in a local `.env` file (for npm run dev) AND in your
-//    Vercel project settings (for the live site):
-//      VITE_SUPABASE_URL=https://xrekebgnubhjqtpllbcz.supabase.co
-//      VITE_SUPABASE_ANON_KEY=your_publishable_key
-//    The anon key is safe in frontend code — Row Level Security is what
-//    actually controls who can read/write what.
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-
-if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-  // Fails loudly in the console rather than a vague "Invalid API key" later
-  console.error(
-    "Supabase config missing. Expected VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY. " +
-    "Locally: check .env exists and restart the dev server. " +
-    "On Vercel: check Settings > Environment Variables, then redeploy."
-  );
-}
+// 1. Data access now goes through the self-hosted SchThrive API.
 
 // 2. The selling teams shown in the management breakdown toggle.
 //    (Order Delivery / leadership are intentionally excluded here.)
 const SELLING_TEAMS = ["Sam Wilkes", "Michael Barker", "Chris Pennington"];
 
 // NOTE: The staff list (Closer / Lead Gen dropdowns) now comes LIVE from the
-//   `staff` table in Supabase — no hardcoding. Each person's team and UIN are
+//   `staff` table in the self-hosted database — no hardcoding. Each person's team and UIN are
 //   read from there, and only staff with sells = true appear in the dropdowns.
 
 /* ====================================================================== */
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const dataClient = createApiDataClient();
 
 // Live staff list, loaded once from the database and shared to every form.
 const StaffContext = React.createContext({ all: [], sellers: [] });
@@ -1449,11 +1440,11 @@ function SectionCard({ title, children, tone = "primary", right }) {
   );
 }
 
-/* ---------------------------------------------------------------------- */
-/*  LOGIN SCREEN (magic link)                                             */
-/* ---------------------------------------------------------------------- */
+/* -------------------------- */
+/*  REPLACEMENT LOGIN SCREEN  */
+/* -------------------------- */
 
-function LoginScreen() {
+function LoginScreen({ onSignedIn }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1461,15 +1452,42 @@ function LoginScreen() {
 
   const signIn = async () => {
     setError("");
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setError("Enter a valid email address."); return; }
-    if (!password) { setError("Enter your password."); return; }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setError("Enter a valid email address.");
+      return;
+    }
+
+    if (!password) {
+      setError("Enter your password.");
+      return;
+    }
+
     setBusy(true);
-    const { error } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password });
-    setBusy(false);
-    if (error) {
-      setError(error.message.includes("Invalid login")
-        ? "Email or password not recognised. If you haven't signed in before, the starting password is Welcome2026."
-        : error.message);
+
+    try {
+      await apiLogin(
+        email.trim().toLowerCase(),
+        password
+      );
+
+      const me = await getCurrentUser();
+
+      if (!me?.authenticated || !me?.user) {
+        throw new Error("Sign-in succeeded but the user profile could not be loaded.");
+      }
+
+      onSignedIn(me.user);
+    } catch (err) {
+      if (err?.status === 401) {
+        setError(
+          "Email or password not recognised. If you haven't signed in before, use the starting password you were given."
+        );
+      } else {
+        setError(err?.message || "Unable to sign in.");
+      }
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -1486,18 +1504,35 @@ function LoginScreen() {
         </div>
 
         <label className="sw-label">Work email</label>
-        <input className="sw-input sw-focus" type="email" value={email} placeholder="you@btlocalbusiness.co.uk"
-          onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && signIn()} />
+        <input
+          className="sw-input sw-focus"
+          type="email"
+          value={email}
+          placeholder="you@btlocalbusiness.co.uk"
+          onChange={(e) => setEmail(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && signIn()}
+        />
 
         <label className="sw-label" style={{ marginTop: 12 }}>Password</label>
-        <input className="sw-input sw-focus" type="password" value={password} placeholder="••••••••"
-          onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && signIn()} />
+        <input
+          className="sw-input sw-focus"
+          type="password"
+          value={password}
+          placeholder="••••••••"
+          onChange={(e) => setPassword(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && signIn()}
+        />
 
         {error && <div className="sw-err">{error}</div>}
 
-        <button onClick={signIn} disabled={busy} className="sw-focus w-full py-3 rounded-full font-semibold text-sm mt-4 flex items-center justify-center gap-2"
-          style={{ background: "var(--primary)", color: "#fff", opacity: busy ? 0.7 : 1 }}>
-          {busy ? <Loader2 size={15} className="animate-spin" /> : <LogIn size={15} />} Sign in
+        <button
+          onClick={signIn}
+          disabled={busy}
+          className="sw-focus w-full py-3 rounded-full font-semibold text-sm mt-4 flex items-center justify-center gap-2"
+          style={{ background: "var(--primary)", color: "#fff", opacity: busy ? 0.7 : 1 }}
+        >
+          {busy ? <Loader2 size={15} className="animate-spin" /> : <LogIn size={15} />}
+          Sign in
         </button>
 
         <p className="text-xs text-center mt-4" style={{ color: "var(--ink-faint)" }}>
@@ -1508,11 +1543,12 @@ function LoginScreen() {
   );
 }
 
-/* ---------------------------------------------------------------------- */
-/*  SET A NEW PASSWORD  (forced on first sign-in, also available anytime)  */
-/* ---------------------------------------------------------------------- */
+/* ----------------------------------------- */
+/*  REPLACEMENT SET A NEW PASSWORD FUNCTION  */
+/* ----------------------------------------- */
 
-function ChangePasswordScreen({ forced, onDone, onCancel }) {
+function ChangePasswordScreen({ forced, onDone, onCancel, onSignOut }) {
+  const [currentPassword, setCurrentPassword] = useState("");
   const [pw1, setPw1] = useState("");
   const [pw2, setPw2] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1520,56 +1556,143 @@ function ChangePasswordScreen({ forced, onDone, onCancel }) {
 
   const save = async () => {
     setError("");
-    if (pw1.length < 8) { setError("Use at least 8 characters."); return; }
-    if (pw1 !== pw2) { setError("The two passwords don't match."); return; }
-    if (pw1.toLowerCase() === "welcome2026") { setError("Please choose something other than the starting password."); return; }
-    setBusy(true);
-    const { error: pwErr } = await supabase.auth.updateUser({ password: pw1 });
-    if (pwErr) { setBusy(false); setError(pwErr.message); return; }
-    const { data: sess } = await supabase.auth.getSession();
-    if (sess?.session?.user) {
-      await supabase.from("profiles").update({ must_change_password: false }).eq("id", sess.session.user.id);
+
+    if (!currentPassword) {
+      setError("Enter your current password.");
+      return;
     }
-    setBusy(false);
-    onDone();
+
+    if (pw1.length < 10) {
+      setError("Use at least 10 characters.");
+      return;
+    }
+
+    if (pw1 !== pw2) {
+      setError("The two new passwords don't match.");
+      return;
+    }
+
+    if (pw1.toLowerCase() === "welcome2026") {
+      setError("Please choose something other than the starting password.");
+      return;
+    }
+
+    setBusy(true);
+
+    try {
+      await apiChangePassword(currentPassword, pw1);
+
+      /*
+       * PostgreSQL deliberately invalidates every session after a password
+       * change, including this one, so the user must authenticate again.
+       */
+      onDone();
+    } catch (err) {
+      setError(err?.message || "Unable to change password.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
     <div className="sw-root flex items-center justify-center p-6" style={{ minHeight: "100vh" }}>
       <style>{STYLE}</style>
+
       <div className="sw-rise w-full max-w-sm rounded-2xl p-8" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
         <div className="flex items-center gap-3 mb-2">
-          <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "var(--primary-soft)", color: "var(--primary)" }}><KeyRound size={20} /></div>
+          <div
+            className="w-10 h-10 rounded-xl flex items-center justify-center"
+            style={{ background: "var(--primary-soft)", color: "var(--primary)" }}
+          >
+            <KeyRound size={20} />
+          </div>
+
           <div>
-            <div className="sw-display font-bold text-lg leading-tight">{forced ? "Set your password" : "Change password"}</div>
-            <div className="text-xs" style={{ color: "var(--ink-faint)" }}>{forced ? "Pick something only you know" : "Update your sign-in password"}</div>
+            <div className="sw-display font-bold text-lg leading-tight">
+              {forced ? "Set your password" : "Change password"}
+            </div>
+
+            <div className="text-xs" style={{ color: "var(--ink-faint)" }}>
+              {forced ? "Pick something only you know" : "Update your sign-in password"}
+            </div>
           </div>
         </div>
+
         {forced && (
-          <p className="text-xs mb-4 mt-3 p-3 rounded-lg" style={{ background: "var(--amber-soft)", color: "var(--ink-soft)" }}>
-            You're signed in with the shared starting password. Choose your own now so nobody else can open your account.
+          <p
+            className="text-xs mb-4 mt-3 p-3 rounded-lg"
+            style={{ background: "var(--amber-soft)", color: "var(--ink-soft)" }}
+          >
+            You're signed in with the starting password. Choose your own now so nobody else can open your account.
           </p>
         )}
 
-        <label className="sw-label" style={{ marginTop: 12 }}>New password</label>
-        <input className="sw-input sw-focus" type="password" value={pw1} onChange={(e) => setPw1(e.target.value)} placeholder="At least 8 characters" />
+        <label className="sw-label" style={{ marginTop: 12 }}>
+          Current password
+        </label>
 
-        <label className="sw-label" style={{ marginTop: 12 }}>Confirm password</label>
-        <input className="sw-input sw-focus" type="password" value={pw2} onChange={(e) => setPw2(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && save()} placeholder="Type it again" />
+        <input
+          className="sw-input sw-focus"
+          type="password"
+          value={currentPassword}
+          onChange={(e) => setCurrentPassword(e.target.value)}
+        />
+
+        <label className="sw-label" style={{ marginTop: 12 }}>
+          New password
+        </label>
+
+        <input
+          className="sw-input sw-focus"
+          type="password"
+          value={pw1}
+          onChange={(e) => setPw1(e.target.value)}
+          placeholder="At least 10 characters"
+        />
+
+        <label className="sw-label" style={{ marginTop: 12 }}>
+          Confirm new password
+        </label>
+
+        <input
+          className="sw-input sw-focus"
+          type="password"
+          value={pw2}
+          onChange={(e) => setPw2(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && save()}
+          placeholder="Type it again"
+        />
 
         {error && <div className="sw-err">{error}</div>}
 
-        <button onClick={save} disabled={busy} className="sw-focus w-full py-3 rounded-full font-semibold text-sm mt-4 flex items-center justify-center gap-2"
-          style={{ background: "var(--primary)", color: "#fff", opacity: busy ? 0.7 : 1 }}>
-          {busy ? <Loader2 size={15} className="animate-spin" /> : <KeyRound size={15} />} Save password
+        <button
+          onClick={save}
+          disabled={busy}
+          className="sw-focus w-full py-3 rounded-full font-semibold text-sm mt-4 flex items-center justify-center gap-2"
+          style={{ background: "var(--primary)", color: "#fff", opacity: busy ? 0.7 : 1 }}
+        >
+          {busy ? <Loader2 size={15} className="animate-spin" /> : <KeyRound size={15} />}
+          Save password
         </button>
 
         {!forced && (
-          <button onClick={onCancel} className="sw-focus w-full text-xs font-semibold mt-3" style={{ color: "var(--ink-soft)" }}>Cancel</button>
+          <button
+            onClick={onCancel}
+            className="sw-focus w-full text-xs font-semibold mt-3"
+            style={{ color: "var(--ink-soft)" }}
+          >
+            Cancel
+          </button>
         )}
+
         {forced && (
-          <button onClick={() => supabase.auth.signOut()} className="sw-focus w-full text-xs font-semibold mt-3" style={{ color: "var(--ink-soft)" }}>Sign out instead</button>
+          <button
+            onClick={onSignOut}
+            className="sw-focus w-full text-xs font-semibold mt-3"
+            style={{ color: "var(--ink-soft)" }}
+          >
+            Sign out instead
+          </button>
         )}
       </div>
     </div>
@@ -3885,7 +4008,7 @@ function LilacForm({ onSubmit, submitting, isOffice }) {
     const ref = quoteRef.trim();
     if (!ref) return;
     setQuoteState({ loading: true, error: "", found: null });
-    const { data, error } = await supabase.from("quotes").select("*")
+    const { data, error } = await dataClient.from("quotes").select("*")
       .ilike("quote_ref", ref).order("created_at", { ascending: false }).limit(1);
     if (error) {
       setQuoteState({ loading: false, error: error.message, found: null });
@@ -4471,10 +4594,23 @@ function SubmittedBanner({ submitted, onClose, onCopy }) {
     if (waited > 120) return;
 
     const t = setTimeout(async () => {
-      const { data } = await supabase.from("orders")
-        .select("drive_link").eq("id", submitted.id).single();
-      if (data?.drive_link) setDrive(data.drive_link);
-      else setWaited((w) => w + 5);
+     const data = await selectData({
+  table: 'orders',
+  columns: ['drive_link'],
+  filters: [
+    {
+      column: 'id',
+      op: 'eq',
+      value: submitted.id,
+    },
+  ],
+  limit: 1,
+});
+
+if (data?.[0]?.drive_link) {
+  setDrive(data[0].drive_link);
+} 
+     else setWaited((w) => w + 5);
     }, waited === 0 ? 2000 : 5000);
 
     return () => clearTimeout(t);
@@ -6215,7 +6351,7 @@ function PayPlansView({ plans, staff, tiers, metrics, tablesMissing, error, onSa
         <div className="rounded-xl p-3 mb-3 flex items-start gap-2" style={{ background: "var(--amber-soft)", border: "1px solid var(--amber)" }}>
           <AlertTriangle size={15} style={{ color: "var(--amber)", flexShrink: 0, marginTop: 1 }} />
           <div className="text-sm" style={{ color: "var(--ink-soft)" }}>
-            <b>Tiers aren't set up yet.</b> Run <code>add_pay_plan_tiers.sql</code> in the Supabase SQL editor,
+            <b>Tiers aren't set up yet.</b> Run <code>add_pay_plan_tiers.sql</code> in the legacy backend SQL editor,
             then reload this page. Until then the Add tier button has nowhere to save to.
           </div>
         </div>
@@ -6950,9 +7086,9 @@ function CoachSettingsView({ scenarios, settings, stages, onSaveScenario, onAddS
 const DATA_SOURCES = [
   {
     key: "orders", table: "orders", label: "Lilac Box orders",
-    source: "Submitted in this app", cadence: "Live (Realtime)",
+    source: "Submitted in this app", cadence: "API + 2-minute poll",
     freshField: "last_updated", dateField: "submission_date",
-    note: "Written directly by agents. Realtime push plus a 2-minute safety poll.",
+    note: "Written directly by agents. 2-minute safety poll through the self-hosted API.",
   },
   {
     key: "netsuite_orders", table: "netsuite_orders", label: "NetSuite orders",
@@ -6982,7 +7118,7 @@ const DATA_SOURCES = [
   },
   {
     key: "forecasts", table: "forecasts", label: "Forecasts",
-    source: "Submitted in this app", cadence: "Live (Realtime)",
+    source: "Submitted in this app", cadence: "API + 2-minute poll",
     freshField: "created_at", dateField: "forecast_week",
     note: "Weekly agent submissions. match_forecasts() links them to NetSuite by Opp ID, then by fuzzy company name.",
   },
@@ -7025,19 +7161,35 @@ function DeveloperView() {
     const out = {};
     for (const s of DATA_SOURCES) {
       try {
-        const { count, error: cErr } = await supabase
-          .from(s.table).select("*", { count: "exact", head: true });
-        if (cErr) throw cErr;
 
-        let newest = null;
-        if (s.freshField) {
-          const { data } = await supabase
-            .from(s.table).select(s.freshField)
-            .order(s.freshField, { ascending: false }).limit(1);
-          newest = data && data[0] ? data[0][s.freshField] : null;
-        }
-        out[s.key] = { count: count ?? 0, newest, ok: true };
-      } catch (e) {
+const count = await selectData({
+  table: s.table,
+  countOnly: true,
+});
+
+let newest = null;
+
+if (s.freshField) {
+  const data = await selectData({
+    table: s.table,
+    columns: [s.freshField],
+    order: {
+      column: s.freshField,
+      ascending: false,
+    },
+    limit: 1,
+  });
+
+  newest = data?.[0]?.[s.freshField] ?? null;
+}
+
+out[s.key] = {
+  count,
+  newest,
+  ok: true,
+}; 
+
+     } catch (e) {
         out[s.key] = { count: null, newest: null, ok: false, error: String(e?.message || e) };
       }
     }
@@ -7053,7 +7205,7 @@ function DeveloperView() {
   const loadSample = useCallback(async (s, n) => {
     setSample((p) => ({ ...p, [s.key]: { ...(p[s.key] || {}), loading: true, error: "" } }));
     try {
-      let q = supabase.from(s.table).select("*").limit(n);
+      let q = dataClient.from(s.table).select("*").limit(n);
       if (s.freshField) q = q.order(s.freshField, { ascending: false });
       else if (s.dateField) q = q.order(s.dateField, { ascending: false });
       const { data, error } = await q;
@@ -7101,7 +7253,7 @@ function DeveloperView() {
       const PAGE = 1000;
       let all = [];
       for (let from = 0; ; from += PAGE) {
-        let q = supabase.from(s.table).select("*").range(from, from + PAGE - 1);
+        let q = dataClient.from(s.table).select("*").range(from, from + PAGE - 1);
         if (s.freshField) q = q.order(s.freshField, { ascending: false });
         else if (s.dateField) q = q.order(s.dateField, { ascending: false });
         const { data, error } = await q;
@@ -8172,7 +8324,7 @@ function ScoreBadge({ score }) {
   );
 }
 
-function SalesCoachView() {
+function SalesCoachView({ profile }) {
   const [scenario, setScenario] = useState("cold_call");
   const [status, setStatus] = useState("idle");      // idle | live | thinking | ended
   const [turns, setTurns] = useState([]);            // {role, text, score, note}
@@ -8198,20 +8350,45 @@ function SalesCoachView() {
   const [coachCfg, setCoachCfg] = useState({ rubric: "", what_good_looks_like: "", feedback_guidance: "" });
 
   // Scenarios and the grading rubric are managed in Settings, not in code.
-  useEffect(() => {
-    supabase.from("coach_scenarios").select("*").eq("active", true).order("sort_order")
-      .then(({ data }) => {
-        if (data && data.length) {
-          setScenarios(data);
-          setScenario((cur) => (data.some((s) => s.key === cur) ? cur : data[0].key));
-        } else {
-          setScenarios(COACH_SCENARIOS);
-        }
-      });
-    supabase.from("coach_settings").select("*").eq("id", 1).maybeSingle()
-      .then(({ data }) => { if (data) setCoachCfg(data); });
-  }, []);
+useEffect(() => {
+  selectData({
+    table: 'coach_scenarios',
+    filters: [
+      {
+        column: 'active',
+        op: 'eq',
+        value: true,
+      },
+    ],
+    order: {
+      column: 'sort_order',
+      ascending: true,
+    },
+  }).then((data) => {
+    if (data && data.length) {
+      setScenarios(data);
+      setScenario((cur) =>
+        data.some((s) => s.key === cur) ? cur : data[0].key
+      );
+    } else {
+      setScenarios(COACH_SCENARIOS);
+    }
+  });
 
+  selectData({
+    table: 'coach_settings',
+    filters: [
+      {
+        column: 'id',
+        op: 'eq',
+        value: 1,
+      },
+    ],
+    limit: 1,
+  }).then((data) => {
+    if (data?.[0]) setCoachCfg(data[0]);
+  });
+}, []);
   const activeScenario = useMemo(
     () => (scenarios || []).find((s) => s.key === scenario) || null,
     [scenarios, scenario]
@@ -8225,12 +8402,16 @@ function SalesCoachView() {
   }, [activeScenario, status]);
 
   const loadHistory = useCallback(async () => {
-    const { data } = await supabase
-      .from("coach_sessions")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(40);
-    setHistory(data || []);
+  const data = await selectData({
+  table: 'coach_sessions',
+  order: {
+    column: 'created_at',
+    ascending: false,
+  },
+  limit: 40,
+});
+
+setHistory(data || []);
   }, []);
   useEffect(() => { loadHistory(); }, [loadHistory]);
 
@@ -8271,32 +8452,19 @@ function SalesCoachView() {
   }, [turns, interim]);
 
   // ---- talking to the coach function --------------------------------
-  const callCoach = useCallback(async (mode, history) => {
-    const { data: sess } = await supabase.auth.getSession();
-    const token = sess?.session?.access_token;
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/sales-coach`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-        apikey: SUPABASE_ANON_KEY,
-      },
-      body: JSON.stringify({
-        mode, scenario, history,
-        persona: activeScenario?.persona || null,
-        rubric: coachCfg.rubric || null,
-        method: coachCfg.what_good_looks_like || null,
-        feedbackGuidance: coachCfg.feedback_guidance || null,
-        stageIndex: stageIdxRef.current,
-        difficulty,
-      }),
-    });
-    if (!res.ok) {
-      const t = await res.text();
-      throw new Error(`Coach unavailable (${res.status}). ${t.slice(0, 160)}`);
-    }
-    return res.json();
-  }, [scenario, activeScenario, coachCfg, difficulty]);
+const callCoach = useCallback(async (mode, history) => {
+  return apiSalesCoach({
+    mode,
+    scenario,
+    history,
+    persona: activeScenario?.persona || null,
+    rubric: coachCfg.rubric || null,
+    method: coachCfg.what_good_looks_like || null,
+    feedbackGuidance: coachCfg.feedback_guidance || null,
+    stageIndex: stageIdxRef.current,
+    difficulty,
+  });
+}, [scenario, activeScenario, coachCfg, difficulty]);
 
   // Speech synthesis has two traps: getVoices() is populated asynchronously
   // in Chrome, so the first call can find nothing and silently do nothing;
@@ -8556,10 +8724,9 @@ function SalesCoachView() {
         pts += SCORE_POINTS[t.score] ?? 0;
       });
       try {
-        const { data: sess } = await supabase.auth.getSession();
-        await supabase.from("coach_sessions").insert({
-          user_id: sess?.session?.user?.id || null,
-          user_name: sess?.session?.user?.email || null,
+        await dataClient.from("coach_sessions").insert({
+          user_id: profile?.id || null,
+          user_name: profile?.email || null,
           scenario,
           grade: null,
           headline: "Call left before finishing",
@@ -8605,10 +8772,9 @@ function SalesCoachView() {
       const tally = agentTurns.reduce((m, t) => { m[t.score] = (m[t.score] || 0) + 1; return m; }, {});
       const pts = agentTurns.reduce((s, t) => s + (SCORE_POINTS[t.score] ?? 0), 0);
       if (agentTurns.length > 0) {
-        const { data: sess } = await supabase.auth.getSession();
-        await supabase.from("coach_sessions").insert({
-          user_id: sess?.session?.user?.id || null,
-          user_name: sess?.session?.user?.email || null,
+        await dataClient.from("coach_sessions").insert({
+          user_id: profile?.id || null,
+          user_name: profile?.email || null,
           scenario,
           grade: r.grade || null,
           headline: r.headline || null,
@@ -9618,7 +9784,13 @@ function ForecastView({ netsuite, profile, staff }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data } = await supabase.from("forecasts").select("*").order("forecast_week", { ascending: false });
+   const data = await selectData({
+  table: 'forecasts',
+  order: {
+    column: 'forecast_week',
+    ascending: false,
+  },
+}); 
     setRows(data || []);
     setLoading(false);
   }, []);
@@ -10007,13 +10179,12 @@ function ForecastView({ netsuite, profile, staff }) {
     }
 
     setSaving(true);
-    const { data: sess } = await supabase.auth.getSession();
     const agentStaff = findStaff(sellers, draft.agent_name);
     const lgStaff = draft.lead_gen_name ? findStaff(sellers, draft.lead_gen_name) : null;
 
     const rows = lines.map((l) => ({
       forecast_week: week,
-      created_by: sess?.session?.user?.id || null,
+      created_by: profile?.id || null,
       business_name: draft.business_name.trim(),
       opp_id: draft.opp_id.trim() || null,
       pillar: l.pillar,
@@ -10035,7 +10206,7 @@ function ForecastView({ netsuite, profile, staff }) {
       notes: draft.notes || null,
     }));
 
-    const { error } = await supabase.from("forecasts").insert(rows);
+    const { error } = await dataClient.from("forecasts").insert(rows);
     setSaving(false);
     if (error) {
       setToastLocal(`Couldn't save: ${error.message}`);
@@ -10053,7 +10224,7 @@ function ForecastView({ netsuite, profile, staff }) {
   };
 
   const deleteForecast = async (id) => {
-    const { error } = await supabase.from("forecasts").delete().eq("id", id);
+    const { error } = await dataClient.from("forecasts").delete().eq("id", id);
     if (error) {
       setToastLocal(`Couldn't delete: ${error.message}`);
       setTimeout(() => setToastLocal(""), 5000);
@@ -10064,7 +10235,7 @@ function ForecastView({ netsuite, profile, staff }) {
 
   const runMatch = async () => {
     setSaving(true);
-    const { data, error } = await supabase.rpc("match_forecasts");
+    const { data, error } = await dataClient.rpc("match_forecasts");
     setSaving(false);
     setToastLocal(error ? `Match failed: ${error.message}` : `Matched ${data?.total ?? 0} forecast${data?.total === 1 ? "" : "s"} against NetSuite`);
     setTimeout(() => setToastLocal(""), 4000);
@@ -10072,7 +10243,7 @@ function ForecastView({ netsuite, profile, staff }) {
   };
 
   const updateRow = async (id, patch) => {
-    const { error } = await supabase.from("forecasts").update(patch).eq("id", id);
+    const { error } = await dataClient.from("forecasts").update(patch).eq("id", id);
     if (error) { setToastLocal(`Couldn't update: ${error.message}`); setTimeout(() => setToastLocal(""), 4000); return; }
     load();
   };
@@ -11038,8 +11209,14 @@ function QuoteLog({ profile }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data } = await supabase.from("quotes").select("*")
-      .order("created_at", { ascending: false }).limit(500);
+const data = await selectData({
+  table: 'quotes',
+  order: {
+    column: 'created_at',
+    ascending: false,
+  },
+  limit: 500,
+});
     setQuotes(data || []);
     setLoading(false);
   }, []);
@@ -11099,7 +11276,7 @@ function QuoteLog({ profile }) {
 
   const [confirmDel, setConfirmDel] = useState(null);
   const deleteQuote = useCallback(async (id) => {
-    const { error } = await supabase.from("quotes").delete().eq("id", id);
+    const { error } = await dataClient.from("quotes").delete().eq("id", id);
     if (error) return;
     setConfirmDel(null);
     if (open === id) setOpen(null);
@@ -11359,10 +11536,9 @@ function QuoteBuilderView({ profile, staff }) {
   const saveQuote = useCallback(async () => {
     if (!items.length) return;
     try {
-      const { data: sess } = await supabase.auth.getSession();
-      const { error } = await supabase.from("quotes").insert({
+      const { error } = await dataClient.from("quotes").insert({
         quote_ref: quoteNumber,
-        created_by: sess?.session?.user?.id || null,
+        created_by: profile?.id || null,
         rep_name: quote.repName || null,
         rep_phone: quote.repPhone || null,
         /* No rep_email column on `quotes` yet, so it shows on the printed
@@ -11806,7 +11982,7 @@ function PipelineView({ staff, profile, appSettings, onSaveSetting }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data, error } = await supabase.from("opportunities").select("*").limit(20000);
+    const { data, error } = await dataClient.from("opportunities").select("*").limit(20000);
     if (error) {
       // 42P01 is "relation does not exist" — the feed isn't built yet
       setTableMissing(/does not exist|schema cache/i.test(error.message));
@@ -12234,7 +12410,7 @@ function CallsView({ staff, profile }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data, error } = await supabase.from("calls").select("*").limit(50000);
+    const { data, error } = await dataClient.from("calls").select("*").limit(50000);
     if (error) {
       setTableMissing(/does not exist|schema cache/i.test(error.message));
       setCalls([]);
@@ -12510,9 +12686,9 @@ function LeadsView({ staff, profile }) {
   const load = useCallback(async () => {
     setLoading(true);
     const [lr, rr, pl] = await Promise.all([
-      supabase.from("leads").select("*").limit(20000),
-      supabase.from("lead_rules").select("*").order("sort_order"),
-      supabase.from("pay_plans").select("id,name,target_gp,plan_kind"),
+      dataClient.from("leads").select("*").limit(20000),
+      dataClient.from("lead_rules").select("*").order("sort_order"),
+      dataClient.from("pay_plans").select("id,name,target_gp,plan_kind"),
     ]);
     setLeads(lr.data || []);
     setRules(rr.data || []);
@@ -13419,7 +13595,7 @@ function LandscapesView({ profile, staff }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data } = await supabase.from("landscapes").select("*").order("created_at", { ascending: false });
+    const { data } = await dataClient.from("landscapes").select("*").order("created_at", { ascending: false });
     setRows(data || []);
     setLoading(false);
   }, []);
@@ -13431,7 +13607,7 @@ function LandscapesView({ profile, staff }) {
   const addLandscape = async () => {
     if (!draft.company_name.trim()) { flash("Company name is needed."); return; }
     setSaving(true);
-    const { error } = await supabase.from("landscapes").insert({
+    const { error } = await dataClient.from("landscapes").insert({
       company_name: draft.company_name.trim(),
       contact_name: draft.contact_name.trim() || null,
       contact_number: draft.contact_number.trim() || null,
@@ -13452,7 +13628,7 @@ function LandscapesView({ profile, staff }) {
   const allocate = async (ids, agentName) => {
     if (!ids.length || !agentName) return;
     const s = findStaff(sellers, agentName);
-    const { error } = await supabase.from("landscapes").update({
+    const { error } = await dataClient.from("landscapes").update({
       allocated_to: s?.user_id || null,
       allocated_to_name: agentName,
       allocated_team: s?.team || null,
@@ -13466,7 +13642,7 @@ function LandscapesView({ profile, staff }) {
   };
 
   const updateRow = async (id, patch) => {
-    const { error } = await supabase.from("landscapes").update(patch).eq("id", id);
+    const { error } = await dataClient.from("landscapes").update(patch).eq("id", id);
     if (error) { flash(`Couldn't update: ${error.message}`); return; }
     load();
   };
@@ -16370,19 +16546,49 @@ export default function App() {
   // Simple route detection: /tv (path or #tv) shows the TV board.
   const isTVRoute = typeof window !== "undefined" && (window.location.pathname.replace(/\/$/, "").endsWith("/tv") || window.location.hash === "#tv");
 
-  // Auth session
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setAuthReady(true); });
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-    return () => sub.subscription.unsubscribe();
-  }, []);
+ // Replacement Auth session and Load profile
 
-  // Load profile once signed in
-  useEffect(() => {
-    if (!session?.user) { setProfile(null); return; }
-    supabase.from("profiles").select("*").eq("id", session.user.id).single()
-      .then(({ data }) => setProfile(data || { id: session.user.id, role: "agent", full_name: session.user.email }));
-  }, [session]);
+ useEffect(() => {
+  let cancelled = false;
+
+  const initialiseAuth = async () => {
+    try {
+      const me = await getCurrentUser();
+
+      if (cancelled) return;
+
+      if (me?.authenticated && me?.user) {
+        setProfile(me.user);
+
+        setSession({
+          user: {
+            id: me.user.id,
+            email: me.user.email,
+          },
+        });
+      } else {
+        setProfile(null);
+        setSession(null);
+      }
+    } catch (err) {
+      if (!cancelled) {
+        setProfile(null);
+        setSession(null);
+      }
+    } finally {
+      if (!cancelled) {
+        setAuthReady(true);
+      }
+    }
+  };
+
+  initialiseAuth();
+
+  return () => {
+    cancelled = true;
+  };
+}, []);
+
 
   // Someone marked as a leaver shouldn't be able to keep using a live
   // session. Their password is scrambled server-side too; this closes the
@@ -16392,14 +16598,27 @@ export default function App() {
     const me = staff.find((s) => s.user_id === session.user.id);
     if (me && me.active === false) {
       setToast("This account is no longer active.");
-      setTimeout(() => supabase.auth.signOut(), 1500);
+      setTimeout(async () => {
+  try {
+    await apiLogout();
+  } finally {
+    setSession(null);
+    setProfile(null);
+  }
+}, 1500);
     }
   }, [staff, session]);
 
   // Load the staff list (for dropdowns) once signed in
   const loadStaff = useCallback(async () => {
-    const { data } = await supabase.from("staff").select("*").order("full_name");
-    setStaff(data || []);
+  const data = await selectData({
+  table: 'staff',
+  order: {
+    column: 'full_name',
+    ascending: true,
+  },
+});
+setStaff(data || []);
   }, []);
   useEffect(() => { if (session?.user) loadStaff(); }, [session, loadStaff]);
 
@@ -16409,7 +16628,7 @@ export default function App() {
   // to one person's deals just because an agent signed in on it.
   const loadNetsuite = useCallback(async () => {
     if (isTVRoute) {
-      const { data } = await supabase.rpc("tv_netsuite");
+      const { data } = await dataClient.rpc("tv_netsuite");
       setNetsuite(data || []);
       return;
     }
@@ -16417,12 +16636,24 @@ export default function App() {
     let all = [];
     let from = 0;
     for (;;) {
-      const { data, error } = await supabase
-        .from("netsuite_orders")
-        .select("*")
-        .order("order_date", { ascending: false })
-        .range(from, from + PAGE - 1);
-      if (error || !data) break;
+  let data;
+
+try {
+  data = await selectData({
+    table: 'netsuite_orders',
+    order: {
+      column: 'order_date',
+      ascending: false,
+    },
+    limit: PAGE,
+    offset: from,
+  });
+} catch {
+  break;
+}
+
+if (!data) break;    
+
       all = all.concat(data);
       if (data.length < PAGE) break;
       from += PAGE;
@@ -16434,15 +16665,25 @@ export default function App() {
 
   // Forecasts — the Claimed page can switch to a forecast view
   const loadForecasts = useCallback(async () => {
-    const { data } = await supabase.from("forecasts").select("*").order("forecast_week", { ascending: false });
-    setForecasts(data || []);
+  const data = await selectData({
+  table: 'forecasts',
+  order: {
+    column: 'forecast_week',
+    ascending: false,
+  },
+});
+
+setForecasts(data || []);
+
   }, []);
   useEffect(() => { if (session?.user) loadForecasts(); }, [session, loadForecasts]);
 
   // Small key/value settings — currently just which team does delivery
   const loadAppSettings = useCallback(async () => {
-    const { data } = await supabase.from("app_settings").select("*");
-    const m = {};
+  const data = await selectData({
+  table: 'app_settings',
+  });
+  const m = {};
     (data || []).forEach((r) => { m[r.key] = r.value; });
     setAppSettings(m);
   }, []);
@@ -16452,7 +16693,7 @@ export default function App() {
      store its product config as JSON, which keeps that editable without a
      schema change. */
   const saveAppSetting = useCallback(async (key, value) => {
-    const { error } = await supabase.from("app_settings")
+    const { error } = await dataClient.from("app_settings")
       .upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: "key" });
     if (error) {
       setToast(`Couldn't save: ${error.message}`);
@@ -16467,9 +16708,16 @@ export default function App() {
   // Unplaced / progressing orders from the NetSuite workbook
   const [unplaced, setUnplaced] = useState([]);
   const loadUnplaced = useCallback(async () => {
-    const { data } = await supabase.from("unplaced_orders").select("*")
-      .order("order_date", { ascending: false }).limit(5000);
-    setUnplaced(data || []);
+const data = await selectData({
+  table: 'unplaced_orders',
+  order: {
+    column: 'order_date',
+    ascending: false,
+  },
+  limit: 5000,
+});
+
+setUnplaced(data || []);
   }, []);
   useEffect(() => {
     loadWhenNeeded("unplaced", session?.user && tab === "delivery", loadUnplaced);
@@ -16481,7 +16729,11 @@ export default function App() {
      be wasteful. */
   const [leadsForAdmin, setLeadsForAdmin] = useState([]);
   const loadLeadsForAdmin = useCallback(async () => {
-    const { data } = await supabase.from("leads").select("creator,lead_owner").limit(20000);
+const data = await selectData({
+  table: 'leads',
+  columns: ['creator', 'lead_owner'],
+  limit: 20000,
+});
     setLeadsForAdmin(data || []);
   }, []);
   useEffect(() => {
@@ -16489,7 +16741,13 @@ export default function App() {
   }, [session, tab, loadLeadsForAdmin, loadWhenNeeded]);
 
   const loadAliases = useCallback(async () => {
-    const { data } = await supabase.from("staff_aliases").select("*").order("alias");
+const data = await selectData({
+  table: 'staff_aliases',
+  order: {
+    column: 'alias',
+    ascending: true,
+  },
+});
     setAliases(data || []);
   }, []);
   useEffect(() => { if (session?.user) loadAliases(); }, [session, loadAliases]);
@@ -16508,13 +16766,13 @@ export default function App() {
   }, [aliases, staff]);
 
   const saveAlias = useCallback(async (id, patch) => {
-    const { error } = await supabase.from("staff_aliases").update(patch).eq("id", id);
+    const { error } = await dataClient.from("staff_aliases").update(patch).eq("id", id);
     if (error) { setToast(`Couldn't save: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
     loadAliases();
   }, [loadAliases]);
 
   const addAlias = useCallback(async (alias, staffName) => {
-    const { error } = await supabase.from("staff_aliases").insert({ alias: alias.trim(), staff_full_name: staffName });
+    const { error } = await dataClient.from("staff_aliases").insert({ alias: alias.trim(), staff_full_name: staffName });
     if (error) { setToast(`Couldn't add: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
     setToast(`"${alias}" now maps to ${staffName}`);
     setTimeout(() => setToast(""), 3000);
@@ -16528,7 +16786,7 @@ export default function App() {
   const addLeaver = useCallback(async (fullName) => {
     const name = String(fullName || "").trim();
     if (!name) return;
-    const { error } = await supabase.from("staff").insert({
+    const { error } = await dataClient.from("staff").insert({
       full_name: name, active: false, sells: true,
     });
     if (error) { setToast(`Couldn't add: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
@@ -16538,29 +16796,36 @@ export default function App() {
   }, [loadStaff]);
 
   const deleteAlias = useCallback(async (id) => {
-    const { error } = await supabase.from("staff_aliases").delete().eq("id", id);
+    const { error } = await dataClient.from("staff_aliases").delete().eq("id", id);
     if (error) { setToast(`Couldn't delete: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
     loadAliases();
   }, [loadAliases]);
 
   // Call stages for the coach
   const [coachStages, setCoachStages] = useState([]);
-  const loadCoachStages = useCallback(async () => {
-    const { data } = await supabase.from("coach_stages").select("*").order("sort_order");
-    setCoachStages(data || []);
-  }, []);
+ const loadCoachStages = useCallback(async () => {
+  const data = await selectData({
+    table: 'coach_stages',
+    order: {
+      column: 'sort_order',
+      ascending: true,
+    },
+  });
+
+  setCoachStages(data || []);
+}, []); 
   useEffect(() => {
     loadWhenNeeded("coachStages", session?.user && (tab === "coach" || tab === "statuses"), loadCoachStages);
   }, [session, tab, loadCoachStages, loadWhenNeeded]);
 
   const saveCoachStage = useCallback(async (id, patch) => {
-    const { error } = await supabase.from("coach_stages").update(patch).eq("id", id);
+    const { error } = await dataClient.from("coach_stages").update(patch).eq("id", id);
     if (error) { setToast(`Couldn't save stage: ${error.message}`); setTimeout(() => setToast(""), 8000); return; }
     loadCoachStages();
   }, [loadCoachStages]);
 
   const addCoachStage = useCallback(async (scenarioKey, count) => {
-    const { error } = await supabase.from("coach_stages").insert({
+    const { error } = await dataClient.from("coach_stages").insert({
       scenario_key: scenarioKey,
       key: `stage_${Date.now().toString(36)}`,
       label: "New stage",
@@ -16573,32 +16838,54 @@ export default function App() {
 
   const deleteCoachStage = useCallback(async (id, label) => {
     if (!window.confirm(`Delete the "${label}" stage?`)) return;
-    await supabase.from("coach_stages").delete().eq("id", id);
+    await dataClient.from("coach_stages").delete().eq("id", id);
     loadCoachStages();
   }, [loadCoachStages]);
 
   // Sales Coach scenarios and grading, editable in Settings
-  const loadCoachCfg = useCallback(async () => {
-    const [{ data: sc }, { data: st }] = await Promise.all([
-      supabase.from("coach_scenarios").select("*").order("sort_order"),
-      supabase.from("coach_settings").select("*").eq("id", 1).maybeSingle(),
-    ]);
-    setCoachScenarios(sc || []);
-    if (st) setCoachSettings(st);
-  }, []);
-  useEffect(() => {
+
+const loadCoachCfg = useCallback(async () => {
+  const [sc, stRows] = await Promise.all([
+    selectData({
+      table: 'coach_scenarios',
+      order: {
+        column: 'sort_order',
+        ascending: true,
+      },
+    }),
+
+    selectData({
+      table: 'coach_settings',
+      filters: [
+        {
+          column: 'id',
+          op: 'eq',
+          value: 1,
+        },
+      ],
+      limit: 1,
+    }),
+  ]);
+
+  setCoachScenarios(sc || []);
+
+  const st = stRows?.[0] ?? null;
+  if (st) setCoachSettings(st);
+}, []);
+
+useEffect(() => {
     loadWhenNeeded("coachCfg", session?.user && (tab === "coach" || tab === "statuses"), loadCoachCfg);
   }, [session, tab, loadCoachCfg, loadWhenNeeded]);
 
   const saveCoachScenario = useCallback(async (id, patch) => {
-    const { error } = await supabase.from("coach_scenarios").update(patch).eq("id", id);
+    const { error } = await dataClient.from("coach_scenarios").update(patch).eq("id", id);
     if (error) { setToast(`Couldn't save scenario: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
     loadCoachCfg();
   }, [loadCoachCfg]);
 
   const addCoachScenario = useCallback(async (label) => {
     const key = label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 40) || `scenario_${Date.now()}`;
-    const { error } = await supabase.from("coach_scenarios").insert({
+    const { error } = await dataClient.from("coach_scenarios").insert({
       key, label,
       blurb: "Describe the situation in a few words",
       persona: "You are ... (describe the customer the agent will be speaking to, in second person)",
@@ -16609,14 +16896,14 @@ export default function App() {
   }, [loadCoachCfg]);
 
   const deleteCoachScenario = useCallback(async (id, label) => {
-    const { error } = await supabase.from("coach_scenarios").delete().eq("id", id);
+    const { error } = await dataClient.from("coach_scenarios").delete().eq("id", id);
     if (error) { setToast(`Couldn't delete: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
     setToast(`Scenario "${label}" deleted`); setTimeout(() => setToast(""), 2500);
     loadCoachCfg();
   }, [loadCoachCfg]);
 
   const saveCoachSettings = useCallback(async (patch) => {
-    const { error } = await supabase.from("coach_settings").update(patch).eq("id", 1);
+    const { error } = await dataClient.from("coach_settings").update(patch).eq("id", 1);
     if (error) { setToast(`Couldn't save: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
     setToast("Coach setup saved"); setTimeout(() => setToast(""), 2500);
     loadCoachCfg();
@@ -16627,15 +16914,15 @@ export default function App() {
   // else. Tiers, KPIs and assignment history are only read on the settings
   // and admin pages, so they wait until one of those is opened.
   const loadPayPlans = useCallback(async () => {
-    const { data } = await supabase.from("pay_plans").select("*").order("name");
+    const { data } = await dataClient.from("pay_plans").select("*").order("name");
     setPayPlans(data || []);
   }, []);
 
   const loadPlanDetail = useCallback(async () => {
     const [tiers, metrics, history] = await Promise.all([
-      supabase.from("pay_plan_tiers").select("*").order("sort_order"),
-      supabase.from("pay_plan_metrics").select("*").order("sort_order"),
-      supabase.from("staff_pay_plans").select("*").order("effective_from", { ascending: false }),
+      dataClient.from("pay_plan_tiers").select("*").order("sort_order"),
+      dataClient.from("pay_plan_metrics").select("*").order("sort_order"),
+      dataClient.from("staff_pay_plans").select("*").order("effective_from", { ascending: false }),
     ]);
     setPlanTiers(tiers.data || []);
     setPlanMetrics(metrics.data || []);
@@ -16651,7 +16938,7 @@ export default function App() {
   const explainDbError = useCallback((error, what) => {
     const msg = String(error?.message || error || "");
     if (/relation .* does not exist|Could not find the table|schema cache/i.test(msg)) {
-      return `${what} needs the pay plan tables. Run add_pay_plan_tiers.sql in the Supabase SQL editor, then reload.`;
+      return `${what} needs the pay plan tables. Run add_pay_plan_tiers.sql in the legacy backend SQL editor, then reload.`;
     }
     if (/row-level security|permission denied|violates row-level/i.test(msg)) {
       return `${what} was blocked by the database's security rules. This usually means the
@@ -16662,7 +16949,7 @@ export default function App() {
   }, []);
 
   const savePlanTier = useCallback(async (id, patch) => {
-    const { error } = await supabase.from("pay_plan_tiers").update(patch).eq("id", id);
+    const { error } = await dataClient.from("pay_plan_tiers").update(patch).eq("id", id);
     if (error) { setToast(explainDbError(error, "Saving the tier")); setTimeout(() => setToast(""), 12000); return; }
     loadPlanDetail();
   }, [loadPlanDetail, explainDbError]);
@@ -16670,7 +16957,7 @@ export default function App() {
   const addPlanTier = useCallback(async (planId) => {
     setPlanError("");
     if (!planId) { setPlanError("Select a plan on the left first."); return; }
-    const { error } = await supabase.from("pay_plan_tiers")
+    const { error } = await dataClient.from("pay_plan_tiers")
       .insert({ plan_id: planId, label: "New tier", gp_min: 0, payment_pct: 0, sort_order: 999 });
     if (error) {
       // Shown inline next to the button, not as a toast that vanishes
@@ -16681,35 +16968,35 @@ export default function App() {
   }, [loadPlanDetail, explainDbError]);
 
   const deletePlanTier = useCallback(async (id) => {
-    await supabase.from("pay_plan_tiers").delete().eq("id", id);
+    await dataClient.from("pay_plan_tiers").delete().eq("id", id);
     loadPlanDetail();
   }, [loadPlanDetail]);
 
   const addPlanMetric = useCallback(async (planId, key, label, unit) => {
-    const { error } = await supabase.from("pay_plan_metrics").insert({ plan_id: planId, key, label, unit, sort_order: 100 });
+    const { error } = await dataClient.from("pay_plan_metrics").insert({ plan_id: planId, key, label, unit, sort_order: 100 });
     if (error) { setToast(explainDbError(error, "Adding a KPI")); setTimeout(() => setToast(""), 12000); return; }
     loadPlanDetail();
   }, [loadPlanDetail, explainDbError]);
 
   const deletePlanMetric = useCallback(async (id) => {
-    await supabase.from("pay_plan_metrics").delete().eq("id", id);
+    await dataClient.from("pay_plan_metrics").delete().eq("id", id);
     loadPlanDetail();
   }, [loadPlanDetail]);
 
   const assignPlan = useCallback(async (staffId, planId, from) => {
     // Close off whatever they were on, then open the new one
-    await supabase.from("staff_pay_plans")
+    await dataClient.from("staff_pay_plans")
       .update({ effective_to: from })
       .eq("staff_id", staffId).is("effective_to", null);
-    const { error } = await supabase.from("staff_pay_plans")
+    const { error } = await dataClient.from("staff_pay_plans")
       .insert({ staff_id: staffId, pay_plan_id: planId || null, effective_from: from });
     if (error) { setToast(`Couldn't assign: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
-    await supabase.from("staff").update({ pay_plan_id: planId || null }).eq("id", staffId);
+    await dataClient.from("staff").update({ pay_plan_id: planId || null }).eq("id", staffId);
     loadPlanDetail(); loadStaff();
   }, [loadPlanDetail, loadStaff]);
 
   const deleteAssignment = useCallback(async (id) => {
-    await supabase.from("staff_pay_plans").delete().eq("id", id);
+    await dataClient.from("staff_pay_plans").delete().eq("id", id);
     loadPlanDetail();
   }, [loadPlanDetail]);
   useEffect(() => { if (session?.user) loadPayPlans(); }, [session, loadPayPlans]);
@@ -16719,13 +17006,13 @@ export default function App() {
   }, [session, tab, loadPlanDetail, loadWhenNeeded]);
 
   const savePayPlan = useCallback(async (id, patch) => {
-    const { error } = await supabase.from("pay_plans").update(patch).eq("id", id);
+    const { error } = await dataClient.from("pay_plans").update(patch).eq("id", id);
     if (error) { setToast(`Couldn't save plan: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
     loadPayPlans();
   }, [loadPayPlans]);
 
   const addPayPlan = useCallback(async (name) => {
-    const { error } = await supabase.from("pay_plans").insert({ name });
+    const { error } = await dataClient.from("pay_plans").insert({ name });
     if (error) { setToast(`Couldn't add plan: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
     setToast(`Plan "${name}" added`);
     setTimeout(() => setToast(""), 2500);
@@ -16733,7 +17020,7 @@ export default function App() {
   }, [loadPayPlans]);
 
   const deletePayPlan = useCallback(async (id, name) => {
-    const { error } = await supabase.from("pay_plans").delete().eq("id", id);
+    const { error } = await dataClient.from("pay_plans").delete().eq("id", id);
     if (error) { setToast(`Couldn't delete: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
     setToast(`Plan "${name}" deleted`);
     setTimeout(() => setToast(""), 2500);
@@ -16742,7 +17029,9 @@ export default function App() {
 
   // Status settings — colours and what counts toward GP/SOV
   const loadStatusCfg = useCallback(async () => {
-    const { data } = await supabase.from("status_config").select("*");
+const data = await selectData({
+  table: 'status_config',
+});
     setStatusRows(data || []);
     return data || [];
   }, []);
@@ -16769,11 +17058,11 @@ export default function App() {
       });
     });
     if (!missing.length) return;
-    supabase.from("status_config").insert(missing).then(() => loadStatusCfg());
+    dataClient.from("status_config").insert(missing).then(() => loadStatusCfg());
   }, [netsuite, statusRows, profile, loadStatusCfg]);
 
   const saveStatusCfg = useCallback(async (status, patch) => {
-    const { error } = await supabase.from("status_config").update(patch).eq("status", status);
+    const { error } = await dataClient.from("status_config").update(patch).eq("status", status);
     if (error) { setToast(`Couldn't save: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
     loadStatusCfg();
   }, [loadStatusCfg]);
@@ -16787,7 +17076,9 @@ export default function App() {
 
   // Office users also load every profile, needed for the Admin page's role editor
   const loadAllProfiles = useCallback(async () => {
-    const { data } = await supabase.from("profiles").select("*");
+const data = await selectData({
+  table: 'profiles',
+}); 
     setAllProfiles(data || []);
   }, []);
   useEffect(() => { if (profile?.role === "office") loadAllProfiles(); }, [profile, loadAllProfiles]);
@@ -16796,24 +17087,42 @@ export default function App() {
   const loadOrders = useCallback(async () => {
     // The TV board shows the whole office whoever is signed in on it.
     if (isTVRoute) {
-      const { data } = await supabase.rpc("tv_orders");
+      const { data } = await dataClient.rpc("tv_orders");
       setOrders(data || []);
       setLoading(false);
       return;
     }
-    // Supabase caps a single request at 1000 rows, so page through until
+    // The API pages large result sets, so page through until
     // we've got everything — otherwise every total silently under-reports.
     const PAGE = 1000;
     let all = [];
     let from = 0;
     for (;;) {
-      const { data, error } = await supabase
-        .from("orders")
-        .select("*")
-        .is("removed_at", null)          // hide removed orders
-        .order("submission_date", { ascending: false })
-        .range(from, from + PAGE - 1);
-      if (error || !data) break;
+
+let data;
+
+try {
+  data = await selectData({
+    table: 'orders',
+    filters: [
+      {
+        column: 'removed_at',
+        op: 'isnull',
+      },
+    ],
+    order: {
+      column: 'submission_date',
+      ascending: false,
+    },
+    limit: PAGE,
+    offset: from,
+  });
+} catch {
+  break;
+}
+
+if (!data) break;
+
       all = all.concat(data);
       if (data.length < PAGE) break;     // last page
       from += PAGE;
@@ -16835,7 +17144,7 @@ export default function App() {
   useEffect(() => {
     if (!session?.user) return;
     loadOrders();
-    const channel = supabase.channel("schthrive-live")
+    const channel = dataClient.channel("schthrive-live")
       .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, (payload) => {
         debouncedReload("orders", loadOrders);
         if (payload.new?.id) {
@@ -16855,7 +17164,7 @@ export default function App() {
       loadOrders(); loadNetsuite(); loadForecasts();
     }, 120000);
     return () => {
-      supabase.removeChannel(channel);
+      dataClient.removeChannel(channel);
       clearInterval(poll);
       Object.values(reloadTimers.current).forEach(clearTimeout);
     };
@@ -16865,7 +17174,7 @@ export default function App() {
     setSubmitting(true);
     const row = { ...partial, submission_date: new Date().toISOString(), last_updated: new Date().toISOString() };
     // Ask for the row back, so the splash can watch for its Drive folder
-    const { data, error } = await supabase.from("orders").insert(row).select("id").single();
+    const { data, error } = await dataClient.from("orders").insert(row).select("id").single();
     setSubmitting(false);
     if (error) {
       setToast(`Couldn't save: ${error.message}`);
@@ -16880,7 +17189,15 @@ export default function App() {
     loadOrders();
   }, [loadOrders]);
 
-  const signOut = () => supabase.auth.signOut();
+const signOut = async () => {
+  try {
+    await apiLogout();
+  } finally {
+    setSession(null);
+    setProfile(null);
+    setChangingPassword(false);
+  }
+};
 
   // Save SOV/GP edits. RLS enforces who's actually allowed; this mirror keeps the UI honest.
   const [savingEdit, setSavingEdit] = useState(false);
@@ -16894,14 +17211,14 @@ export default function App() {
       last_updated: new Date().toISOString(),
     };
     // Moving it to someone puts it in play unless it's already further on
-    const { error } = await supabase.from("orders").update(patch).eq("id", orderId);
+    const { error } = await dataClient.from("orders").update(patch).eq("id", orderId);
     if (error) { setToast(`Couldn't allocate: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
     loadOrders();
   }, [profile, loadOrders]);
 
   const saveOrder = useCallback(async (id, patch) => {
     setSavingEdit(true);
-    const { error } = await supabase.from("orders").update(patch).eq("id", id);
+    const { error } = await dataClient.from("orders").update(patch).eq("id", id);
     setSavingEdit(false);
     if (error) {
       setToast(`Couldn't update: ${error.message}`);
@@ -16916,7 +17233,7 @@ export default function App() {
 
   // Remove (withdraw) an order — soft delete, keeps an audit trail.
   const removeOrder = useCallback(async (id, reason) => {
-    const { error } = await supabase.from("orders").update({
+    const { error } = await dataClient.from("orders").update({
       removed_at: new Date().toISOString(),
       removed_by: session?.user?.id || null,
       removed_reason: reason || null,
@@ -16950,13 +17267,13 @@ export default function App() {
 
   // --- Admin: staff & role management (office only; RLS enforces this too) ---
   const saveStaff = useCallback(async (id, patch) => {
-    const { error } = await supabase.from("staff").update(patch).eq("id", id);
+    const { error } = await dataClient.from("staff").update(patch).eq("id", id);
     if (error) { setToast(`Couldn't save: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
     loadStaff();
   }, [loadStaff]);
 
   const addStaff = useCallback(async (row) => {
-    const { error } = await supabase.from("staff").insert(row);
+    const { error } = await dataClient.from("staff").insert(row);
     if (error) { setToast(`Couldn't add: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
     setToast(`${row.full_name} added to staff`);
     setTimeout(() => setToast(""), 2500);
@@ -16966,7 +17283,7 @@ export default function App() {
   // Set someone's password. The database function checks we're office
   // before doing anything, so nothing sensitive lives in the browser.
   const resetPassword = useCallback(async (email, newPassword) => {
-    const { data, error } = await supabase.rpc("admin_set_password", {
+    const { data, error } = await dataClient.rpc("admin_set_password", {
       target_email: email,
       new_password: newPassword,
     });
@@ -16983,7 +17300,7 @@ export default function App() {
   // Mark someone a leaver (or bring them back). The database function also
   // locks their login, so it isn't just a UI flag.
   const setStaffActive = useCallback(async (staffId, makeActive, name) => {
-    const { data, error } = await supabase.rpc("admin_set_staff_active", {
+    const { data, error } = await dataClient.rpc("admin_set_staff_active", {
       staff_id: staffId, make_active: makeActive,
     });
     if (error || !data?.ok) {
@@ -16998,7 +17315,7 @@ export default function App() {
     loadStaff();
   }, [loadStaff]);
 
-  const saveProfileRole = useCallback(async (profileId, patch) => {    const { error } = await supabase.from("profiles").update(patch).eq("id", profileId);
+  const saveProfileRole = useCallback(async (profileId, patch) => {    const { error } = await dataClient.from("profiles").update(patch).eq("id", profileId);
     if (error) { setToast(`Couldn't update role: ${error.message}`); setTimeout(() => setToast(""), 5000); return; }
     loadAllProfiles();
   }, [loadAllProfiles]);
@@ -17023,16 +17340,59 @@ export default function App() {
   }, [netsuite, aliasMap]);
 
   if (!authReady) return <div className="sw-root flex items-center justify-center" style={{ minHeight: "100vh" }}><style>{STYLE}</style><Loader2 className="animate-spin" style={{ color: "var(--primary)" }} /></div>;
-  if (!session) return <LoginScreen />;
+ if (!session) {
+   return (
+     <LoginScreen
+       onSignedIn={(user) => {
+         setProfile(user);
 
+         setSession({
+           user: {
+             id: user.id,
+             email: user.email,
+           },
+         });
+       }}
+     />
+   );
+ }
   // Still on the shared starting password — must set their own before going further.
-  if (profile?.must_change_password) {
-    return <ChangePasswordScreen forced onDone={() => setProfile((p) => ({ ...p, must_change_password: false }))} />;
-  }
+  //if (profile?.must_change_password) {
+  //  return <ChangePasswordScreen forced onDone={() => setProfile((p) => ({ ...p, must_change_password: false }))} />;
+  //}
+
+if (profile?.must_change_password) {
+  return (
+    <ChangePasswordScreen
+      forced
+      onDone={() => {
+        setSession(null);
+        setProfile(null);
+      }}
+      onSignOut={signOut}
+    />
+  );
+}
+
   // Chose "Change password" from the menu
-  if (changingPassword) {
-    return <ChangePasswordScreen forced={false} onDone={() => setChangingPassword(false)} onCancel={() => setChangingPassword(false)} />;
-  }
+  //if (changingPassword) {
+  //  return <ChangePasswordScreen forced={false} onDone={() => setChangingPassword(false)} onCancel={() => setChangingPassword(false)} />;
+  //}
+
+if (changingPassword) {
+  return (
+    <ChangePasswordScreen
+      forced={false}
+      onDone={() => {
+        setChangingPassword(false);
+        setSession(null);
+        setProfile(null);
+      }}
+      onCancel={() => setChangingPassword(false)}
+      onSignOut={signOut}
+    />
+  );
+}
 
   // TV wall board route — reuses the logged-in session on that device.
   if (isTVRoute) {
@@ -17087,7 +17447,7 @@ export default function App() {
         {tab === "landscapes" && <LandscapesView profile={profile} staff={staff} />}
         {tab === "quote" && <QuoteBuilderView profile={profile} staff={staff} />}
         {tab === "quotelog" && <QuoteLog profile={profile} />}
-        {tab === "coach" && <SalesCoachView />}
+        {tab === "coach" && <SalesCoachView profile={profile} />}
         {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onResetPassword={resetPassword} onSetActive={setStaffActive} plans={payPlans}
           netsuite={netsuiteResolved} leads={leadsForAdmin} aliases={aliases} onAddAlias={addAlias} onDeleteAlias={deleteAlias} onAddLeaver={addLeaver}
           planHistory={planHistory} onAssignPlan={assignPlan} onDeleteAssignment={deleteAssignment}
