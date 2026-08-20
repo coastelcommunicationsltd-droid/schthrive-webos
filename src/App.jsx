@@ -7590,7 +7590,7 @@ function SettingsView({ statusRows, onSaveStatus, newCount,
 const ROLE_OPTIONS = ["office", "2ic", "agent", "sd", "sd_2ic"];
 const ROLE_LABELS = { office: "Office", "2ic": "2IC", agent: "Agent", sd: "Sales Delivery", sd_2ic: "Sales Delivery 2IC" };
 
-function StaffDetailForm({ s, profileForStaff, onSaveStaff, onSaveProfile, onResetPassword, onSetActive, plans,
+function StaffDetailForm({ s, profileForStaff, onSaveStaff, onSaveProfile, onCreateLogin, onResetPassword, onSetActive, plans,
                           planHistory, onAssignPlan, onDeleteAssignment, managerOptions = [] }) {
   const [assigning, setAssigning] = useState(false);
   const [newPlan, setNewPlan] = useState("");
@@ -7604,7 +7604,7 @@ function StaffDetailForm({ s, profileForStaff, onSaveStaff, onSaveProfile, onRes
     full_name: s.full_name || "", alt_name: s.alt_name || "", uin: s.uin || "", email: s.email || "",
     team: s.team || "", sells: !!s.sells, pay_plan_id: s.pay_plan_id || "",
   });
-  const [roleEdit, setRoleEdit] = useState(profileForStaff?.role || "");
+  const [roleEdit, setRoleEdit] = useState(profileForStaff?.role || "agent");
   const [teamEdit, setTeamEdit] = useState(profileForStaff?.team || s.team || "");
   const [savingStaff, setSavingStaff] = useState(false);
   const [savingRole, setSavingRole] = useState(false);
@@ -7614,7 +7614,7 @@ function StaffDetailForm({ s, profileForStaff, onSaveStaff, onSaveProfile, onRes
   const [saved, setSaved] = useState("");
 
   const staffDirty = Object.keys(f).some((k) => String(f[k]) !== String(s[k] ?? (k === "sells" ? true : "")));
-  const roleDirty = profileForStaff && (roleEdit !== profileForStaff.role || teamEdit !== (profileForStaff.team || ""));
+  const roleDirty = profileForStaff && roleEdit !== profileForStaff.role;
   const flash = (m) => { setSaved(m); setTimeout(() => setSaved(""), 1800); };
 
   const Row = ({ label, children }) => (
@@ -7744,16 +7744,17 @@ function StaffDetailForm({ s, profileForStaff, onSaveStaff, onSaveProfile, onRes
         )}
       </div>
 
-      {/* Role + password — only meaningful once they've signed in at least once */}
+      {/* Login access — Office can create a login before first sign-in, or
+          assign a replacement temporary password to an existing account. */}
       <div className="px-4 py-3" style={{ borderTop: "1px solid var(--border)" }}>
         <div className="text-xs font-medium uppercase mb-2" style={{ color: "var(--ink-faint)", letterSpacing: "0.04em" }}>Access</div>
         {profileForStaff ? (
           <div className="flex items-center gap-2 flex-wrap">
-            <select className="sw-input sw-focus" style={{ width: 120 }} value={roleEdit} onChange={(e) => setRoleEdit(e.target.value)}>
-              {ROLE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
+            <select className="sw-input sw-focus" style={{ width: 140 }} value={roleEdit} onChange={(e) => setRoleEdit(e.target.value)}>
+              {ROLE_OPTIONS.map((r) => <option key={r} value={r}>{ROLE_LABELS[r] || r}</option>)}
             </select>
             <button disabled={!roleDirty || savingRole}
-              onClick={async () => { setSavingRole(true); await onSaveProfile(profileForStaff.id, { role: roleEdit, team: teamEdit }); setSavingRole(false); flash("Role saved"); }}
+              onClick={async () => { setSavingRole(true); await onSaveProfile(profileForStaff.id, { role: roleEdit }); setSavingRole(false); flash("Role saved"); }}
               className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg"
               style={{ background: roleDirty ? "var(--green)" : "var(--surface-alt)", color: roleDirty ? "#fff" : "var(--ink-faint)" }}>
               {savingRole ? "..." : "Save role"}
@@ -7764,17 +7765,19 @@ function StaffDetailForm({ s, profileForStaff, onSaveStaff, onSaveProfile, onRes
             {s.email && (
               resetting ? (
                 <>
-                  <input className="sw-input sw-focus" style={{ width: 140 }} placeholder="New password" value={newPw} onChange={(e) => setNewPw(e.target.value)} autoFocus />
-                  <button disabled={newPw.length < 8 || savingPw}
-                    onClick={async () => { setSavingPw(true); const ok = await onResetPassword(s.email, newPw); setSavingPw(false); if (ok) { setResetting(false); setNewPw(""); flash("Password set"); } }}
+                  <input className="sw-input sw-focus" type="password" style={{ width: 210 }}
+                    placeholder="Temporary password (10+ chars)" value={newPw}
+                    onChange={(e) => setNewPw(e.target.value)} autoFocus />
+                  <button disabled={newPw.length < 10 || savingPw}
+                    onClick={async () => { setSavingPw(true); const ok = await onResetPassword(s.email, newPw); setSavingPw(false); if (ok) { setResetting(false); setNewPw(""); flash("Temporary password set"); } }}
                     className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg"
-                    style={{ background: newPw.length >= 8 ? "var(--primary)" : "var(--surface)", color: newPw.length >= 8 ? "#fff" : "var(--ink-faint)" }}>
-                    Set
+                    style={{ background: newPw.length >= 10 ? "var(--primary)" : "var(--surface)", color: newPw.length >= 10 ? "#fff" : "var(--ink-faint)" }}>
+                    {savingPw ? "..." : "Set temporary password"}
                   </button>
                   <button onClick={() => { setResetting(false); setNewPw(""); }} className="sw-focus text-xs" style={{ color: "var(--ink-faint)" }}>Cancel</button>
                 </>
               ) : (
-                <button onClick={() => { setResetting(true); setNewPw("Welcome2026"); }}
+                <button onClick={() => { setResetting(true); setNewPw(""); }}
                   className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
                   style={{ background: "var(--surface)", color: "var(--ink-soft)", border: "1px solid var(--border)" }}>
                   <KeyRound size={11} /> Reset password
@@ -7783,7 +7786,36 @@ function StaffDetailForm({ s, profileForStaff, onSaveStaff, onSaveProfile, onRes
             )}
           </div>
         ) : (
-          <div className="text-xs" style={{ color: "var(--ink-faint)" }}>Not signed in yet — role and password appear here after their first login.</div>
+          <div>
+            {s.email ? (
+              <div className="flex items-center gap-2 flex-wrap">
+                <select className="sw-input sw-focus" style={{ width: 140 }} value={roleEdit} onChange={(e) => setRoleEdit(e.target.value)}>
+                  {ROLE_OPTIONS.map((r) => <option key={r} value={r}>{ROLE_LABELS[r] || r}</option>)}
+                </select>
+                <input className="sw-input sw-focus" type="password" style={{ width: 220 }}
+                  placeholder="Temporary password (10+ chars)" value={newPw}
+                  onChange={(e) => setNewPw(e.target.value)} />
+                <button disabled={newPw.length < 10 || savingPw}
+                  onClick={async () => {
+                    setSavingPw(true);
+                    const ok = await onCreateLogin(s, roleEdit, newPw);
+                    setSavingPw(false);
+                    if (ok) { setNewPw(""); flash("Login created"); }
+                  }}
+                  className="sw-focus text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
+                  style={{ background: newPw.length >= 10 ? "var(--primary)" : "var(--surface)", color: newPw.length >= 10 ? "#fff" : "var(--ink-faint)" }}>
+                  <KeyRound size={11} /> {savingPw ? "Creating..." : "Create login"}
+                </button>
+                <span className="text-xs" style={{ color: "var(--ink-faint)" }}>
+                  They will be forced to choose their own password at first sign-in.
+                </span>
+              </div>
+            ) : (
+              <div className="text-xs" style={{ color: "var(--amber)" }}>
+                Add and save an email address before creating a login.
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>
@@ -8056,7 +8088,7 @@ function AdminIssues({ staff, netsuite, leads, aliases, onAddAlias, onDeleteAlia
   );
 }
 
-function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, onResetPassword, onSetActive, plans,
+function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, onCreateLogin, onResetPassword, onSetActive, plans,
                     netsuite, leads, aliases, onAddAlias, onDeleteAlias, onAddLeaver, planHistory, onAssignPlan, onDeleteAssignment,
                     planTiers, planMetrics, planTablesMissing, planError,
                     onSavePlan, onAddPlan, onDeletePlan, onSaveTier, onAddTier, onDeleteTier, onAddMetric, onDeleteMetric }) {
@@ -8162,7 +8194,7 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
             <StaffDetailForm key={selected.id} s={selected} managerOptions={managerOptions}
               profileForStaff={selected.user_id ? profileByUserId[selected.user_id] : null}
               onSaveStaff={onSaveStaff} onSaveProfile={onSaveProfile}
-              onResetPassword={onResetPassword} onSetActive={onSetActive} plans={plans}
+              onCreateLogin={onCreateLogin} onResetPassword={onResetPassword} onSetActive={onSetActive} plans={plans}
               planHistory={planHistory} onAssignPlan={onAssignPlan} onDeleteAssignment={onDeleteAssignment} />
           )}
           {!adding && !selected && (
@@ -8174,8 +8206,8 @@ function AdminView({ staff, profiles, onSaveStaff, onAddStaff, onSaveProfile, on
       </div>
 
       <p className="text-xs mt-3" style={{ color: "var(--ink-faint)" }}>
-        Adding someone creates their staff record so they're ready to go. Their role dropdown appears once
-        they've logged in for the first time — that's when their account links up automatically.
+        Adding someone creates their staff record. Once their email is saved, select them here to choose
+        a role and create their login with a temporary password.
       </p>
       </div>
 
@@ -17280,7 +17312,41 @@ const signOut = async () => {
     loadStaff();
   }, [loadStaff]);
 
-  // Set someone's password. The database function checks we're office
+  // Create a login for an existing staff member. The API/database enforce
+  // the Office-only permission and hash the temporary password server-side.
+  const createLogin = useCallback(async (staffRow, role, temporaryPassword) => {
+    const email = String(staffRow?.email || "").trim().toLowerCase();
+    if (!email) {
+      setToast("Add an email address before creating a login.");
+      setTimeout(() => setToast(""), 5000);
+      return false;
+    }
+    if (temporaryPassword.length < 10) {
+      setToast("Temporary password must be at least 10 characters.");
+      setTimeout(() => setToast(""), 5000);
+      return false;
+    }
+
+    const { data, error } = await dataClient.rpc("admin_create_user", {
+      email,
+      full_name: staffRow?.full_name || email,
+      role,
+      temporary_password: temporaryPassword,
+    });
+
+    if (error || !data?.ok) {
+      setToast(`Couldn't create login: ${error?.message || data?.error || "unknown error"}`);
+      setTimeout(() => setToast(""), 5000);
+      return false;
+    }
+
+    setToast(`Login created for ${email} — they'll choose their own password at first sign-in`);
+    setTimeout(() => setToast(""), 5000);
+    await Promise.all([loadStaff(), loadAllProfiles()]);
+    return true;
+  }, [loadStaff, loadAllProfiles]);
+
+  // Set someone's temporary password. The database function checks we're office
   // before doing anything, so nothing sensitive lives in the browser.
   const resetPassword = useCallback(async (email, newPassword) => {
     const { data, error } = await dataClient.rpc("admin_set_password", {
@@ -17448,7 +17514,7 @@ if (changingPassword) {
         {tab === "quote" && <QuoteBuilderView profile={profile} staff={staff} />}
         {tab === "quotelog" && <QuoteLog profile={profile} />}
         {tab === "coach" && <SalesCoachView profile={profile} />}
-        {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onResetPassword={resetPassword} onSetActive={setStaffActive} plans={payPlans}
+        {tab === "admin" && profile?.role === "office" && <AdminView staff={staff} profiles={allProfiles} onSaveStaff={saveStaff} onAddStaff={addStaff} onSaveProfile={saveProfileRole} onCreateLogin={createLogin} onResetPassword={resetPassword} onSetActive={setStaffActive} plans={payPlans}
           netsuite={netsuiteResolved} leads={leadsForAdmin} aliases={aliases} onAddAlias={addAlias} onDeleteAlias={deleteAlias} onAddLeaver={addLeaver}
           planHistory={planHistory} onAssignPlan={assignPlan} onDeleteAssignment={deleteAssignment}
           planTiers={planTiers} planMetrics={planMetrics} planTablesMissing={planTablesMissing} planError={planError}
